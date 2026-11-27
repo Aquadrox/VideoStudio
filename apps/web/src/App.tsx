@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type
 import {
   Activity,
   BookOpen,
+  CheckSquare,
   ChevronRight,
   Clapperboard,
   Columns2,
@@ -11,6 +12,7 @@ import {
   FileText,
   Film,
   Folder,
+  FolderInput,
   FolderPlus,
   GitBranch,
   Keyboard,
@@ -24,6 +26,7 @@ import {
   Terminal,
   Trash2,
   Upload,
+  X,
   Youtube,
 } from 'lucide-react';
 import type {
@@ -64,9 +67,13 @@ import { TimelinePanel } from './components/TimelinePanel';
 import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
 import {
-  extractDraggedAssetId,
+  ASSET_DRAG_MIME,
+  ASSET_LIST_DRAG_MIME,
+  computeMultiSelection,
+  extractDraggedAssetIds,
   getParentFolder,
   isExternalFileDrag,
+  resolveDragAssetIds,
 } from './utils/drag';
 import {
   copyToClipboard,
@@ -151,8 +158,12 @@ export function App() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
+  const [draggingAssetIds, setDraggingAssetIds] = useState<string[]>([]);
   const [dragOverFolderPath, setDragOverFolderPath] = useState<string | null>(null);
+  const [multiSelectedIds, setMultiSelectedIds] = useState<string[]>([]);
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const [bulkMoveTarget, setBulkMoveTarget] = useState<string>('');
+  const [movingBatch, setMovingBatch] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -528,38 +539,136 @@ export function App() {
     }
   };
 
-  const handleMoveAssetToFolder = async (assetId: string, targetFolderPath: string) => {
-    if (!activeProjectId) return;
-    const targetAsset = assets.find((a) => a.id === assetId);
-    if (!targetAsset) return;
+  // Reset multi-selection when switching project or navigating folders
+  useEffect(() => {
+    setMultiSelectedIds([]);
+    setSelectionAnchorId(null);
+  }, [activeProjectId, currentFolderPath]);
 
-    const currentPath = targetAsset.folderPath ?? '';
-    if (currentPath === targetFolderPath) {
+  // Prune any multi-selected IDs that no longer exist in the current asset list
+  useEffect(() => {
+    setMultiSelectedIds((prev) => {
+      if (prev.length === 0) return prev;
+      const valid = new Set(assets.map((a) => a.id));
+      const next = prev.filter((id) => valid.has(id));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [assets]);
+
+  const isDraggingAssets = draggingAssetIds.length > 0;
+  const multiSelectedSet = useMemo(() => new Set(multiSelectedIds), [multiSelectedIds]);
+  const draggingAssetSet = useMemo(() => new Set(draggingAssetIds), [draggingAssetIds]);
+
+  const handleToggleAssetCheck = (asset: AssetDto, opts: { shiftKey: boolean }) => {
+    const orderedIds = filteredAssets.map((a) => a.id);
+    const next = computeMultiSelection({
+      orderedIds,
+      currentSelectedIds: multiSelectedIds,
+      clickedId: asset.id,
+      anchorId: selectionAnchorId ?? selectedAssetId,
+      mode: opts.shiftKey ? 'range' : 'toggle',
+    });
+    setMultiSelectedIds(next);
+    setSelectionAnchorId(asset.id);
+  };
+
+  const handleSelectAssetCard = (
+    item: AssetDto,
+    modifiers?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean },
+  ) => {
+    if (modifiers?.shiftKey || modifiers?.metaKey || modifiers?.ctrlKey) {
+      handleToggleAssetCheck(item, { shiftKey: Boolean(modifiers.shiftKey) });
+      setSelectedAssetId(item.id);
+      setRightTab('inspector');
+      return;
+    }
+
+    setMultiSelectedIds([]);
+    setSelectionAnchorId(item.id);
+    setSelectedAssetId(item.id);
+    setRightTab('inspector');
+  };
+
+  const handleSelectAllVisible = () => {
+    const allIds = filteredAssets.map((a) => a.id);
+    setMultiSelectedIds(allIds);
+    setSelectionAnchorId(allIds[allIds.length - 1] ?? null);
+  };
+
+  const handleClearMultiSelection = () => {
+    setMultiSelectedIds([]);
+    setSelectionAnchorId(null);
+  };
+
+  const handleMoveAssetsToFolder = async (assetIds: string[], targetFolderPath: string) => {
+    if (!activeProjectId || assetIds.length === 0) return;
+
+    const uniqueIds = Array.from(new Set(assetIds));
+    const targetAssets = uniqueIds
+      .map((id) => assets.find((a) => a.id === id))
+      .filter((a): a is AssetDto => Boolean(a));
+    if (targetAssets.length === 0) return;
+
+    const toMove = targetAssets.filter((a) => (a.folderPath ?? '') !== targetFolderPath);
+    if (toMove.length === 0) {
       showToast(
-        targetFolderPath
-          ? `${targetAsset.handle} est déjà dans /${targetFolderPath}`
-          : `${targetAsset.handle} est déjà à la racine`,
+        targetAssets.length === 1
+          ? targetFolderPath
+            ? `${targetAssets[0]!.handle} est déjà dans /${targetFolderPath}`
+            : `${targetAssets[0]!.handle} est déjà à la racine`
+          : targetFolderPath
+            ? `Ces médias sont déjà dans /${targetFolderPath}`
+            : `Ces médias sont déjà à la racine`,
       );
       return;
     }
 
+    setMovingBatch(true);
     try {
-      const updated = await api.updateAsset(assetId, { folderPath: targetFolderPath });
-      setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-      await refreshFolders(activeProjectId);
-      showToast(
-        targetFolderPath
-          ? `Déplacé ${updated.handle} dans /${targetFolderPath}`
-          : `Déplacé ${updated.handle} à la racine`,
+      const results = await Promise.allSettled(
+        toMove.map((a) => api.updateAsset(a.id, { folderPath: targetFolderPath })),
       );
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Erreur lors du déplacement du média');
+      const updatedMap = new Map<string, AssetDto>();
+      let failedCount = 0;
+      for (const res of results) {
+        if (res.status === 'fulfilled') {
+          updatedMap.set(res.value.id, res.value);
+        } else {
+          failedCount += 1;
+        }
+      }
+
+      if (updatedMap.size > 0) {
+        setAssets((prev) => prev.map((a) => updatedMap.get(a.id) ?? a));
+        setMultiSelectedIds((prev) => prev.filter((id) => !updatedMap.has(id)));
+        await refreshFolders(activeProjectId);
+
+        const destLabel = targetFolderPath ? `dans /${targetFolderPath}` : 'à la racine';
+        if (updatedMap.size === 1) {
+          const single = Array.from(updatedMap.values())[0]!;
+          showToast(`Déplacé ${single.handle} ${destLabel}`);
+        } else {
+          showToast(
+            `${updatedMap.size} médias déplacés ${destLabel}${
+              failedCount > 0 ? ` (${failedCount} erreur(s))` : ''
+            }`,
+          );
+        }
+      } else if (failedCount > 0) {
+        showToast('Erreur lors du déplacement des médias');
+      }
+    } finally {
+      setMovingBatch(false);
     }
   };
 
   const handleFolderDragOver = (e: DragEvent, targetFolderPath: string) => {
-    const hasAsset = Boolean(draggingAssetId) || Array.from(e.dataTransfer.types ?? []).includes('application/x-videostudio-asset-id');
-    const hasFiles = isExternalFileDrag(e.dataTransfer, draggingAssetId);
+    const types = Array.from(e.dataTransfer.types ?? []);
+    const hasAsset =
+      isDraggingAssets ||
+      types.includes(ASSET_DRAG_MIME) ||
+      types.includes(ASSET_LIST_DRAG_MIME);
+    const hasFiles = isExternalFileDrag(e.dataTransfer, draggingAssetIds);
     if (!hasAsset && !hasFiles) return;
 
     e.preventDefault();
@@ -582,11 +691,11 @@ export function App() {
     setDragOverFolderPath(null);
     setIsDragging(false);
 
-    const droppedAssetId = extractDraggedAssetId(e.dataTransfer, draggingAssetId);
-    setDraggingAssetId(null);
+    const droppedAssetIds = extractDraggedAssetIds(e.dataTransfer, draggingAssetIds);
+    setDraggingAssetIds([]);
 
-    if (droppedAssetId) {
-      void handleMoveAssetToFolder(droppedAssetId, targetFolderPath);
+    if (droppedAssetIds.length > 0) {
+      void handleMoveAssetsToFolder(droppedAssetIds, targetFolderPath);
       return;
     }
 
@@ -596,7 +705,7 @@ export function App() {
   };
 
   const handleDragOver = (e: DragEvent) => {
-    if (!isExternalFileDrag(e.dataTransfer, draggingAssetId)) return;
+    if (!isExternalFileDrag(e.dataTransfer, draggingAssetIds)) return;
     e.preventDefault();
     if (activeProjectId && workspaceMode === 'media') setIsDragging(true);
   };
@@ -607,8 +716,8 @@ export function App() {
   };
 
   const handleDrop = (e: DragEvent) => {
-    if (!isExternalFileDrag(e.dataTransfer, draggingAssetId)) {
-      setDraggingAssetId(null);
+    if (!isExternalFileDrag(e.dataTransfer, draggingAssetIds)) {
+      setDraggingAssetIds([]);
       setDragOverFolderPath(null);
       return;
     }
@@ -660,6 +769,23 @@ export function App() {
       }
 
       if (showShortcutsHelp) return;
+
+      if (e.key === 'Escape' && multiSelectedIds.length > 0 && !lightboxAssetId) {
+        e.preventDefault();
+        setMultiSelectedIds([]);
+        setSelectionAnchorId(null);
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a' && workspaceMode === 'media' && !lightboxAssetId) {
+        if (filteredAssets.length > 0) {
+          e.preventDefault();
+          const allIds = filteredAssets.map((a) => a.id);
+          setMultiSelectedIds(allIds);
+          setSelectionAnchorId(allIds[allIds.length - 1] ?? null);
+        }
+        return;
+      }
 
       const key = e.key.toLowerCase();
 
@@ -747,13 +873,16 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     activeProject?.fps,
+    filteredAssets,
     lightboxAssetId,
+    multiSelectedIds.length,
     selectedAsset,
     showCommandPalette,
     showMcpModal,
     showNewProject,
     showShortcutsHelp,
     showToast,
+    workspaceMode,
   ]);
 
   const commandPaletteItems = useMemo<ExecutableCommandItem[]>(() => {
@@ -863,7 +992,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.5.0 · MCP · LAN</div>
+              <div className="brand-sub">v0.5.1 · MCP · LAN</div>
             </div>
           </div>
 
@@ -1228,13 +1357,13 @@ export function App() {
                   <button
                     type="button"
                     className={`breadcrumb-btn ${currentFolderPath === '' ? 'current' : ''} ${
-                      draggingAssetId ? 'drop-ready' : ''
+                      isDraggingAssets ? 'drop-ready' : ''
                     } ${dragOverFolderPath === '' ? 'drop-target-active' : ''}`}
                     onClick={() => setCurrentFolderPath('')}
                     onDragOver={(e) => handleFolderDragOver(e, '')}
                     onDragLeave={(e) => handleFolderDragLeave(e, '')}
                     onDrop={(e) => handleFolderDrop(e, '')}
-                    title="Racine · Glisser un média ici pour le déplacer à la racine"
+                    title="Racine · Glisser un ou plusieurs médias ici pour les déplacer à la racine"
                   >
                     <Folder size={13} /> Racine
                   </button>
@@ -1248,14 +1377,14 @@ export function App() {
                         type="button"
                         className={`breadcrumb-btn ${
                           idx === breadcrumbSegments.length - 1 ? 'current' : ''
-                        } ${draggingAssetId ? 'drop-ready' : ''} ${
+                        } ${isDraggingAssets ? 'drop-ready' : ''} ${
                           dragOverFolderPath === seg.path ? 'drop-target-active' : ''
                         }`}
                         onClick={() => setCurrentFolderPath(seg.path)}
                         onDragOver={(e) => handleFolderDragOver(e, seg.path)}
                         onDragLeave={(e) => handleFolderDragLeave(e, seg.path)}
                         onDrop={(e) => handleFolderDrop(e, seg.path)}
-                        title={`/${seg.path} · Glisser un média ici pour le déplacer`}
+                        title={`/${seg.path} · Glisser un ou plusieurs médias ici pour les déplacer`}
                       >
                         {seg.name}
                       </button>
@@ -1264,12 +1393,12 @@ export function App() {
                   {currentFolderPath && (
                     <button
                       type="button"
-                      className={`btn btn-ghost btn-sm ${draggingAssetId ? 'drop-ready' : ''} ${
+                      className={`btn btn-ghost btn-sm ${isDraggingAssets ? 'drop-ready' : ''} ${
                         dragOverFolderPath === getParentFolder(currentFolderPath)
                           ? 'drop-target-active'
                           : ''
                       }`}
-                      title="Remonter au dossier parent · Glisser un média ici pour le remonter d'un niveau"
+                      title="Remonter au dossier parent · Glisser un ou plusieurs médias ici pour les remonter d'un niveau"
                       onClick={() => setCurrentFolderPath(getParentFolder(currentFolderPath))}
                       onDragOver={(e) =>
                         handleFolderDragOver(e, getParentFolder(currentFolderPath))
@@ -1285,6 +1414,29 @@ export function App() {
                 </div>
 
                 <div className="folder-actions">
+                  {filteredAssets.length > 1 && (
+                    <button
+                      type="button"
+                      className={`chip ${
+                        multiSelectedIds.length > 0 &&
+                        multiSelectedIds.length === filteredAssets.length
+                          ? 'active'
+                          : ''
+                      }`}
+                      onClick={() =>
+                        multiSelectedIds.length === filteredAssets.length
+                          ? handleClearMultiSelection()
+                          : handleSelectAllVisible()
+                      }
+                      title="Tout sélectionner dans cette vue (Ctrl/Cmd+A)"
+                    >
+                      <CheckSquare size={12} />{' '}
+                      {multiSelectedIds.length === filteredAssets.length
+                        ? 'Tout désélectionner'
+                        : 'Tout sélectionner'}
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     className={`chip ${includeSubfolders ? 'active' : ''}`}
@@ -1334,9 +1486,60 @@ export function App() {
               </div>
             )}
 
-            {activeProject && draggingAssetId && folders.length > 0 && (
+            {activeProject && multiSelectedIds.length > 0 && (
+              <div className="bulk-selection-bar" role="region" aria-label="Actions groupées">
+                <div className="bulk-selection-info">
+                  <CheckSquare size={14} color="var(--accent-amber)" />
+                  <strong>
+                    {multiSelectedIds.length}{' '}
+                    {multiSelectedIds.length > 1 ? 'médias sélectionnés' : 'média sélectionné'}
+                  </strong>
+                  <span className="bulk-selection-hint">
+                    · Glisse une carte vers un dossier ou choisis une destination :
+                  </span>
+                </div>
+
+                <div className="bulk-selection-controls">
+                  <select
+                    aria-label="Dossier de destination pour les médias sélectionnés"
+                    className="select-compact"
+                    value={bulkMoveTarget}
+                    onChange={(e) => setBulkMoveTarget(e.target.value)}
+                  >
+                    <option value="">/ (Racine)</option>
+                    {folders.map((folder) => (
+                      <option key={folder.path} value={folder.path}>
+                        /{folder.path}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={movingBatch}
+                    onClick={() => void handleMoveAssetsToFolder(multiSelectedIds, bulkMoveTarget)}
+                  >
+                    <FolderInput size={13} /> {movingBatch ? 'Déplacement...' : 'Déplacer ici'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleClearMultiSelection}
+                    title="Effacer la sélection (Échap)"
+                  >
+                    <X size={13} /> Effacer
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {activeProject && isDraggingAssets && folders.length > 0 && (
               <div className="folder-drop-dock" aria-label="Déposer dans un dossier du projet">
-                <span className="folder-drop-dock-label">Déplacer vers :</span>
+                <span className="folder-drop-dock-label">
+                  {draggingAssetIds.length > 1
+                    ? `Déplacer ${draggingAssetIds.length} médias vers :`
+                    : 'Déplacer vers :'}
+                </span>
                 <button
                   type="button"
                   className={`folder-drop-pill ${dragOverFolderPath === '' ? 'drop-target-active' : ''}`}
@@ -1389,7 +1592,7 @@ export function App() {
                         return (
                           <div
                             key={folder.path}
-                            className={`folder-card ${draggingAssetId ? 'drop-ready' : ''} ${
+                            className={`folder-card ${isDraggingAssets ? 'drop-ready' : ''} ${
                               isOver ? 'drop-target-active' : ''
                             }`}
                             role="button"
@@ -1413,7 +1616,9 @@ export function App() {
                                 </div>
                                 <div className="folder-card-count">
                                   {isOver
-                                    ? 'Déposer ici'
+                                    ? draggingAssetIds.length > 1
+                                      ? `Déposer ${draggingAssetIds.length} médias ici`
+                                      : 'Déposer ici'
                                     : `${folder.totalRecursiveCount} média(s)`}
                                 </div>
                               </div>
@@ -1474,28 +1679,34 @@ export function App() {
                     </div>
                   ) : (
                     <div className="gallery-grid">
-                      {filteredAssets.map((asset) => (
-                        <AssetCard
-                          key={asset.id}
-                          asset={asset}
-                          selected={asset.id === selectedAssetId}
-                          dragging={asset.id === draggingAssetId}
-                          onSelect={(item) => {
-                            setSelectedAssetId(item.id);
-                            setRightTab('inspector');
-                          }}
-                          onDoubleClick={(item) => {
-                            setSelectedAssetId(item.id);
-                            setLightboxAssetId(item.id);
-                          }}
-                          onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
-                          onDragStartAsset={(item) => setDraggingAssetId(item.id)}
-                          onDragEndAsset={() => {
-                            setDraggingAssetId(null);
-                            setDragOverFolderPath(null);
-                          }}
-                        />
-                      ))}
+                      {filteredAssets.map((asset) => {
+                        const dragIdsForCard = resolveDragAssetIds(asset.id, multiSelectedIds);
+                        return (
+                          <AssetCard
+                            key={asset.id}
+                            asset={asset}
+                            selected={asset.id === selectedAssetId}
+                            checked={multiSelectedSet.has(asset.id)}
+                            selectionMode={multiSelectedIds.length > 0}
+                            dragging={draggingAssetSet.has(asset.id)}
+                            dragAssetIds={dragIdsForCard}
+                            onSelect={handleSelectAssetCard}
+                            onToggleCheck={handleToggleAssetCheck}
+                            onDoubleClick={(item) => {
+                              setSelectedAssetId(item.id);
+                              setLightboxAssetId(item.id);
+                            }}
+                            onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                            onDragStartAsset={(item) =>
+                              setDraggingAssetIds(resolveDragAssetIds(item.id, multiSelectedIds))
+                            }
+                            onDragEndAsset={() => {
+                              setDraggingAssetIds([]);
+                              setDragOverFolderPath(null);
+                            }}
+                          />
+                        );
+                      })}
                     </div>
                   )}
                 </>
