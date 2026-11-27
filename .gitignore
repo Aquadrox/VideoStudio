@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Environment & Secrets (NEVER commit secrets on this public repo)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+client_secret*.json
+credentials*.json
+secrets/
+
+# Local runtime media, database & backups
+data/
+pgdata/
+backups/
+uploads/
+tmp/
+*.sqlite
+*.sqlite3
+*.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS & Editors
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Test coverage
+coverage/

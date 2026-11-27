@@ -1,0 +1,18 @@
+{
+  "name": "videostudio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-assisted Video Production Studio with Claude Code MCP integration and real-time LAN UI",
+  "packageManager": "pnpm@12.21.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev:server": "pnpm --filter @videostudio/server dev",
+    "dev:web": "pnpm --filter @videostudio/web dev",
+    "build": "pnpm --filter @videostudio/shared build && pnpm -r build",
+    "typecheck": "pnpm --filter @videostudio/shared build && pnpm -r typecheck",
+    "test": "pnpm --filter @videostudio/shared build && pnpm -r test",
+    "clean": "pnpm -r clean"
+  }
+}

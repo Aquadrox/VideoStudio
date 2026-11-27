@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: videostudio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-videostudio}
+      POSTGRES_USER: ${POSTGRES_USER:-videostudio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - videostudio-internal
+    # PostgreSQL is intentionally NOT exposed to the host or LAN.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-videostudio} -d ${POSTGRES_DB:-videostudio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    container_name: videostudio-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      HOST: 0.0.0.0
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-videostudio}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}@postgres:5432/${POSTGRES_DB:-videostudio}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?MCP_AUTH_TOKEN is required in .env}
+      CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      DATA_DIR: /data
+      INGEST_ALLOWED_DIR: /ingest
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
+      ALLOWED_FETCH_HOSTS: ${ALLOWED_FETCH_HOSTS:-}
+    volumes:
+      - ./data:/data
+      - ./ingest:/ingest:ro
+    networks:
+      - videostudio-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    container_name: videostudio-web
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:${STUDIO_PORT:-3100}:80"
+    networks:
+      - videostudio-internal
+
+volumes:
+  postgres_data:
+
+networks:
+  videostudio-internal:
+    driver: bridge

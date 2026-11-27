@@ -1,0 +1,381 @@
+import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import sharp from 'sharp';
+import type { AssetType, ComfyMetadata } from '@videostudio/shared';
+import type { AppConfig } from '../config.js';
+import {
+  assertSafeFetchUrl,
+  resolveSafePath,
+  sanitizeFilename,
+} from '../utils/security.js';
+import {
+  extractComfyMetadataFromPng,
+  extractComfyMetadataFromTags,
+} from './comfy-metadata.service.js';
+
+const execFileAsync = promisify(execFile);
+
+export interface ProcessedMediaResult {
+  type: AssetType;
+  originalFilename: string;
+  mimeType: string;
+  fileSize: number;
+  filePath: string; // relative to DATA_DIR
+  proxyPath: string | null; // relative to DATA_DIR
+  thumbnailPath: string | null; // relative to DATA_DIR
+  width: number | null;
+  height: number | null;
+  durationSec: number | null;
+  fps: number | null;
+  comfyMetadata: ComfyMetadata | null;
+}
+
+interface FfprobeOutput {
+  streams?: Array<{
+    codec_type?: string;
+    width?: number;
+    height?: number;
+    r_frame_rate?: string;
+    avg_frame_rate?: string;
+    duration?: string;
+  }>;
+  format?: {
+    duration?: string;
+    tags?: Record<string, string>;
+  };
+}
+
+const EXT_TO_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.mkv': 'video/x-matroska',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4',
+  '.srt': 'text/plain',
+  '.vtt': 'text/vtt',
+  '.md': 'text/markdown',
+  '.txt': 'text/plain',
+  '.json': 'application/json',
+};
+
+export function inferMimeType(filename: string, providedMime?: string): string {
+  if (providedMime && providedMime !== 'application/octet-stream') {
+    return providedMime;
+  }
+  const ext = path.extname(filename).toLowerCase();
+  return EXT_TO_MIME[ext] ?? providedMime ?? 'application/octet-stream';
+}
+
+export function inferAssetType(mimeType: string, filename: string): AssetType {
+  const lowerMime = mimeType.toLowerCase();
+  if (lowerMime.startsWith('image/')) return 'image';
+  if (lowerMime.startsWith('video/')) return 'video';
+  if (lowerMime.startsWith('audio/')) return 'audio';
+
+  const ext = path.extname(filename).toLowerCase();
+  if (['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff'].includes(ext)) return 'image';
+  if (['.mp4', '.webm', '.mov', '.mkv', '.avi'].includes(ext)) return 'video';
+  if (['.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'].includes(ext)) return 'audio';
+  return 'document';
+}
+
+function parseFrameRate(raw?: string): number | null {
+  if (!raw || raw === '0/0') return null;
+  if (raw.includes('/')) {
+    const [numStr, denStr] = raw.split('/');
+    const num = Number(numStr);
+    const den = Number(denStr);
+    if (Number.isFinite(num) && Number.isFinite(den) && den > 0) {
+      return Math.round((num / den) * 100) / 100;
+    }
+    return null;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+export class MediaService {
+  constructor(private readonly config: AppConfig) {}
+
+  async ensureStorageRoot(): Promise<void> {
+    await fs.mkdir(resolveSafePath(this.config.dataDir, 'projects'), { recursive: true });
+  }
+
+  async checkFfmpegAvailable(): Promise<boolean> {
+    try {
+      await execFileAsync('ffmpeg', ['-version'], { timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  resolveMediaFile(relativePath: string): string {
+    return resolveSafePath(this.config.dataDir, relativePath);
+  }
+
+  async fetchFromUrl(
+    sourceUrl: string,
+  ): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
+    const parsedUrl = assertSafeFetchUrl(sourceUrl, this.config.allowedFetchHosts);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+
+    try {
+      const response = await fetch(parsedUrl.toString(), {
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch sourceUrl (HTTP ${response.status})`);
+      }
+
+      const contentLengthHeader = response.headers.get('content-length');
+      if (contentLengthHeader) {
+        const declaredSize = Number(contentLengthHeader);
+        if (Number.isFinite(declaredSize) && declaredSize > this.config.maxUploadBytes) {
+          throw new Error(`Remote file exceeds MAX_UPLOAD_MB limit`);
+        }
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      if (buffer.length > this.config.maxUploadBytes) {
+        throw new Error(`Remote file exceeds MAX_UPLOAD_MB limit`);
+      }
+
+      // ComfyUI `/view?filename=...` often puts the filename in query params
+      const queryFilename = parsedUrl.searchParams.get('filename');
+      const pathFilename = path.basename(parsedUrl.pathname);
+      const rawFilename = queryFilename || pathFilename || 'comfy-output.png';
+      const contentType = response.headers.get('content-type')?.split(';')[0]?.trim();
+
+      return {
+        buffer,
+        filename: sanitizeFilename(rawFilename),
+        mimeType: inferMimeType(rawFilename, contentType),
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async readLocalIngestFile(
+    localFilePath: string,
+  ): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
+    const resolved = path.isAbsolute(localFilePath)
+      ? resolveSafePath(this.config.ingestAllowedDir, path.relative(this.config.ingestAllowedDir, localFilePath))
+      : resolveSafePath(this.config.ingestAllowedDir, localFilePath);
+
+    const stat = await fs.stat(resolved);
+    if (!stat.isFile()) {
+      throw new Error('localFilePath is not a file');
+    }
+    if (stat.size > this.config.maxUploadBytes) {
+      throw new Error('Local file exceeds MAX_UPLOAD_MB limit');
+    }
+
+    const buffer = await fs.readFile(resolved);
+    const filename = sanitizeFilename(path.basename(resolved));
+    return {
+      buffer,
+      filename,
+      mimeType: inferMimeType(filename),
+    };
+  }
+
+  async storeAndProcessMedia(params: {
+    projectSlug: string;
+    buffer: Buffer;
+    filename: string;
+    mimeType?: string;
+    explicitType?: AssetType;
+  }): Promise<ProcessedMediaResult> {
+    const safeName = sanitizeFilename(params.filename);
+    const mimeType = inferMimeType(safeName, params.mimeType);
+    const type = params.explicitType ?? inferAssetType(mimeType, safeName);
+    const uid = crypto.randomUUID();
+
+    const originalsRelDir = path.join('projects', params.projectSlug, 'originals');
+    const proxiesRelDir = path.join('projects', params.projectSlug, 'proxies');
+    const thumbsRelDir = path.join('projects', params.projectSlug, 'thumbnails');
+
+    await Promise.all([
+      fs.mkdir(resolveSafePath(this.config.dataDir, originalsRelDir), { recursive: true }),
+      fs.mkdir(resolveSafePath(this.config.dataDir, proxiesRelDir), { recursive: true }),
+      fs.mkdir(resolveSafePath(this.config.dataDir, thumbsRelDir), { recursive: true }),
+    ]);
+
+    const originalRelPath = path.join(originalsRelDir, `${uid}-${safeName}`);
+    const originalAbsPath = resolveSafePath(this.config.dataDir, originalRelPath);
+    await fs.writeFile(originalAbsPath, params.buffer);
+
+    let proxyPath: string | null = null;
+    let thumbnailPath: string | null = null;
+    let width: number | null = null;
+    let height: number | null = null;
+    let durationSec: number | null = null;
+    let fps: number | null = null;
+    let comfyMetadata: ComfyMetadata | null = null;
+
+    if (type === 'image') {
+      comfyMetadata = extractComfyMetadataFromPng(params.buffer);
+
+      try {
+        const meta = await sharp(params.buffer).metadata();
+        width = meta.width ?? null;
+        height = meta.height ?? null;
+
+        const thumbRel = path.join(thumbsRelDir, `${uid}.webp`);
+        await sharp(params.buffer)
+          .rotate()
+          .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 82 })
+          .toFile(resolveSafePath(this.config.dataDir, thumbRel));
+        thumbnailPath = thumbRel;
+
+        const proxyRel = path.join(proxiesRelDir, `${uid}.webp`);
+        await sharp(params.buffer)
+          .rotate()
+          .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 88 })
+          .toFile(resolveSafePath(this.config.dataDir, proxyRel));
+        proxyPath = proxyRel;
+      } catch {
+        // Non-raster or unsupported image format: keep original only
+      }
+    } else if (type === 'video') {
+      const probe = await this.probeMedia(originalAbsPath);
+      if (probe) {
+        const videoStream = probe.streams?.find((s) => s.codec_type === 'video');
+        width = videoStream?.width ?? null;
+        height = videoStream?.height ?? null;
+        fps = parseFrameRate(videoStream?.avg_frame_rate ?? videoStream?.r_frame_rate);
+        const durStr = probe.format?.duration ?? videoStream?.duration;
+        durationSec = durStr && Number.isFinite(Number(durStr)) ? Number(durStr) : null;
+        comfyMetadata = extractComfyMetadataFromTags(probe.format?.tags);
+      }
+
+      // Generate video poster thumbnail
+      const thumbRel = path.join(thumbsRelDir, `${uid}.jpg`);
+      const thumbAbs = resolveSafePath(this.config.dataDir, thumbRel);
+      const thumbOk = await this.runFfmpeg([
+        '-y',
+        '-i',
+        originalAbsPath,
+        '-ss',
+        '00:00:00.25',
+        '-vframes',
+        '1',
+        '-vf',
+        'scale=480:-2',
+        '-q:v',
+        '4',
+        thumbAbs,
+      ]);
+      if (thumbOk) {
+        thumbnailPath = thumbRel;
+      }
+
+      // Generate lightweight H.264 720p web proxy for smooth LAN playback
+      const proxyRel = path.join(proxiesRelDir, `${uid}.mp4`);
+      const proxyAbs = resolveSafePath(this.config.dataDir, proxyRel);
+      const proxyOk = await this.runFfmpeg([
+        '-y',
+        '-i',
+        originalAbsPath,
+        '-vf',
+        'scale=\'min(1280,iw)\':-2',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '24',
+        '-pix_fmt',
+        'yuv420p',
+        '-movflags',
+        '+faststart',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        proxyAbs,
+      ]);
+      if (proxyOk) {
+        proxyPath = proxyRel;
+      }
+    } else if (type === 'audio') {
+      const probe = await this.probeMedia(originalAbsPath);
+      if (probe?.format?.duration && Number.isFinite(Number(probe.format.duration))) {
+        durationSec = Number(probe.format.duration);
+      }
+    }
+
+    return {
+      type,
+      originalFilename: safeName,
+      mimeType,
+      fileSize: params.buffer.length,
+      filePath: originalRelPath,
+      proxyPath,
+      thumbnailPath,
+      width,
+      height,
+      durationSec,
+      fps,
+      comfyMetadata,
+    };
+  }
+
+  async deleteMediaFiles(paths: Array<string | null | undefined>): Promise<void> {
+    await Promise.all(
+      paths
+        .filter((p): p is string => Boolean(p))
+        .map(async (relPath) => {
+          try {
+            const abs = resolveSafePath(this.config.dataDir, relPath);
+            await fs.unlink(abs);
+          } catch {
+            // File already removed or missing
+          }
+        }),
+    );
+  }
+
+  private async probeMedia(absPath: string): Promise<FfprobeOutput | null> {
+    try {
+      const { stdout } = await execFileAsync(
+        'ffprobe',
+        ['-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', absPath],
+        { timeout: 15_000 },
+      );
+      return JSON.parse(stdout) as FfprobeOutput;
+    } catch {
+      return null;
+    }
+  }
+
+  private async runFfmpeg(args: string[]): Promise<boolean> {
+    try {
+      await execFileAsync('ffmpeg', args, { timeout: 180_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
