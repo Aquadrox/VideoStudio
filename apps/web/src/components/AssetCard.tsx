@@ -6,18 +6,27 @@ interface AssetCardProps {
   asset: AssetDto;
   selected: boolean;
   onSelect: (asset: AssetDto) => void;
+  onDoubleClick?: (asset: AssetDto) => void;
   onCopyRef: (text: string) => void;
 }
 
-export function AssetCard({ asset, selected, onSelect, onCopyRef }: AssetCardProps) {
+export function AssetCard({
+  asset,
+  selected,
+  onSelect,
+  onDoubleClick,
+  onCopyRef,
+}: AssetCardProps) {
   const thumbUrl = asset.urls.thumbnail ?? asset.urls.proxy ?? asset.urls.original;
 
   return (
     <article
       className={`asset-card ${selected ? 'selected' : ''}`}
       onClick={() => onSelect(asset)}
+      onDoubleClick={() => onDoubleClick?.(asset)}
       role="button"
       tabIndex={0}
+      title="Cliquer pour inspecter · Double-cliquer pour ouvrir en grand"
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();

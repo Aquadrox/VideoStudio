@@ -71,6 +71,7 @@ export class RealtimeHub {
       case 'asset.updated':
       case 'asset.deleted':
       case 'job.updated':
+      case 'tasks.changed':
       case 'annotation.changed':
       case 'stage3.changed':
       case 'folders.changed':

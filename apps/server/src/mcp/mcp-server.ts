@@ -1,6 +1,7 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  AgentTaskStatusSchema,
   AssetStatusSchema,
   AssetTypeSchema,
   AudioCategorySchema,
@@ -17,6 +18,7 @@ import {
   ShotStatusSchema,
   SkillScopeSchema,
   StorageModeSchema,
+  SyncAgentTaskItemSchema,
   YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
@@ -67,10 +69,11 @@ export function createVideoStudioMcpServer(
           ],
         };
       }
-      const [projectAssets, recentActivities, activeJobs] = await Promise.all([
+      const [projectAssets, recentActivities, activeJobs, agentTaskList] = await Promise.all([
         studio.listAssets(project.id, { limit: 50 }),
         studio.listActivities(project.id, 25),
         studio.listJobs(project.id, 15),
+        studio.listAgentTasks(project.id),
       ]);
 
       return {
@@ -84,11 +87,30 @@ export function createVideoStudioMcpServer(
                 assetsCount: projectAssets.length,
                 recentAssets: projectAssets.slice(0, 20),
                 activeJobs,
+                agentTasks: agentTaskList,
                 recentActivities,
               },
               null,
               2,
             ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    'project-tasks',
+    new ResourceTemplate('studio://projects/{slug}/tasks', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const taskList = await studio.listAgentTasks(slug);
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(taskList, null, 2),
           },
         ],
       };
@@ -239,9 +261,10 @@ export function createVideoStudioMcpServer(
           content: [{ type: 'text', text: `Project not found: ${projectIdOrSlug}` }],
         };
       }
-      const [projectAssets, activeJobs, recentActivities] = await Promise.all([
+      const [projectAssets, activeJobs, agentTaskList, recentActivities] = await Promise.all([
         studio.listAssets(project.id, { limit: 40 }),
         studio.listJobs(project.id, 15),
+        studio.listAgentTasks(project.id),
         studio.listActivities(project.id, 20),
       ]);
       return {
@@ -249,7 +272,13 @@ export function createVideoStudioMcpServer(
           {
             type: 'text',
             text: JSON.stringify(
-              { project, assets: projectAssets, jobs: activeJobs, recentActivities },
+              {
+                project,
+                assets: projectAssets,
+                jobs: activeJobs,
+                agentTasks: agentTaskList,
+                recentActivities,
+              },
               null,
               2,
             ),
@@ -614,6 +643,116 @@ export function createVideoStudioMcpServer(
       }
       return {
         content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    'sync_agent_tasks',
+    'Push or update your structured live task checklist (plan / todo list) for a project. The Web UI displays only the active in_progress task in the compact CLAUDE LIVE bar by default, and unfolds the entire ordered list with every task status when the user clicks on it.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      tasks: z
+        .array(SyncAgentTaskItemSchema)
+        .max(200)
+        .describe(
+          'Ordered list of tasks. Each task has title, status (pending | in_progress | completed | failed | skipped), optional stable key (e.g. "upscale-01"), optional detail, optional progress (0-100), optional groupName, and optional assetRef (e.g. "@img-014").',
+        ),
+      replace: z
+        .boolean()
+        .default(true)
+        .describe('If true (default), replaces the project task list cleanly; if false, upserts by key / appends.'),
+    },
+    async (args) => {
+      const list = await studio.syncAgentTasks(
+        args.project,
+        { tasks: args.tasks, replace: args.replace },
+        'claude',
+      );
+      if (!list) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Project not found: ${args.project}` }],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(list, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    'update_agent_task',
+    'Update the status (pending, in_progress, completed, failed, skipped), progress (0-100), detail, or linked @assetRef of a single live task by UUID or external key.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      task: z.string().min(1).describe('Task UUID or external key (e.g. "upscale-01")'),
+      title: z.string().min(1).max(240).optional(),
+      detail: z.string().max(1000).optional(),
+      status: AgentTaskStatusSchema.optional(),
+      progress: z.number().int().min(0).max(100).nullable().optional(),
+      groupName: z.string().max(120).optional(),
+      assetRef: z.string().max(120).nullable().optional(),
+      sortOrder: z.number().int().min(0).max(10000).optional(),
+    },
+    async (args) => {
+      const updated = await studio.updateAgentTask(
+        args.project,
+        args.task,
+        {
+          title: args.title,
+          detail: args.detail,
+          status: args.status,
+          progress: args.progress,
+          groupName: args.groupName,
+          assetRef: args.assetRef,
+          sortOrder: args.sortOrder,
+        },
+        'claude',
+      );
+      if (!updated) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Project or task not found: ${args.task}` }],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    'list_agent_tasks',
+    'List all current Claude live tasks and their statuses for a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+    },
+    async ({ project }) => {
+      const list = await studio.listAgentTasks(project);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(list, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    'clear_agent_tasks',
+    'Clear completed/skipped tasks (default) or all live tasks for a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      scope: z.enum(['completed', 'all']).default('completed'),
+    },
+    async ({ project, scope }) => {
+      const remaining = await studio.clearAgentTasks(project, scope);
+      if (!remaining) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Project not found: ${project}` }],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(remaining, null, 2) }],
       };
     },
   );

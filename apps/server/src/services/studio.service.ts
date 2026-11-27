@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import {
   buildAssetHandle,
   buildStudioUri,
@@ -9,6 +9,8 @@ import {
   slugifyProjectName,
   type ActivityDto,
   type Actor,
+  type AgentTaskDto,
+  type AgentTaskStatus,
   type AssetDto,
   type AssetStatus,
   type AssetType,
@@ -21,12 +23,15 @@ import {
   type ProjectType,
   type QualityTier,
   type StorageMode,
+  type SyncAgentTasksInput,
+  type UpdateAgentTaskInput,
   type UpdateAssetInput,
   type UpdateProjectInput,
 } from '@videostudio/shared';
 import type { Database } from '../db/index.js';
 import {
   activities,
+  agentTasks,
   assets,
   jobs,
   mediaFolders,
@@ -918,6 +923,203 @@ export class StudioService {
     return rows.map((row) => this.toJobDto(row.job, row.projectSlug));
   }
 
+  // --- Agent Live Task List (Checklist / Plan Sync) ---
+
+  async listAgentTasks(projectIdOrSlug: string): Promise<AgentTaskDto[]> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return [];
+
+    const rows = await this.db
+      .select()
+      .from(agentTasks)
+      .where(eq(agentTasks.projectId, project.id))
+      .orderBy(asc(agentTasks.sortOrder), asc(agentTasks.createdAt));
+
+    return rows.map((r) => this.toAgentTaskDto(r));
+  }
+
+  async syncAgentTasks(
+    projectIdOrSlug: string,
+    input: SyncAgentTasksInput,
+    actor: Actor = 'claude',
+  ): Promise<AgentTaskDto[] | null> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    if (input.replace) {
+      await this.db.delete(agentTasks).where(eq(agentTasks.projectId, project.id));
+
+      for (let i = 0; i < input.tasks.length; i += 1) {
+        const item = input.tasks[i]!;
+        await this.db.insert(agentTasks).values({
+          projectId: project.id,
+          externalKey: item.key ?? null,
+          title: item.title,
+          detail: item.detail ?? '',
+          status: item.status ?? 'pending',
+          progress: item.progress ?? null,
+          groupName: item.groupName ?? '',
+          assetRef: item.assetRef ?? null,
+          sortOrder: item.sortOrder ?? i,
+        });
+      }
+    } else {
+      const existing = await this.db
+        .select()
+        .from(agentTasks)
+        .where(eq(agentTasks.projectId, project.id))
+        .orderBy(asc(agentTasks.sortOrder), asc(agentTasks.createdAt));
+
+      const byKey = new Map<string, typeof agentTasks.$inferSelect>();
+      let maxOrder = -1;
+      for (const row of existing) {
+        if (row.externalKey) byKey.set(row.externalKey, row);
+        if (row.sortOrder > maxOrder) maxOrder = row.sortOrder;
+      }
+
+      for (const item of input.tasks) {
+        const match = item.key ? byKey.get(item.key) : undefined;
+        if (match) {
+          await this.db
+            .update(agentTasks)
+            .set({
+              title: item.title,
+              detail: item.detail ?? match.detail,
+              status: item.status ?? match.status,
+              progress: item.progress !== undefined ? item.progress : match.progress,
+              groupName: item.groupName ?? match.groupName,
+              assetRef: item.assetRef !== undefined ? item.assetRef : match.assetRef,
+              sortOrder: item.sortOrder ?? match.sortOrder,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentTasks.id, match.id));
+        } else {
+          maxOrder += 1;
+          await this.db.insert(agentTasks).values({
+            projectId: project.id,
+            externalKey: item.key ?? null,
+            title: item.title,
+            detail: item.detail ?? '',
+            status: item.status ?? 'pending',
+            progress: item.progress ?? null,
+            groupName: item.groupName ?? '',
+            assetRef: item.assetRef ?? null,
+            sortOrder: item.sortOrder ?? maxOrder,
+          });
+        }
+      }
+    }
+
+    const updatedList = await this.listAgentTasks(project.id);
+    this.realtime.broadcast({
+      type: 'tasks.changed',
+      payload: { projectId: project.id, tasks: updatedList },
+    });
+
+    const active = updatedList.find((t) => t.status === 'in_progress');
+    if (actor === 'claude' && updatedList.length > 0) {
+      await this.logActivity({
+        projectId: project.id,
+        projectSlug: project.slug,
+        actor,
+        action: 'tasks.synced',
+        summary: active
+          ? `Plan Claude (${updatedList.length} tâches) · En cours : ${active.title}`
+          : `Plan Claude mis à jour (${updatedList.length} tâches)`,
+        entityType: 'project',
+        entityId: project.id,
+        entityRef: `@proj-${project.slug}`,
+      });
+    }
+
+    return updatedList;
+  }
+
+  async updateAgentTask(
+    projectIdOrSlug: string,
+    taskIdOrKey: string,
+    patch: UpdateAgentTaskInput,
+    actor: Actor = 'claude',
+  ): Promise<AgentTaskDto | null> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const cond = UUID_REGEX.test(taskIdOrKey)
+      ? and(eq(agentTasks.projectId, project.id), eq(agentTasks.id, taskIdOrKey))
+      : and(eq(agentTasks.projectId, project.id), eq(agentTasks.externalKey, taskIdOrKey));
+
+    const [updated] = await this.db
+      .update(agentTasks)
+      .set({
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.detail !== undefined ? { detail: patch.detail } : {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.progress !== undefined
+          ? {
+              progress:
+                patch.progress === null ? null : Math.max(0, Math.min(100, patch.progress)),
+            }
+          : {}),
+        ...(patch.groupName !== undefined ? { groupName: patch.groupName } : {}),
+        ...(patch.assetRef !== undefined ? { assetRef: patch.assetRef } : {}),
+        ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+        updatedAt: new Date(),
+      })
+      .where(cond)
+      .returning();
+
+    if (!updated) return null;
+
+    const fullList = await this.listAgentTasks(project.id);
+    this.realtime.broadcast({
+      type: 'tasks.changed',
+      payload: { projectId: project.id, tasks: fullList },
+    });
+
+    if (actor === 'claude' && (patch.status === 'completed' || patch.status === 'failed')) {
+      await this.logActivity({
+        projectId: project.id,
+        projectSlug: project.slug,
+        actor,
+        action: `task.${patch.status}`,
+        summary: `Tâche ${patch.status === 'completed' ? 'terminée' : 'en échec'} : ${updated.title}`,
+        entityType: 'task',
+        entityId: updated.id,
+        entityRef: updated.assetRef ?? null,
+      });
+    }
+
+    return this.toAgentTaskDto(updated);
+  }
+
+  async clearAgentTasks(
+    projectIdOrSlug: string,
+    scope: 'completed' | 'all' = 'completed',
+  ): Promise<AgentTaskDto[] | null> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    if (scope === 'all') {
+      await this.db.delete(agentTasks).where(eq(agentTasks.projectId, project.id));
+    } else {
+      await this.db
+        .delete(agentTasks)
+        .where(
+          and(
+            eq(agentTasks.projectId, project.id),
+            inArray(agentTasks.status, ['completed', 'skipped']),
+          ),
+        );
+    }
+
+    const remaining = await this.listAgentTasks(project.id);
+    this.realtime.broadcast({
+      type: 'tasks.changed',
+      payload: { projectId: project.id, tasks: remaining },
+    });
+    return remaining;
+  }
+
   // --- Helpers ---
 
   private async attachDefaultRulebooks(projectId: string): Promise<void> {
@@ -1054,6 +1256,23 @@ export class StudioService {
       progress: row.progress,
       resultAssetId: row.resultAssetId,
       errorMessage: row.errorMessage,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  private toAgentTaskDto(row: typeof agentTasks.$inferSelect): AgentTaskDto {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      externalKey: row.externalKey,
+      title: row.title,
+      detail: row.detail,
+      status: row.status as AgentTaskStatus,
+      progress: row.progress,
+      groupName: row.groupName,
+      assetRef: row.assetRef,
+      sortOrder: row.sortOrder,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
