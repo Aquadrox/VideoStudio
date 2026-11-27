@@ -521,11 +521,12 @@ textarea {
   position: absolute;
   top: 8px;
   left: 8px;
-  right: 8px;
+  right: 34px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 5px;
   pointer-events: none;
 }
 
@@ -1660,6 +1661,79 @@ textarea {
   border-style: dashed;
   border-color: var(--accent-amber);
   cursor: grabbing;
+}
+
+.asset-card.multi-selected {
+  border-color: var(--accent-amber);
+  box-shadow: 0 0 0 2px rgba(229, 160, 56, 0.45);
+}
+
+.asset-select-checkbox {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 4;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1.5px solid rgba(255, 255, 255, 0.65);
+  background: rgba(15, 16, 20, 0.72);
+  color: #111317;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.asset-card:hover .asset-select-checkbox,
+.asset-card:focus-within .asset-select-checkbox,
+.asset-select-checkbox.visible,
+.asset-select-checkbox.checked {
+  opacity: 1;
+}
+
+.asset-select-checkbox:hover {
+  border-color: var(--accent-amber);
+  transform: scale(1.06);
+}
+
+.asset-select-checkbox.checked {
+  background: var(--accent-amber);
+  border-color: var(--accent-amber);
+}
+
+.bulk-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 22px;
+  background: rgba(229, 160, 56, 0.12);
+  border-bottom: 1px solid rgba(229, 160, 56, 0.35);
+}
+
+.bulk-selection-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  flex-wrap: wrap;
+}
+
+.bulk-selection-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.bulk-selection-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .folder-drop-dock {

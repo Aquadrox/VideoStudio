@@ -193,7 +193,7 @@ export class WebhookService {
       const parsed = assertSafeFetchUrl(target.url, this.config.allowedFetchHosts);
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
-        'User-Agent': 'VideoStudio-Webhook/0.5.0',
+        'User-Agent': 'VideoStudio-Webhook/0.5.1',
         'X-VideoStudio-Event': event,
       };
       if (target.secret) {

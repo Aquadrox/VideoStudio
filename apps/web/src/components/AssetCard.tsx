@@ -1,14 +1,21 @@
-import type { DragEvent } from 'react';
-import { Copy, FileText, Film, Image as ImageIcon, Music, Star } from 'lucide-react';
+import type { DragEvent, MouseEvent } from 'react';
+import { Check, Copy, FileText, Film, Image as ImageIcon, Music, Star } from 'lucide-react';
 import type { AssetDto } from '@videostudio/shared';
-import { ASSET_DRAG_MIME } from '../utils/drag';
+import { ASSET_DRAG_MIME, ASSET_LIST_DRAG_MIME } from '../utils/drag';
 import { formatDuration, QUALITY_TIER_SHORT, STATUS_LABELS } from '../utils/format';
 
 interface AssetCardProps {
   asset: AssetDto;
   selected: boolean;
+  checked?: boolean;
+  selectionMode?: boolean;
   dragging?: boolean;
-  onSelect: (asset: AssetDto) => void;
+  dragAssetIds?: string[];
+  onSelect: (
+    asset: AssetDto,
+    modifiers?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean },
+  ) => void;
+  onToggleCheck?: (asset: AssetDto, opts: { shiftKey: boolean }) => void;
   onDoubleClick?: (asset: AssetDto) => void;
   onCopyRef: (text: string) => void;
   onDragStartAsset?: (asset: AssetDto) => void;
@@ -18,8 +25,12 @@ interface AssetCardProps {
 export function AssetCard({
   asset,
   selected,
+  checked = false,
+  selectionMode = false,
   dragging = false,
+  dragAssetIds,
   onSelect,
+  onToggleCheck,
   onDoubleClick,
   onCopyRef,
   onDragStartAsset,
@@ -28,23 +39,38 @@ export function AssetCard({
   const thumbUrl = asset.urls.thumbnail ?? asset.urls.proxy ?? asset.urls.original;
 
   const handleDragStart = (e: DragEvent<HTMLElement>) => {
+    const idsToDrag = dragAssetIds && dragAssetIds.length > 0 ? dragAssetIds : [asset.id];
     e.dataTransfer.setData(ASSET_DRAG_MIME, asset.id);
-    e.dataTransfer.setData('text/plain', asset.handle);
+    e.dataTransfer.setData(ASSET_LIST_DRAG_MIME, JSON.stringify(idsToDrag));
+    e.dataTransfer.setData(
+      'text/plain',
+      idsToDrag.length > 1 ? `${idsToDrag.length} médias` : asset.handle,
+    );
     e.dataTransfer.effectAllowed = 'move';
     onDragStartAsset?.(asset);
   };
 
+  const handleCardClick = (e: MouseEvent<HTMLElement>) => {
+    onSelect(asset, {
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey,
+    });
+  };
+
   return (
     <article
-      className={`asset-card ${selected ? 'selected' : ''} ${dragging ? 'dragging' : ''}`}
+      className={`asset-card ${selected ? 'selected' : ''} ${checked ? 'multi-selected' : ''} ${
+        dragging ? 'dragging' : ''
+      }`}
       draggable
       onDragStart={handleDragStart}
       onDragEnd={() => onDragEndAsset?.()}
-      onClick={() => onSelect(asset)}
+      onClick={handleCardClick}
       onDoubleClick={() => onDoubleClick?.(asset)}
       role="button"
       tabIndex={0}
-      title="Cliquer pour inspecter · Double-cliquer pour ouvrir · Glisser vers un dossier pour déplacer"
+      title="Cliquer pour inspecter · Ctrl/Shift+clic ou case pour multi-sélectionner · Glisser vers un dossier pour déplacer"
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -53,6 +79,25 @@ export function AssetCard({
       }}
     >
       <div className="asset-thumb-wrap">
+        {onToggleCheck && (
+          <button
+            type="button"
+            className={`asset-select-checkbox ${checked ? 'checked' : ''} ${
+              selectionMode ? 'visible' : ''
+            }`}
+            aria-label={checked ? `Désélectionner ${asset.title}` : `Sélectionner ${asset.title}`}
+            aria-pressed={checked}
+            title="Sélectionner pour déplacer en lot (Shift+clic pour une plage)"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCheck(asset, { shiftKey: e.shiftKey });
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {checked && <Check size={12} strokeWidth={3} />}
+          </button>
+        )}
+
         {asset.type === 'image' ? (
           <img src={thumbUrl} alt={asset.title} loading="lazy" draggable={false} />
         ) : asset.type === 'video' ? (

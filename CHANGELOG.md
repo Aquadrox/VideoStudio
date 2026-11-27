@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-27
+
 ### Added
-- **Drag & Drop des médias dans les dossiers (`AssetCard`, `App.tsx`, `drag.ts`)** : possibilité de glisser-déposer un média directement sur une carte de sous-dossier, sur le fil d'Ariane (`Racine`, ancêtres, `Parent`) ou sur la barre d'accès rapide de tous les dossiers du projet qui apparaît pendant le glissement, ainsi que d'importer un fichier externe directement en le déposant sur un dossier cible.
+- **Multi-sélection & déplacement groupé des médias vers les dossiers (`AssetCard`, `App.tsx`, `drag.ts`)** :
+  - Sélection multiple dans la galerie via **cases à cocher** sur les cartes, **`Ctrl/Cmd+clic`**, **`Shift+clic`** (sélection par plage), bouton **« Tout sélectionner »** (`Ctrl/Cmd+A`) et **`Échap`** pour effacer la sélection.
+  - **Drag & Drop groupé** : glisser l'un des médias sélectionnés déplace l'ensemble de la sélection vers une carte de sous-dossier, le fil d'Ariane (`Racine`, ancêtres, `Parent`) ou la barre d'accès rapide de tous les dossiers du projet (avec indicateur du nombre de médias transportés).
+  - **Barre d'actions groupées** (`.bulk-selection-bar`) avec sélecteur de dossier de destination et bouton **« Déplacer ici »** en 1 clic.
+- **Drag & Drop des médias dans les dossiers (`AssetCard`, `App.tsx`, `drag.ts`)** : possibilité de glisser-déposer un média directement sur une carte de sous-dossier, sur le fil d'Ariane ou sur la barre d'accès rapide des dossiers, ainsi que d'importer un fichier externe directement en le déposant sur un dossier cible.
 
 ## [0.5.0] - 2026-11-27
 
