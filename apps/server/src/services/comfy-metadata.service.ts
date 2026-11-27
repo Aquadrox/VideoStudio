@@ -98,27 +98,123 @@ function safeJsonParse(raw: string | undefined): Record<string, unknown> | undef
   }
 }
 
+function isNodeLink(value: unknown): value is [string, number] {
+  return Array.isArray(value) && typeof value[0] === 'string' && value.length >= 2;
+}
+
+/**
+ * Recursively resolves text prompts across ComfyUI graphs, handling:
+ * - Standard CLIPTextEncode / T5TextEncode
+ * - Qwen-Image-Edit nodes (`TextEncodeQwenImage21`, `TextEncodeQwenImageEdit`, etc.)
+ * - Switch nodes (`Switch`, `ImpactSwitch`, `AnySwitch`, `StringSwitch`, `CR Switch*`)
+ * - Conditioning wrappers (`FluxGuidance`, `ReferenceLatent`, `ControlNetApply`, `ConditioningCombine`)
+ * - String / Primitive / Concatenation nodes
+ */
 function resolveNodeText(
   graph: Record<string, unknown>,
   ref: unknown,
+  visited = new Set<string>(),
+  depth = 0,
 ): string | undefined {
-  if (typeof ref === 'string') return ref;
-  if (!Array.isArray(ref) || typeof ref[0] !== 'string') return undefined;
+  if (depth > 14 || ref === undefined || ref === null) return undefined;
+  if (typeof ref === 'string') {
+    const trimmed = ref.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (!isNodeLink(ref)) return undefined;
 
-  const targetNode = graph[ref[0]];
+  const nodeId = ref[0];
+  if (visited.has(nodeId)) return undefined;
+  visited.add(nodeId);
+
+  const targetNode = graph[nodeId];
   if (!targetNode || typeof targetNode !== 'object') return undefined;
-  const inputs = (targetNode as { inputs?: Record<string, unknown> }).inputs;
-  if (!inputs) return undefined;
 
-  if (typeof inputs.text === 'string' && inputs.text.trim()) {
-    return inputs.text.trim();
+  const node = targetNode as { class_type?: string; inputs?: Record<string, unknown> };
+  const classType = node.class_type ?? '';
+  const inputs = node.inputs ?? {};
+
+  // 1. Switch nodes: honor explicit selector (`select`, `input_index`, `switch`, `boolean`)
+  if (/switch/i.test(classType)) {
+    const selectedIndex =
+      typeof inputs.select === 'number'
+        ? inputs.select
+        : typeof inputs.input_index === 'number'
+          ? inputs.input_index
+          : typeof inputs.index === 'number'
+            ? inputs.index
+            : undefined;
+
+    if (selectedIndex !== undefined) {
+      const candidateKeys = [
+        `input${selectedIndex}`,
+        `input_${selectedIndex}`,
+        `text_${selectedIndex}`,
+        `string_${selectedIndex}`,
+        `value_${selectedIndex}`,
+        `in_${selectedIndex}`,
+        `opt${selectedIndex}`,
+        String(selectedIndex),
+      ];
+      for (const k of candidateKeys) {
+        if (inputs[k] !== undefined) {
+          const resolved = resolveNodeText(graph, inputs[k], new Set(visited), depth + 1);
+          if (resolved) return resolved;
+        }
+      }
+    }
+
+    if (typeof inputs.boolean === 'boolean' || typeof inputs.switch === 'boolean') {
+      const flag = Boolean(inputs.boolean ?? inputs.switch);
+      const branchVal = flag
+        ? inputs.on_true ?? inputs.true_value ?? inputs.input1 ?? inputs.a
+        : inputs.on_false ?? inputs.false_value ?? inputs.input2 ?? inputs.b;
+      const resolved = resolveNodeText(graph, branchVal, new Set(visited), depth + 1);
+      if (resolved) return resolved;
+    }
+
+    // Fallback: inspect all switch inputs in order
+    for (const [k, v] of Object.entries(inputs)) {
+      if (/^(select|index|input_index|switch|boolean)$/i.test(k)) continue;
+      const resolved = resolveNodeText(graph, v, new Set(visited), depth + 1);
+      if (resolved) return resolved;
+    }
+    return undefined;
   }
-  if (typeof inputs.prompt === 'string' && inputs.prompt.trim()) {
-    return inputs.prompt.trim();
+
+  // 2. String concatenation nodes
+  if (/concat/i.test(classType)) {
+    const sep = typeof inputs.delimiter === 'string' ? inputs.delimiter : ' ';
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(inputs)) {
+      if (/^(delimiter|separator|clean_whitespace)$/i.test(k)) continue;
+      const resolved = resolveNodeText(graph, v, new Set(visited), depth + 1);
+      if (resolved) parts.push(resolved);
+    }
+    return parts.length > 0 ? parts.join(sep).trim() : undefined;
   }
-  if (typeof inputs.string === 'string' && inputs.string.trim()) {
-    return inputs.string.trim();
+
+  // 3. Direct or linked prompt/text/string fields (covers TextEncodeQwenImage21, CLIPTextEncode, PrimitiveNode)
+  const textFieldPriority = [
+    'prompt',
+    'text',
+    'string',
+    'text_positive',
+    'positive_prompt',
+    'value',
+    'conditioning',
+    'conditioning_1',
+    'positive',
+    'input',
+  ];
+
+  for (const field of textFieldPriority) {
+    if (inputs[field] !== undefined) {
+      const resolved = resolveNodeText(graph, inputs[field], new Set(visited), depth + 1);
+      if (resolved) return resolved;
+    }
   }
+
   return undefined;
 }
 
@@ -147,7 +243,7 @@ export function parseComfyGraph(
   if (rawPromptGraph) {
     const fallbackTexts: string[] = [];
 
-    for (const nodeValue of Object.values(rawPromptGraph)) {
+    for (const [nodeId, nodeValue] of Object.entries(rawPromptGraph)) {
       if (!nodeValue || typeof nodeValue !== 'object') continue;
       const node = nodeValue as {
         class_type?: string;
@@ -200,16 +296,19 @@ export function parseComfyGraph(
         }
       }
 
-      // Fallback CLIPTextEncode collection
-      if (/cliptextencode/i.test(classType) && typeof inputs.text === 'string' && inputs.text.trim()) {
-        fallbackTexts.push(inputs.text.trim());
+      // Text encoders fallback (CLIPTextEncode, TextEncodeQwenImage21, T5TextEncode, etc.)
+      if (/(cliptextencode|textencodeqwen|textencode)/i.test(classType)) {
+        const extracted = resolveNodeText(rawPromptGraph, [nodeId, 0]);
+        if (extracted) {
+          fallbackTexts.push(extracted);
+        }
       }
     }
 
     if (!positivePrompt && fallbackTexts[0]) {
       positivePrompt = fallbackTexts[0];
     }
-    if (!negativePrompt && fallbackTexts[1]) {
+    if (!negativePrompt && fallbackTexts[1] && fallbackTexts[1] !== positivePrompt) {
       negativePrompt = fallbackTexts[1];
     }
   }
@@ -242,7 +341,6 @@ export function extractComfyMetadataFromTags(
 ): ComfyMetadata | null {
   if (!tags) return null;
 
-  // Video containers may store ComfyUI JSON in `prompt`/`workflow` or `comment`
   const lowerTags: Record<string, string> = {};
   for (const [k, v] of Object.entries(tags)) {
     lowerTags[k.toLowerCase()] = v;

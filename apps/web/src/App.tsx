@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import {
   Activity,
   BookOpen,
+  ChevronRight,
   Clapperboard,
   Columns2,
   Copy,
+  CornerLeftUp,
   FileText,
+  Folder,
   FolderPlus,
   GitBranch,
   Layers,
@@ -15,6 +18,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  Trash2,
   Upload,
   Youtube,
 } from 'lucide-react';
@@ -25,7 +29,9 @@ import type {
   AssetType,
   CreateProjectInput,
   JobDto,
+  MediaFolderDto,
   ProjectDto,
+  ProjectStatus,
   QualityTier,
   RealtimeEvent,
 } from '@videostudio/shared';
@@ -43,7 +49,12 @@ import { RulesPanel } from './components/RulesPanel';
 import { SkillsPanel } from './components/SkillsPanel';
 import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
-import { copyToClipboard, QUALITY_TIER_LABELS, STATUS_LABELS } from './utils/format';
+import {
+  copyToClipboard,
+  PROJECT_STATUS_LABELS,
+  QUALITY_TIER_LABELS,
+  STATUS_LABELS,
+} from './utils/format';
 
 type WorkspaceMode =
   | 'media'
@@ -61,6 +72,11 @@ export function App() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('media');
   const [assets, setAssets] = useState<AssetDto[]>([]);
+  const [folders, setFolders] = useState<MediaFolderDto[]>([]);
+  const [currentFolderPath, setCurrentFolderPath] = useState('');
+  const [includeSubfolders, setIncludeSubfolders] = useState(false);
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedLineage, setSelectedLineage] = useState<AssetLineage | null>(null);
   const [comparePair, setComparePair] = useState<{ leftId: string | null; rightId: string | null }>({
@@ -123,19 +139,34 @@ export function App() {
     void api.listActivities().then(setActivities).catch(() => undefined);
   }, [showToast]);
 
-  // Load project assets & jobs whenever active project changes
+  const refreshFolders = useCallback(async (projectId: string) => {
+    try {
+      const list = await api.listMediaFolders(projectId);
+      setFolders(list);
+    } catch {
+      setFolders([]);
+    }
+  }, []);
+
+  // Load project assets, folders & jobs whenever active project changes
   useEffect(() => {
     if (!activeProjectId) {
       setAssets([]);
+      setFolders([]);
       setJobs([]);
+      setCurrentFolderPath('');
       return;
     }
+    setCurrentFolderPath('');
+    setShowNewFolderInput(false);
+    setNewFolderName('');
     void api.listAssets(activeProjectId).then(setAssets).catch(() => undefined);
+    void refreshFolders(activeProjectId);
     void api.listJobs(activeProjectId).then(setJobs).catch(() => undefined);
     void api.listActivities(activeProjectId).then(setActivities).catch(() => undefined);
     setSelectedAssetId(null);
     setSelectedLineage(null);
-  }, [activeProjectId]);
+  }, [activeProjectId, refreshFolders]);
 
   // Load lineage when an asset is selected
   useEffect(() => {
@@ -197,6 +228,12 @@ export function App() {
           setAssets((prev) => prev.filter((a) => a.id !== event.payload.id));
           setSelectedAssetId((curr) => (curr === event.payload.id ? null : curr));
           break;
+        case 'folders.changed':
+          if (event.payload.projectId === activeProjectId) {
+            void refreshFolders(event.payload.projectId);
+            void api.listAssets(event.payload.projectId).then(setAssets).catch(() => undefined);
+          }
+          break;
         case 'activity.logged':
           setActivities((prev) => [event.payload, ...prev].slice(0, 100));
           break;
@@ -226,7 +263,7 @@ export function App() {
           break;
       }
     },
-    [activeProjectId, showToast],
+    [activeProjectId, refreshFolders, showToast],
   );
 
   const { connected } = useRealtimeEvents(handleRealtimeEvent);
@@ -241,9 +278,38 @@ export function App() {
     [assets, selectedAssetId],
   );
 
+  const childFolders = useMemo(() => {
+    return folders
+      .filter((f) => f.parentPath === currentFolderPath)
+      .map((f) => {
+        const totalRecursiveCount = assets.filter(
+          (a) => a.folderPath === f.path || a.folderPath.startsWith(`${f.path}/`),
+        ).length;
+        return { ...f, totalRecursiveCount };
+      });
+  }, [folders, currentFolderPath, assets]);
+
+  const breadcrumbSegments = useMemo(() => {
+    if (!currentFolderPath) return [];
+    const parts = currentFolderPath.split('/');
+    return parts.map((name, idx) => ({
+      name,
+      path: parts.slice(0, idx + 1).join('/'),
+    }));
+  }, [currentFolderPath]);
+
   const filteredAssets = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return assets.filter((asset) => {
+      if (!includeSubfolders) {
+        if (asset.folderPath !== currentFolderPath) return false;
+      } else if (currentFolderPath) {
+        const inTree =
+          asset.folderPath === currentFolderPath ||
+          asset.folderPath.startsWith(`${currentFolderPath}/`);
+        if (!inTree) return false;
+      }
+
       if (typeFilter !== 'all' && asset.type !== typeFilter) return false;
       if (tierFilter !== 'all' && asset.qualityTier !== tierFilter) return false;
       if (statusFilter !== 'all' && asset.status !== statusFilter) return false;
@@ -252,6 +318,7 @@ export function App() {
           asset.title,
           asset.refCode,
           asset.handle,
+          asset.folderPath,
           asset.promptUsed ?? '',
           asset.notes,
           asset.tags.join(' '),
@@ -262,7 +329,15 @@ export function App() {
       }
       return true;
     });
-  }, [assets, typeFilter, tierFilter, statusFilter, searchQuery]);
+  }, [
+    assets,
+    currentFolderPath,
+    includeSubfolders,
+    typeFilter,
+    tierFilter,
+    statusFilter,
+    searchQuery,
+  ]);
 
   const runningJobs = useMemo(
     () => jobs.filter((j) => j.status === 'pending' || j.status === 'running'),
@@ -276,6 +351,58 @@ export function App() {
     showToast(`Projet "${created.name}" créé`);
   };
 
+  const handleProjectStatusChange = async (status: ProjectStatus) => {
+    if (!activeProject) return;
+    try {
+      const updated = await api.updateProject(activeProject.id, { status });
+      setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+      showToast(`Statut projet : ${PROJECT_STATUS_LABELS[status]}`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erreur mise à jour statut');
+    }
+  };
+
+  const handleCreateFolder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!activeProjectId || !newFolderName.trim()) return;
+    const raw = newFolderName.trim().replace(/^\/+|\/+$/g, '');
+    const fullPath = currentFolderPath ? `${currentFolderPath}/${raw}` : raw;
+    try {
+      const created = await api.createMediaFolder(activeProjectId, fullPath);
+      await refreshFolders(activeProjectId);
+      setNewFolderName('');
+      setShowNewFolderInput(false);
+      showToast(`Dossier /${created.path} créé`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Nom de dossier invalide');
+    }
+  };
+
+  const handleDeleteFolder = async (folderPath: string) => {
+    if (!activeProjectId) return;
+    if (
+      !window.confirm(
+        `Supprimer le dossier /${folderPath} ? Les médias à l'intérieur ne seront PAS supprimés mais déplacés vers le dossier parent.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteMediaFolder(activeProjectId, folderPath);
+      await Promise.all([
+        refreshFolders(activeProjectId),
+        api.listAssets(activeProjectId).then(setAssets),
+      ]);
+      if (currentFolderPath === folderPath || currentFolderPath.startsWith(`${folderPath}/`)) {
+        const parts = folderPath.split('/');
+        setCurrentFolderPath(parts.slice(0, -1).join('/'));
+      }
+      showToast(`Dossier /${folderPath} supprimé (médias conservés)`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erreur suppression dossier');
+    }
+  };
+
   const handleUploadFiles = async (files: FileList | File[]) => {
     if (!activeProjectId) return;
     const list = Array.from(files);
@@ -284,11 +411,15 @@ export function App() {
     setUploading(true);
     try {
       for (const file of list) {
-        const uploaded = await api.uploadAssetFile(activeProjectId, file);
+        const uploaded = await api.uploadAssetFile(activeProjectId, file, {
+          folderPath: currentFolderPath || undefined,
+        });
         setSelectedAssetId(uploaded.id);
         setRightTab('inspector');
       }
-      showToast(`${list.length} fichier(s) importé(s)`);
+      showToast(
+        `${list.length} fichier(s) importé(s)${currentFolderPath ? ` dans /${currentFolderPath}` : ''}`,
+      );
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Erreur d'import");
     } finally {
@@ -320,7 +451,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.3 · MCP · LAN</div>
+              <div className="brand-sub">v0.3.1 · MCP · LAN</div>
             </div>
           </div>
 
@@ -404,6 +535,7 @@ export function App() {
             <Upload size={34} color="var(--accent-amber)" />
             <div style={{ fontSize: 15, fontWeight: 600 }}>
               Dépose tes images, vidéos ou sons ici
+              {currentFolderPath ? ` (dans /${currentFolderPath})` : ''}
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
               Les métadonnées ComfyUI et vignettes seront extraites automatiquement
@@ -426,6 +558,18 @@ export function App() {
                   >
                     <Copy size={11} /> @proj-{activeProject.slug}
                   </button>
+                  <select
+                    aria-label="Statut du projet"
+                    className="select-compact"
+                    value={activeProject.status}
+                    onChange={(e) => void handleProjectStatusChange(e.target.value as ProjectStatus)}
+                  >
+                    {(Object.keys(PROJECT_STATUS_LABELS) as ProjectStatus[]).map((st) => (
+                      <option key={st} value={st}>
+                        {PROJECT_STATUS_LABELS[st]}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="workspace-subtitle">
                   <span>{activeProject.aspectRatio}</span>
@@ -455,7 +599,12 @@ export function App() {
                   disabled={uploading}
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <Upload size={14} /> {uploading ? 'Import...' : 'Importer média'}
+                  <Upload size={14} />{' '}
+                  {uploading
+                    ? 'Import...'
+                    : currentFolderPath
+                      ? `Importer dans /${currentFolderPath.split('/').pop()}`
+                      : 'Importer média'}
                 </button>
               </div>
             </>
@@ -618,6 +767,98 @@ export function App() {
               </div>
             )}
 
+            {activeProject && (
+              <div className="folder-bar">
+                <div className="folder-breadcrumbs" aria-label="Chemin du dossier média">
+                  <button
+                    type="button"
+                    className={`breadcrumb-btn ${currentFolderPath === '' ? 'current' : ''}`}
+                    onClick={() => setCurrentFolderPath('')}
+                  >
+                    <Folder size={13} /> Racine
+                  </button>
+                  {breadcrumbSegments.map((seg, idx) => (
+                    <span
+                      key={seg.path}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                    >
+                      <ChevronRight size={13} color="var(--text-muted)" />
+                      <button
+                        type="button"
+                        className={`breadcrumb-btn ${
+                          idx === breadcrumbSegments.length - 1 ? 'current' : ''
+                        }`}
+                        onClick={() => setCurrentFolderPath(seg.path)}
+                      >
+                        {seg.name}
+                      </button>
+                    </span>
+                  ))}
+                  {currentFolderPath && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      title="Remonter au dossier parent"
+                      onClick={() => {
+                        const parts = currentFolderPath.split('/');
+                        setCurrentFolderPath(parts.slice(0, -1).join('/'));
+                      }}
+                    >
+                      <CornerLeftUp size={13} /> Parent
+                    </button>
+                  )}
+                </div>
+
+                <div className="folder-actions">
+                  <button
+                    type="button"
+                    className={`chip ${includeSubfolders ? 'active' : ''}`}
+                    onClick={() => setIncludeSubfolders((v) => !v)}
+                    title="Afficher aussi les médias contenus dans les sous-dossiers"
+                  >
+                    {includeSubfolders ? 'Vue à plat (sous-dossiers inclus)' : 'Inclure sous-dossiers'}
+                  </button>
+
+                  {showNewFolderInput ? (
+                    <form
+                      className="folder-inline-form"
+                      onSubmit={(e) => void handleCreateFolder(e)}
+                    >
+                      <input
+                        className="input"
+                        style={{ height: 28, width: 185, padding: '2px 8px', fontSize: 12.5 }}
+                        autoFocus
+                        value={newFolderName}
+                        onChange={(e) => setNewFolderName(e.target.value)}
+                        placeholder="ex: personnages ou sc01/drafts"
+                      />
+                      <button type="submit" className="btn btn-primary btn-sm">
+                        Créer
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => {
+                          setShowNewFolderInput(false);
+                          setNewFolderName('');
+                        }}
+                      >
+                        Annuler
+                      </button>
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setShowNewFolderInput(true)}
+                    >
+                      <FolderPlus size={13} /> Nouveau dossier
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             <section className="gallery-scroll">
               {!activeProject ? (
                 <div className="empty-state">
@@ -635,38 +876,105 @@ export function App() {
                     <FolderPlus size={15} /> Créer un projet
                   </button>
                 </div>
-              ) : filteredAssets.length === 0 ? (
-                <div className="empty-state">
-                  <Upload size={34} color="var(--text-muted)" />
-                  <h2>Aucun média dans cette vue</h2>
-                  <p>
-                    Glisse-dépose des fichiers ici ou demande à Claude Code d'enregistrer une
-                    génération ComfyUI via <code>register_asset</code> sur{' '}
-                    <code>@proj-{activeProject.slug}</code>.
-                  </p>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload size={14} /> Importer un fichier
-                  </button>
-                </div>
               ) : (
-                <div className="gallery-grid">
-                  {filteredAssets.map((asset) => (
-                    <AssetCard
-                      key={asset.id}
-                      asset={asset}
-                      selected={asset.id === selectedAssetId}
-                      onSelect={(item) => {
-                        setSelectedAssetId(item.id);
-                        setRightTab('inspector');
-                      }}
-                      onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
-                    />
-                  ))}
-                </div>
+                <>
+                  {!includeSubfolders && childFolders.length > 0 && (
+                    <div className="folder-grid" aria-label="Sous-dossiers">
+                      {childFolders.map((folder) => (
+                        <div
+                          key={folder.path}
+                          className="folder-card"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setCurrentFolderPath(folder.path)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setCurrentFolderPath(folder.path);
+                            }
+                          }}
+                        >
+                          <div className="folder-card-main">
+                            <Folder size={17} color="var(--accent-amber)" />
+                            <div style={{ minWidth: 0 }}>
+                              <div className="folder-card-name" title={folder.path}>
+                                {folder.name}
+                              </div>
+                              <div className="folder-card-count">
+                                {folder.totalRecursiveCount} média(s)
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            title={`Supprimer le dossier /${folder.path} (les médias remontent au parent)`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDeleteFolder(folder.path);
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {filteredAssets.length === 0 ? (
+                    <div className="empty-state">
+                      <Upload size={34} color="var(--text-muted)" />
+                      <h2>
+                        {currentFolderPath
+                          ? `Aucun média dans /${currentFolderPath}`
+                          : 'Aucun média dans cette vue'}
+                      </h2>
+                      <p>
+                        Glisse-dépose des fichiers ici ou demande à Claude Code d'enregistrer une
+                        génération ComfyUI via <code>register_asset</code> sur{' '}
+                        <code>@proj-{activeProject.slug}</code>
+                        {currentFolderPath ? (
+                          <>
+                            {' '}
+                            (<code>folderPath: "{currentFolderPath}"</code>)
+                          </>
+                        ) : null}
+                        .
+                      </p>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          <Upload size={14} /> Importer un fichier
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => setShowNewFolderInput(true)}
+                        >
+                          <FolderPlus size={14} /> Créer un sous-dossier
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="gallery-grid">
+                      {filteredAssets.map((asset) => (
+                        <AssetCard
+                          key={asset.id}
+                          asset={asset}
+                          selected={asset.id === selectedAssetId}
+                          onSelect={(item) => {
+                            setSelectedAssetId(item.id);
+                            setRightTab('inspector');
+                          }}
+                          onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </section>
           </>
@@ -770,10 +1078,14 @@ export function App() {
             <AssetInspector
               asset={selectedAsset}
               lineage={selectedLineage}
+              folders={folders}
               annotationRefreshSignal={annotationRefresh}
               onUpdate={async (id, patch) => {
                 const updated = await api.updateAsset(id, patch);
                 setAssets((prev) => prev.map((a) => (a.id === id ? updated : a)));
+                if (patch.folderPath !== undefined && activeProjectId) {
+                  void refreshFolders(activeProjectId);
+                }
                 showToast(`Mis à jour ${updated.handle}`);
               }}
               onDelete={async (id) => {

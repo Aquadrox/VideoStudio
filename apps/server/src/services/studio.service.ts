@@ -3,6 +3,8 @@ import {
   buildAssetHandle,
   buildStudioUri,
   formatAssetRefCode,
+  getParentFolderPath,
+  normalizeFolderPath,
   parseStudioRef,
   slugifyProjectName,
   type ActivityDto,
@@ -13,10 +15,12 @@ import {
   type CreateProjectInput,
   type JobDto,
   type JobStatus,
+  type MediaFolderDto,
   type ProjectDto,
   type ProjectStatus,
   type ProjectType,
   type QualityTier,
+  type StorageMode,
   type UpdateAssetInput,
   type UpdateProjectInput,
 } from '@videostudio/shared';
@@ -25,6 +29,7 @@ import {
   activities,
   assets,
   jobs,
+  mediaFolders,
   projectRulebookLinks,
   projects,
   rulebooks,
@@ -38,6 +43,8 @@ export interface ListAssetsFilter {
   type?: AssetType;
   status?: AssetStatus;
   qualityTier?: QualityTier;
+  folderPath?: string;
+  recursive?: boolean;
   tag?: string;
   search?: string;
   limit?: number;
@@ -202,6 +209,135 @@ export class StudioService {
     return true;
   }
 
+  // --- Media Folders ---
+
+  async listMediaFolders(projectIdOrSlug: string): Promise<MediaFolderDto[]> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return [];
+
+    const [explicitRows, assetRows] = await Promise.all([
+      this.db
+        .select({ path: mediaFolders.path })
+        .from(mediaFolders)
+        .where(eq(mediaFolders.projectId, project.id)),
+      this.db
+        .select({ folderPath: assets.folderPath })
+        .from(assets)
+        .where(eq(assets.projectId, project.id)),
+    ]);
+
+    const folderSet = new Set<string>();
+    const addWithAncestors = (raw: string) => {
+      const norm = normalizeFolderPath(raw);
+      if (!norm) return;
+      const parts = norm.split('/');
+      for (let i = 1; i <= parts.length; i += 1) {
+        folderSet.add(parts.slice(0, i).join('/'));
+      }
+    };
+
+    for (const r of explicitRows) addWithAncestors(r.path);
+    for (const a of assetRows) addWithAncestors(a.folderPath);
+
+    const counts = new Map<string, number>();
+    for (const a of assetRows) {
+      const norm = normalizeFolderPath(a.folderPath);
+      if (!norm) continue;
+      counts.set(norm, (counts.get(norm) ?? 0) + 1);
+    }
+
+    return Array.from(folderSet)
+      .sort((a, b) => a.localeCompare(b))
+      .map((fullPath) => {
+        const parts = fullPath.split('/');
+        return {
+          path: fullPath,
+          name: parts[parts.length - 1] ?? fullPath,
+          parentPath: getParentFolderPath(fullPath),
+          assetCount: counts.get(fullPath) ?? 0,
+        };
+      });
+  }
+
+  async createMediaFolder(
+    projectIdOrSlug: string,
+    rawPath: string,
+    actor: Actor = 'user',
+  ): Promise<MediaFolderDto | null> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const norm = normalizeFolderPath(rawPath);
+    if (!norm) {
+      throw new Error('Folder path cannot be empty');
+    }
+
+    const parts = norm.split('/');
+    for (let i = 1; i <= parts.length; i += 1) {
+      const ancestor = parts.slice(0, i).join('/');
+      await this.db
+        .insert(mediaFolders)
+        .values({ projectId: project.id, path: ancestor })
+        .onConflictDoNothing();
+    }
+
+    this.realtime.broadcast({ type: 'folders.changed', payload: { projectId: project.id } });
+    await this.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'folder.created',
+      summary: `Dossier média créé : /${norm}`,
+      entityType: 'folder',
+      entityRef: norm,
+    });
+
+    return {
+      path: norm,
+      name: parts[parts.length - 1] ?? norm,
+      parentPath: getParentFolderPath(norm),
+      assetCount: 0,
+    };
+  }
+
+  async deleteMediaFolder(projectIdOrSlug: string, rawPath: string): Promise<boolean> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return false;
+
+    const norm = normalizeFolderPath(rawPath);
+    if (!norm) return false;
+    const parent = getParentFolderPath(norm);
+
+    // Non-destructive: move any assets inside this folder (or subfolders) up to parent
+    const projectAssets = await this.db
+      .select({ id: assets.id, folderPath: assets.folderPath })
+      .from(assets)
+      .where(eq(assets.projectId, project.id));
+
+    for (const a of projectAssets) {
+      if (a.folderPath === norm || a.folderPath.startsWith(`${norm}/`)) {
+        await this.db
+          .update(assets)
+          .set({ folderPath: parent, updatedAt: new Date() })
+          .where(eq(assets.id, a.id));
+      }
+    }
+
+    const existingFolders = await this.db
+      .select({ id: mediaFolders.id, path: mediaFolders.path })
+      .from(mediaFolders)
+      .where(eq(mediaFolders.projectId, project.id));
+
+    for (const f of existingFolders) {
+      if (f.path === norm || f.path.startsWith(`${norm}/`)) {
+        await this.db.delete(mediaFolders).where(eq(mediaFolders.id, f.id));
+      }
+    }
+
+    this.realtime.broadcast({ type: 'folders.changed', payload: { projectId: project.id } });
+    return true;
+  }
+
   // --- Assets ---
 
   async listAssets(projectIdOrSlug: string, filter: ListAssetsFilter = {}): Promise<AssetDto[]> {
@@ -212,6 +348,9 @@ export class StudioService {
     if (filter.type) conditions.push(eq(assets.type, filter.type));
     if (filter.status) conditions.push(eq(assets.status, filter.status));
     if (filter.qualityTier) conditions.push(eq(assets.qualityTier, filter.qualityTier));
+    if (filter.folderPath !== undefined && !filter.recursive) {
+      conditions.push(eq(assets.folderPath, normalizeFolderPath(filter.folderPath)));
+    }
     if (filter.search) {
       const pattern = `%${filter.search.trim()}%`;
       const searchCond = or(
@@ -231,6 +370,14 @@ export class StudioService {
       .limit(filter.limit ?? 200);
 
     let mapped = rows.map((row) => this.toAssetDto(row, project.slug));
+    if (filter.folderPath !== undefined && filter.recursive) {
+      const prefix = normalizeFolderPath(filter.folderPath);
+      if (prefix) {
+        mapped = mapped.filter(
+          (a) => a.folderPath === prefix || a.folderPath.startsWith(`${prefix}/`),
+        );
+      }
+    }
     if (filter.tag) {
       const targetTag = filter.tag.toLowerCase();
       mapped = mapped.filter((a) => a.tags.some((t) => t.toLowerCase() === targetTag));
@@ -263,6 +410,10 @@ export class StudioService {
     filename: string;
     mimeType?: string;
     explicitType?: AssetType;
+    storageMode?: StorageMode;
+    sourceLocalAbsPath?: string;
+    ingestRelativePath?: string;
+    folderPath?: string;
     title?: string;
     qualityTier?: QualityTier;
     status?: AssetStatus;
@@ -281,12 +432,26 @@ export class StudioService {
       throw new Error(`Project not found: ${params.projectIdOrSlug}`);
     }
 
+    const folderPath = normalizeFolderPath(params.folderPath ?? '');
+    if (folderPath) {
+      const parts = folderPath.split('/');
+      for (let i = 1; i <= parts.length; i += 1) {
+        await this.db
+          .insert(mediaFolders)
+          .values({ projectId: project.id, path: parts.slice(0, i).join('/') })
+          .onConflictDoNothing();
+      }
+    }
+
     const processed = await this.media.storeAndProcessMedia({
       projectSlug: project.slug,
       buffer: params.buffer,
       filename: params.filename,
       mimeType: params.mimeType,
       explicitType: params.explicitType,
+      storageMode: params.storageMode,
+      sourceLocalAbsPath: params.sourceLocalAbsPath,
+      ingestRelativePath: params.ingestRelativePath,
     });
 
     // Resolve optional parent asset (for version stacking & Draft -> HQ linking)
@@ -324,6 +489,7 @@ export class StudioService {
       .values({
         projectId: project.id,
         refCode,
+        folderPath,
         title,
         type: processed.type,
         status: params.status ?? 'new',
@@ -363,6 +529,9 @@ export class StudioService {
 
     const dto = this.toAssetDto(created, project.slug);
     this.realtime.broadcast({ type: 'asset.created', payload: dto });
+    if (folderPath) {
+      this.realtime.broadcast({ type: 'folders.changed', payload: { projectId: project.id } });
+    }
 
     const actor = params.createdBy ?? 'claude';
     await this.logActivity({
@@ -370,12 +539,13 @@ export class StudioService {
       projectSlug: project.slug,
       actor,
       action: 'asset.created',
-      summary: `${dto.type.toUpperCase()} ajouté : ${dto.title} (${dto.handle})`,
+      summary: `${dto.type.toUpperCase()} ajouté : ${dto.title} (${dto.handle})${folderPath ? ` dans /${folderPath}` : ''}`,
       entityType: 'asset',
       entityId: dto.id,
       entityRef: dto.handle,
       metadata: {
         qualityTier: dto.qualityTier,
+        folderPath,
         hasComfyMetadata: Boolean(dto.comfyMetadata),
         versionNumber: dto.versionNumber,
       },
@@ -392,10 +562,24 @@ export class StudioService {
     const existing = await this.getAssetById(assetId);
     if (!existing) return null;
 
+    const normalizedFolder =
+      input.folderPath !== undefined ? normalizeFolderPath(input.folderPath) : undefined;
+
+    if (normalizedFolder) {
+      const parts = normalizedFolder.split('/');
+      for (let i = 1; i <= parts.length; i += 1) {
+        await this.db
+          .insert(mediaFolders)
+          .values({ projectId: existing.asset.projectId, path: parts.slice(0, i).join('/') })
+          .onConflictDoNothing();
+      }
+    }
+
     const [updated] = await this.db
       .update(assets)
       .set({
         ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(normalizedFolder !== undefined ? { folderPath: normalizedFolder } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.qualityTier !== undefined ? { qualityTier: input.qualityTier } : {}),
         ...(input.rating !== undefined ? { rating: input.rating } : {}),
@@ -413,6 +597,12 @@ export class StudioService {
 
     const dto = this.toAssetDto(updated, existing.asset.projectSlug);
     this.realtime.broadcast({ type: 'asset.updated', payload: dto });
+    if (normalizedFolder !== undefined) {
+      this.realtime.broadcast({
+        type: 'folders.changed',
+        payload: { projectId: dto.projectId },
+      });
+    }
 
     await this.logActivity({
       projectId: dto.projectId,
@@ -820,6 +1010,7 @@ export class StudioService {
       refCode: row.refCode,
       handle: buildAssetHandle(row.refCode),
       uri: buildStudioUri(projectSlug, 'asset', row.refCode),
+      folderPath: row.folderPath ?? '',
       title: row.title,
       type: row.type as AssetType,
       status: row.status as AssetStatus,

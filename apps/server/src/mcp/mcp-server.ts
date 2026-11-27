@@ -8,6 +8,7 @@ import {
   BibleEntityTypeSchema,
   ComfyWorkflowCategorySchema,
   JobStatusSchema,
+  ProjectStatusSchema,
   ProjectTypeSchema,
   PromptCategorySchema,
   QualityTierSchema,
@@ -15,6 +16,7 @@ import {
   RuleSeveritySchema,
   ShotStatusSchema,
   SkillScopeSchema,
+  StorageModeSchema,
   YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
@@ -30,7 +32,7 @@ export function createVideoStudioMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.3.0',
+    version: '0.3.1',
   });
 
   // --- MCP Resources ---
@@ -183,6 +185,47 @@ export function createVideoStudioMcpServer(
   );
 
   server.tool(
+    'update_project',
+    'Update a project status (pre_production, production, editing, youtube_ready, published, archived) or metadata (name, description, type, aspectRatio, fps, targetResolution).',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      name: z.string().min(1).max(120).optional(),
+      description: z.string().optional(),
+      type: ProjectTypeSchema.optional(),
+      aspectRatio: z.string().optional(),
+      fps: z.number().int().min(1).max(120).optional(),
+      targetResolution: z.string().optional(),
+      status: ProjectStatusSchema.optional().describe(
+        'pre_production, production, editing, youtube_ready, published, or archived',
+      ),
+    },
+    async (args) => {
+      const updated = await studio.updateProject(
+        args.project,
+        {
+          name: args.name,
+          description: args.description,
+          type: args.type,
+          aspectRatio: args.aspectRatio,
+          fps: args.fps,
+          targetResolution: args.targetResolution,
+          status: args.status,
+        },
+        'claude',
+      );
+      if (!updated) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Project not found: ${args.project}` }],
+        };
+      }
+      return {
+        content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
     'get_project_overview',
     'Get detailed overview, recent assets, and live jobs for a project by slug or UUID.',
     {
@@ -218,7 +261,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'register_asset',
-    'Ingest an image, video, audio, or document into a VideoStudio project (from a LAN ComfyUI URL, base64 payload, or mounted ingest path). Automatically extracts ComfyUI PNG/MP4 metadata, generates thumbnails/proxies, links parent versions, and updates the Web UI in real time.',
+    'Ingest an image, video, audio, or document into a VideoStudio project (from a LAN ComfyUI URL, base64 payload, or mounted ingest path). Supports storageMode="reference" for zero-copy streaming from INGEST_ALLOWED_DIR without duplicating files in data/, folderPath for subfolder organization, and automatic ComfyUI PNG/MP4 metadata extraction (including Qwen-Image-Edit nodes).',
     {
       project: z.string().min(1).describe('Target project slug or UUID'),
       sourceUrl: z
@@ -234,6 +277,13 @@ export function createVideoStudioMcpServer(
         .string()
         .optional()
         .describe('Relative path inside the mounted INGEST_ALLOWED_DIR'),
+      storageMode: StorageModeSchema.optional().describe(
+        'copy (default: copies into data/), hardlink (hard link if same filesystem, fallback copy), or reference (zero-copy direct read from mounted INGEST_ALLOWED_DIR, only thumbnails/proxies stored in data/)',
+      ),
+      folderPath: z
+        .string()
+        .optional()
+        .describe('Optional subfolder inside the project media library (e.g. "characters/elena" or "scenes/sc01")'),
       filename: z.string().optional().describe('Original filename with extension (e.g. hero_01.png)'),
       mimeType: z.string().optional().describe('Optional MIME type override'),
       type: AssetTypeSchema.optional().describe('Optional explicit asset type (image, video, audio, document)'),
@@ -268,6 +318,8 @@ export function createVideoStudioMcpServer(
         let buffer: Buffer;
         let filename = args.filename ?? 'asset.bin';
         let mimeType = args.mimeType;
+        let sourceLocalAbsPath: string | undefined;
+        let ingestRelativePath: string | undefined;
 
         if (args.sourceUrl) {
           const fetched = await media.fetchFromUrl(args.sourceUrl);
@@ -279,6 +331,8 @@ export function createVideoStudioMcpServer(
           buffer = loaded.buffer;
           filename = args.filename ?? loaded.filename;
           mimeType = args.mimeType ?? loaded.mimeType;
+          sourceLocalAbsPath = loaded.resolvedAbsPath;
+          ingestRelativePath = loaded.ingestRelativePath;
         } else {
           const cleaned = (args.base64Data ?? '').replace(/^data:[^;]+;base64,/, '');
           buffer = Buffer.from(cleaned, 'base64');
@@ -290,6 +344,10 @@ export function createVideoStudioMcpServer(
           filename,
           mimeType,
           explicitType: args.type,
+          storageMode: args.storageMode,
+          sourceLocalAbsPath,
+          ingestRelativePath,
+          folderPath: args.folderPath,
           title: args.title,
           qualityTier: args.qualityTier,
           status: args.status,
@@ -318,12 +376,20 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'list_assets',
-    'List and filter assets inside a VideoStudio project.',
+    'List and filter assets inside a VideoStudio project (optionally scoped to a subfolder).',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       type: AssetTypeSchema.optional(),
       status: AssetStatusSchema.optional(),
       qualityTier: QualityTierSchema.optional(),
+      folderPath: z
+        .string()
+        .optional()
+        .describe('Optional subfolder path ("" for root, or "characters/elena")'),
+      recursive: z
+        .boolean()
+        .optional()
+        .describe('If true and folderPath is set, include nested subfolders'),
       tag: z.string().optional(),
       search: z.string().optional(),
       limit: z.number().int().min(1).max(200).optional(),
@@ -333,6 +399,8 @@ export function createVideoStudioMcpServer(
         type: args.type,
         status: args.status,
         qualityTier: args.qualityTier,
+        folderPath: args.folderPath,
+        recursive: args.recursive,
         tag: args.tag,
         search: args.search,
         limit: args.limit,
@@ -345,11 +413,15 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'update_asset',
-    'Update metadata, status, quality tier, rating, notes, or tags of an existing asset by reference (@img-001) or UUID.',
+    'Update metadata, folderPath, status, quality tier, rating, notes, or tags of an existing asset by reference (@img-001) or UUID.',
     {
       ref: z.string().min(1).describe('Asset reference (@img-001, slug/img-001, studio://...) or UUID'),
       project: z.string().optional().describe('Optional project slug to disambiguate short @ref'),
       title: z.string().optional(),
+      folderPath: z
+        .string()
+        .optional()
+        .describe('Move asset to another subfolder (use "" to move back to root)'),
       status: AssetStatusSchema.optional(),
       qualityTier: QualityTierSchema.optional(),
       rating: z.number().int().min(0).max(5).optional(),
@@ -369,6 +441,7 @@ export function createVideoStudioMcpServer(
         resolved.asset.id,
         {
           title: args.title,
+          folderPath: args.folderPath,
           status: args.status,
           qualityTier: args.qualityTier,
           rating: args.rating,
@@ -381,6 +454,57 @@ export function createVideoStudioMcpServer(
       return {
         content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
       };
+    },
+  );
+
+  server.tool(
+    'list_media_folders',
+    'List all media subfolders inside a project with their hierarchy and direct asset counts.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+    },
+    async ({ project }) => {
+      const folders = await studio.listMediaFolders(project);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(folders, null, 2) }],
+      };
+    },
+  );
+
+  server.tool(
+    'create_media_folder',
+    'Create a new media subfolder (and any missing parent folders) inside a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      path: z
+        .string()
+        .min(1)
+        .max(200)
+        .describe('Subfolder path (e.g. "characters/elena" or "scenes/sc01/drafts")'),
+    },
+    async ({ project, path }) => {
+      try {
+        const created = await studio.createMediaFolder(project, path, 'claude');
+        if (!created) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Project not found: ${project}` }],
+          };
+        }
+        return {
+          content: [{ type: 'text', text: JSON.stringify(created, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: err instanceof Error ? err.message : 'Failed to create folder',
+            },
+          ],
+        };
+      }
     },
   );
 
@@ -610,12 +734,16 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'get_active_rules',
-    'Get the fully resolved ruleset for a project (combining global rulebooks, per-project overrides like 5 fingers vs 4 fingers, and custom project rules) plus compiled positive/negative prompt fragments. ALWAYS call this before generating media for a project.',
+    'Get the fully resolved ruleset for a project (combining global rulebooks, per-project overrides like 5 fingers vs 4 fingers, and custom project rules) plus compiled positive/negative prompt fragments. Pass optional `tags` (e.g. ["elena"]) to compile fragments scoped to a specific character/scene; rules with `autoInject: false` remain informative-only.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe('Optional context tags (e.g. ["elena"] or ["caspian"]) to filter tag-scoped rule fragments'),
     },
-    async ({ project }) => {
-      const bundle = await stage2.getResolvedProjectRules(project);
+    async ({ project, tags }) => {
+      const bundle = await stage2.getResolvedProjectRules(project, tags);
       if (!bundle) {
         return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
       }
@@ -635,7 +763,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'set_project_rule_override',
-    'Override a global rule specifically for one project (e.g. changing hands-fingers from 5 fingers to 4 fingers for a cartoon project, or disabling a rule).',
+    'Override any rule (global rulebook rule OR project custom rule) for one project — e.g. changing hands-fingers from 5 to 4, setting autoInjectOverride=false for informative-only guidance, scoping appliesToTagsOverride=["elena"], or disabling a rule.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       ruleId: z.string().uuid().describe('Rule UUID from get_active_rules or list_rulebooks'),
@@ -645,6 +773,16 @@ export function createVideoStudioMcpServer(
       instructionOverride: z.string().nullable().optional(),
       positiveFragmentOverride: z.string().nullable().optional(),
       negativeFragmentOverride: z.string().nullable().optional(),
+      autoInjectOverride: z
+        .boolean()
+        .nullable()
+        .optional()
+        .describe('Set false to make the rule informative-only (never auto-injected into prompts)'),
+      appliesToTagsOverride: z
+        .array(z.string())
+        .nullable()
+        .optional()
+        .describe('Restrict auto-injection to prompts matching one of these tags (empty [] = global)'),
     },
     async (args) => {
       const bundle = await stage2.upsertProjectRuleOverride(
@@ -657,6 +795,8 @@ export function createVideoStudioMcpServer(
           instructionOverride: args.instructionOverride,
           positiveFragmentOverride: args.positiveFragmentOverride,
           negativeFragmentOverride: args.negativeFragmentOverride,
+          autoInjectOverride: args.autoInjectOverride,
+          appliesToTagsOverride: args.appliesToTagsOverride,
         },
         'claude',
       );
@@ -669,7 +809,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'add_project_custom_rule',
-    'Add a project-specific custom rule that applies only to this project.',
+    'Add a project-specific custom rule that applies only to this project. Set autoInject=false for informative-only rules, or appliesToTags=["character"] to scope prompt fragment injection.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       code: z.string().regex(/^[a-z0-9-_]+$/).describe('Short machine code (e.g. noir-palette)'),
@@ -680,6 +820,14 @@ export function createVideoStudioMcpServer(
       instruction: z.string().min(1),
       positiveFragment: z.string().default(''),
       negativeFragment: z.string().default(''),
+      autoInject: z
+        .boolean()
+        .default(true)
+        .describe('If false, the rule is informative-only and its fragments are NOT auto-injected into prompts'),
+      appliesToTags: z
+        .array(z.string())
+        .default([])
+        .describe('Optional tags (e.g. ["elena"]) restricting auto-injection to matching prompts; empty = all prompts'),
     },
     async (args) => {
       const created = await stage2.addProjectCustomRule(
@@ -693,6 +841,8 @@ export function createVideoStudioMcpServer(
           instruction: args.instruction,
           positiveFragment: args.positiveFragment,
           negativeFragment: args.negativeFragment,
+          autoInject: args.autoInject,
+          appliesToTags: args.appliesToTags,
           enabled: true,
           sortOrder: 50,
         },
@@ -702,6 +852,61 @@ export function createVideoStudioMcpServer(
         return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
       }
       return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'update_rule',
+    'Directly edit an existing rule (project custom rule or rulebook rule) by UUID — including instruction, positive/negative fragments, autoInject, appliesToTags, severity, or enabled flag.',
+    {
+      ruleId: z.string().uuid().describe('Rule UUID from get_active_rules or list_rulebooks'),
+      code: z.string().regex(/^[a-z0-9-_]+$/).optional(),
+      title: z.string().min(1).optional(),
+      category: RuleCategorySchema.optional(),
+      severity: RuleSeveritySchema.optional(),
+      defaultValue: z.string().optional(),
+      instruction: z.string().min(1).optional(),
+      positiveFragment: z.string().optional(),
+      negativeFragment: z.string().optional(),
+      autoInject: z.boolean().optional(),
+      appliesToTags: z.array(z.string()).optional(),
+      enabled: z.boolean().optional(),
+      sortOrder: z.number().int().min(0).max(9999).optional(),
+    },
+    async (args) => {
+      const updated = await stage2.updateRule(args.ruleId, {
+        code: args.code,
+        title: args.title,
+        category: args.category,
+        severity: args.severity,
+        defaultValue: args.defaultValue,
+        instruction: args.instruction,
+        positiveFragment: args.positiveFragment,
+        negativeFragment: args.negativeFragment,
+        autoInject: args.autoInject,
+        appliesToTags: args.appliesToTags,
+        enabled: args.enabled,
+        sortOrder: args.sortOrder,
+      });
+      if (!updated) {
+        return { isError: true, content: [{ type: 'text', text: `Rule not found: ${args.ruleId}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'delete_rule',
+    'Delete a rule (such as a project-specific custom rule) by UUID.',
+    {
+      ruleId: z.string().uuid().describe('Rule UUID to delete'),
+    },
+    async ({ ruleId }) => {
+      const deleted = await stage2.deleteRule(ruleId);
+      if (!deleted) {
+        return { isError: true, content: [{ type: 'text', text: `Rule not found: ${ruleId}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, ruleId }) }] };
     },
   );
 
@@ -751,12 +956,16 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'render_prompt_with_rules',
-    'Render a reusable prompt template by filling {{variables}} and automatically injecting the active positive/negative prompt fragments from a project ruleset.',
+    'Render a reusable prompt template by filling {{variables}} and automatically injecting eligible positive/negative fragments from a project ruleset (honoring autoInject and appliesToTags).',
     {
       template: z.string().min(1).describe('Prompt template slug or UUID'),
       project: z.string().optional().describe('Optional project slug/UUID to inject active project rules'),
       variables: z.record(z.string()).optional().describe('Key-value map for {{variables}}'),
       includeProjectRules: z.boolean().default(true),
+      tags: z
+        .array(z.string())
+        .optional()
+        .describe('Optional subject/character tags (e.g. ["elena"] or ["caspian"]) to activate matching tag-scoped rules'),
     },
     async (args) => {
       const rendered = await stage2.renderPromptWithProjectRules({
@@ -764,6 +973,7 @@ export function createVideoStudioMcpServer(
         projectIdOrSlug: args.project,
         variables: args.variables,
         includeProjectRules: args.includeProjectRules,
+        tags: args.tags,
       });
       if (!rendered) {
         return { isError: true, content: [{ type: 'text', text: `Prompt template not found: ${args.template}` }] };

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-27
+
+### Fixed
+- **Per-Project Custom Rule Overrides (`packages/shared/src/rules-engine.ts`, Closes #10)**: Fixed `resolveProjectRules` ignoring `overrideMap` for `projectCustomRules` (which previously forced `isOverridden: false`). Project overrides now apply identically to both global rulebook rules and project-specific custom rules.
+- **Qwen-Image-Edit Prompt Extraction (`apps/server/src/services/comfy-metadata.service.ts`)**: Upgraded `resolveNodeText` to recursive cycle-safe graph traversal supporting `TextEncodeQwenImage21`, Switch nodes (`ImpactSwitch`, `Switch`, boolean/index selectors), `StringConcatenate`, and `FluxGuidance` so prompts are automatically extracted from Qwen-Image-Edit PNGs.
+
+### Added
+- **Informative & Tag-Scoped Rules**: Added `autoInject` (`boolean`, default `true`) and `appliesToTags` (`string[]`, default `[]`) on rules (plus `autoInjectOverride` and `appliesToTagsOverride` on project overrides). Rules with `autoInject: false` stay informative-only and never pollute generated prompts; tag-scoped rules only inject fragments when matching context tags are passed to `get_active_rules` / `render_prompt_with_rules` (Web UI + REST + MCP).
+- **Direct Rule Editing & Deletion via MCP & UI**: Added `update_rule` and `delete_rule` MCP tools, plus direct editing of project-specific custom rules in `RulesPanel`.
+- **Update Project Status via MCP & UI**: Added `update_project` MCP tool (`pre_production`, `production`, `editing`, `youtube_ready`, `published`, `archived`) and an inline project status selector in the Web Studio header.
+- **Zero-Copy Local Ingest & Configurable Mount**: Added `INGEST_HOST_DIR` env variable in `docker-compose.yml` / `.env.example` / `scripts/update.sh` (non-destructive) and `storageMode: "copy" | "hardlink" | "reference"` on `register_asset` / JSON ingest. `reference` mode streams originals directly from the read-only ingest mount (`ingest://`) without duplicating heavy files into `data/originals/` and strictly prevents deleting source files.
+- **Media Subfolders & Navigation**: Added virtual subfolder hierarchy inside **Médias** (breadcrumb bar, `+ Nouveau dossier`, subfolder tiles, flat-vs-folder toggle, targeted upload/drag-and-drop, `Dossier` dropdown in `AssetInspector`, non-destructive folder deletion moving assets to parent), REST endpoints (`/api/projects/:id/folders`), and MCP tools (`list_media_folders`, `create_media_folder`, plus `folderPath` on `register_asset`, `list_assets`, and `update_asset`).
+- **Automated Tests**: Added regression tests for project-custom rule overrides & `autoInject`/`appliesToTags` (`rules-engine.test.ts`), folder path normalization (`refs.test.ts`), Qwen-Image-Edit + Switch prompt extraction (`comfy-metadata.service.test.ts`), zero-copy `reference` & `hardlink` ingest (`media.service.test.ts`), and new MCP tools (`mcp.routes.test.ts`).
+
 ## [0.3.0] - 2026-11-27
 
 ### Added

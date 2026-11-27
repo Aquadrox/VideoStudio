@@ -71,6 +71,55 @@ describe('ComfyUI PNG metadata extraction', () => {
     expect(meta?.scheduler).toBe('simple');
   });
 
+  it('extracts prompts from Qwen-Image-Edit TextEncodeQwenImage21 fed via a Switch node', () => {
+    const qwenGraph = {
+      '10': {
+        class_type: 'UNETLoader',
+        inputs: { unet_name: 'qwen_image_edit_fp8.safetensors' },
+      },
+      '11': {
+        class_type: 'PrimitiveNode',
+        inputs: { value: 'Old unused prompt' },
+      },
+      '12': {
+        class_type: 'PrimitiveNode',
+        inputs: { value: 'Caspian wearing a dark winter coat in snowy alley, anime style' },
+      },
+      '13': {
+        class_type: 'ImpactSwitch',
+        inputs: {
+          select: 2,
+          input1: ['11', 0],
+          input2: ['12', 0],
+        },
+      },
+      '14': {
+        class_type: 'TextEncodeQwenImage21',
+        inputs: {
+          prompt: ['13', 0],
+        },
+      },
+      '15': {
+        class_type: 'KSampler',
+        inputs: {
+          seed: 424242,
+          steps: 20,
+          cfg: 4.0,
+          sampler_name: 'euler',
+          positive: ['14', 0],
+        },
+      },
+    };
+
+    const meta = extractComfyMetadataFromPng(createSyntheticComfyPng(qwenGraph));
+    expect(meta).not.toBeNull();
+    expect(meta?.modelName).toBe('qwen_image_edit_fp8.safetensors');
+    expect(meta?.seed).toBe(424242);
+    expect(meta?.positivePrompt).toBe(
+      'Caspian wearing a dark winter coat in snowy alley, anime style',
+    );
+  });
+
   it('returns null for non-PNG buffers', () => {
     expect(extractComfyMetadataFromPng(Buffer.from('hello world'))).toBeNull();
   });

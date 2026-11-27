@@ -102,6 +102,8 @@ export const CreateRuleInputSchema = z.object({
   instruction: z.string().trim().min(1).max(4000),
   positiveFragment: z.string().max(2000).default(''),
   negativeFragment: z.string().max(2000).default(''),
+  autoInject: z.boolean().default(true),
+  appliesToTags: z.array(z.string().trim().min(1).max(64)).max(30).default([]),
   enabled: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
 });
@@ -117,6 +119,8 @@ export const UpsertProjectRuleOverrideInputSchema = z.object({
   instructionOverride: z.string().max(4000).nullable().optional(),
   positiveFragmentOverride: z.string().max(2000).nullable().optional(),
   negativeFragmentOverride: z.string().max(2000).nullable().optional(),
+  autoInjectOverride: z.boolean().nullable().optional(),
+  appliesToTagsOverride: z.array(z.string().trim().min(1).max(64)).max(30).nullable().optional(),
 });
 export type UpsertProjectRuleOverrideInput = z.infer<typeof UpsertProjectRuleOverrideInputSchema>;
 
@@ -132,6 +136,8 @@ export const RuleDtoSchema = z.object({
   instruction: z.string(),
   positiveFragment: z.string(),
   negativeFragment: z.string(),
+  autoInject: z.boolean(),
+  appliesToTags: z.array(z.string()),
   enabled: z.boolean(),
   sortOrder: z.number().int(),
   createdAt: z.string(),
@@ -161,6 +167,8 @@ export const ProjectRuleOverrideDtoSchema = z.object({
   instructionOverride: z.string().nullable(),
   positiveFragmentOverride: z.string().nullable(),
   negativeFragmentOverride: z.string().nullable(),
+  autoInjectOverride: z.boolean().nullable(),
+  appliesToTagsOverride: z.array(z.string()).nullable(),
   updatedAt: z.string(),
 });
 export type ProjectRuleOverrideDto = z.infer<typeof ProjectRuleOverrideDtoSchema>;
@@ -175,6 +183,8 @@ export const ResolvedProjectRuleSchema = z.object({
   instruction: z.string(),
   positiveFragment: z.string(),
   negativeFragment: z.string(),
+  autoInject: z.boolean(),
+  appliesToTags: z.array(z.string()),
   enabled: z.boolean(),
   source: z.enum(['rulebook', 'override', 'project_custom']),
   rulebookName: z.string().nullable(),

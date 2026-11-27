@@ -76,6 +76,21 @@ export function AssetCard({ asset, selected, onSelect, onCopyRef }: AssetCardPro
         <div className="asset-card-title" title={asset.title}>
           {asset.title}
         </div>
+        {asset.folderPath && (
+          <div
+            style={{
+              fontSize: 10.5,
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--text-muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={`/${asset.folderPath}`}
+          >
+            /{asset.folderPath}
+          </div>
+        )}
 
         <div className="asset-card-footer">
           <button

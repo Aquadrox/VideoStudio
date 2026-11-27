@@ -4,6 +4,7 @@ import {
   extractTemplateVariables,
   renderPromptTemplate,
   resolveProjectRules,
+  selectInjectableRuleFragments,
   slugifyProjectName,
   type Actor,
   type AnnotationDto,
@@ -321,6 +322,8 @@ export class Stage2Service {
         instruction: input.instruction,
         positiveFragment: input.positiveFragment,
         negativeFragment: input.negativeFragment,
+        autoInject: input.autoInject,
+        appliesToTags: input.appliesToTags,
         enabled: input.enabled,
         sortOrder: input.sortOrder,
       })
@@ -348,6 +351,8 @@ export class Stage2Service {
         ...(input.negativeFragment !== undefined
           ? { negativeFragment: input.negativeFragment }
           : {}),
+        ...(input.autoInject !== undefined ? { autoInject: input.autoInject } : {}),
+        ...(input.appliesToTags !== undefined ? { appliesToTags: input.appliesToTags } : {}),
         ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
         ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
         updatedAt: new Date(),
@@ -432,6 +437,8 @@ export class Stage2Service {
         instruction: input.instruction,
         positiveFragment: input.positiveFragment,
         negativeFragment: input.negativeFragment,
+        autoInject: input.autoInject,
+        appliesToTags: input.appliesToTags,
         enabled: input.enabled,
         sortOrder: input.sortOrder,
       })
@@ -492,6 +499,12 @@ export class Stage2Service {
           ...(input.negativeFragmentOverride !== undefined
             ? { negativeFragmentOverride: input.negativeFragmentOverride }
             : {}),
+          ...(input.autoInjectOverride !== undefined
+            ? { autoInjectOverride: input.autoInjectOverride }
+            : {}),
+          ...(input.appliesToTagsOverride !== undefined
+            ? { appliesToTagsOverride: input.appliesToTagsOverride }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(projectRuleOverrides.id, existing[0].id));
@@ -505,6 +518,8 @@ export class Stage2Service {
         instructionOverride: input.instructionOverride ?? null,
         positiveFragmentOverride: input.positiveFragmentOverride ?? null,
         negativeFragmentOverride: input.negativeFragmentOverride ?? null,
+        autoInjectOverride: input.autoInjectOverride ?? null,
+        appliesToTagsOverride: input.appliesToTagsOverride ?? null,
       });
     }
 
@@ -542,7 +557,10 @@ export class Stage2Service {
     return this.getResolvedProjectRules(project.id);
   }
 
-  async getResolvedProjectRules(projectIdOrSlug: string): Promise<ProjectRulesBundle | null> {
+  async getResolvedProjectRules(
+    projectIdOrSlug: string,
+    contextTags?: string[],
+  ): Promise<ProjectRulesBundle | null> {
     const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
     if (!project) return null;
 
@@ -570,6 +588,8 @@ export class Stage2Service {
       instructionOverride: o.instructionOverride,
       positiveFragmentOverride: o.positiveFragmentOverride,
       negativeFragmentOverride: o.negativeFragmentOverride,
+      autoInjectOverride: o.autoInjectOverride,
+      appliesToTagsOverride: o.appliesToTagsOverride ?? null,
       updatedAt: o.updatedAt.toISOString(),
     }));
 
@@ -583,6 +603,7 @@ export class Stage2Service {
       attachedRulebooks,
       overrides,
       projectCustomRules: customRows.map((r) => this.toRuleDto(r)),
+      contextTags,
     });
 
     return {
@@ -712,6 +733,7 @@ export class Stage2Service {
     projectIdOrSlug?: string;
     variables?: Record<string, string>;
     includeProjectRules?: boolean;
+    tags?: string[];
   }): Promise<(RenderedPromptResult & { template: PromptTemplateDto; appliedRulesCount: number }) | null> {
     const tpl = await this.getPromptTemplate(params.templateIdOrSlug);
     if (!tpl) return null;
@@ -726,11 +748,12 @@ export class Stage2Service {
     let appliedRulesCount = 0;
 
     if (params.projectIdOrSlug && params.includeProjectRules !== false) {
-      const bundle = await this.getResolvedProjectRules(params.projectIdOrSlug);
+      const bundle = await this.getResolvedProjectRules(params.projectIdOrSlug, params.tags);
       if (bundle) {
-        rulePositiveFragments = bundle.mergedPositiveFragments;
-        ruleNegativeFragments = bundle.mergedNegativeFragments;
-        appliedRulesCount = bundle.activeRulesCount;
+        const selected = selectInjectableRuleFragments(bundle.resolvedRules, params.tags);
+        rulePositiveFragments = selected.positive;
+        ruleNegativeFragments = selected.negative;
+        appliedRulesCount = selected.injectedRulesCount;
       }
     }
 
@@ -1082,6 +1105,8 @@ export class Stage2Service {
       instruction: row.instruction,
       positiveFragment: row.positiveFragment,
       negativeFragment: row.negativeFragment,
+      autoInject: row.autoInject,
+      appliesToTags: row.appliesToTags ?? [],
       enabled: row.enabled,
       sortOrder: row.sortOrder,
       createdAt: row.createdAt.toISOString(),

@@ -46,6 +46,7 @@ export const assets = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
     refCode: text('ref_code').notNull(),
+    folderPath: text('folder_path').notNull().default(''),
     title: text('title').notNull(),
     type: text('type').notNull(),
     status: text('status').notNull().default('new'),
@@ -180,6 +181,8 @@ export const rules = pgTable(
     instruction: text('instruction').notNull(),
     positiveFragment: text('positive_fragment').notNull().default(''),
     negativeFragment: text('negative_fragment').notNull().default(''),
+    autoInject: boolean('auto_inject').notNull().default(true),
+    appliesToTags: jsonb('applies_to_tags').$type<string[]>().notNull().default([]),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -222,9 +225,24 @@ export const projectRuleOverrides = pgTable(
     instructionOverride: text('instruction_override'),
     positiveFragmentOverride: text('positive_fragment_override'),
     negativeFragmentOverride: text('negative_fragment_override'),
+    autoInjectOverride: boolean('auto_inject_override'),
+    appliesToTagsOverride: jsonb('applies_to_tags_override').$type<string[] | null>(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [uniqueIndex('project_rule_override_uidx').on(table.projectId, table.ruleId)],
+);
+
+export const mediaFolders = pgTable(
+  'media_folders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    path: text('path').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('media_folders_project_path_uidx').on(table.projectId, table.path)],
 );
 
 export const promptTemplates = pgTable(

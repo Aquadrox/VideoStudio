@@ -12,7 +12,13 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import type { AnnotationDto, AssetDto, AssetStatus, QualityTier } from '@videostudio/shared';
+import type {
+  AnnotationDto,
+  AssetDto,
+  AssetStatus,
+  MediaFolderDto,
+  QualityTier,
+} from '@videostudio/shared';
 import { api, type AssetLineage } from '../api/client';
 import { normalizeMediaCoordinates, timecodeToFrame } from '../utils/annotations';
 import {
@@ -25,10 +31,12 @@ import {
 interface AssetInspectorProps {
   asset: AssetDto | null;
   lineage: AssetLineage | null;
+  folders: MediaFolderDto[];
   annotationRefreshSignal: number;
   onUpdate: (
     assetId: string,
     patch: {
+      folderPath?: string;
       status?: AssetStatus;
       qualityTier?: QualityTier;
       rating?: number;
@@ -46,6 +54,7 @@ interface AssetInspectorProps {
 export function AssetInspector({
   asset,
   lineage,
+  folders,
   annotationRefreshSignal,
   onUpdate,
   onDelete,
@@ -465,6 +474,23 @@ export function AssetInspector({
               ))}
             </select>
           </div>
+        </div>
+
+        <div className="field">
+          <label htmlFor="asset-folder-select">Dossier</label>
+          <select
+            id="asset-folder-select"
+            className="select"
+            value={asset.folderPath}
+            onChange={(e) => void onUpdate(asset.id, { folderPath: e.target.value })}
+          >
+            <option value="">/ Racine</option>
+            {folders.map((f) => (
+              <option key={f.path} value={f.path}>
+                /{f.path}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div

@@ -113,3 +113,37 @@ export function parseStudioRef(input: string): ParsedStudioRef | null {
 
   return null;
 }
+
+/**
+ * Normalizes a virtual media subfolder path (e.g. "/Personnages//Elena/" -> "Personnages/Elena").
+ * Strictly rejects path traversal segments ("..", ".") and null bytes.
+ */
+export function normalizeFolderPath(raw: string): string {
+  if (!raw) return '';
+  if (raw.includes('\0')) {
+    throw new Error('Invalid folder path: null byte detected');
+  }
+  const normalized = raw.replace(/\\/g, '/').trim();
+  const segments = normalized
+    .split('/')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const seg of segments) {
+    if (seg === '.' || seg === '..') {
+      throw new Error('Invalid folder path: traversal segments are not allowed');
+    }
+    if (seg.length > 80) {
+      throw new Error(`Folder name too long: ${seg.slice(0, 20)}...`);
+    }
+  }
+
+  return segments.join('/');
+}
+
+export function getParentFolderPath(folderPath: string): string {
+  const norm = normalizeFolderPath(folderPath);
+  if (!norm) return '';
+  const idx = norm.lastIndexOf('/');
+  return idx === -1 ? '' : norm.slice(0, idx);
+}

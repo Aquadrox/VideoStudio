@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import {
   AssetStatusSchema,
   AssetTypeSchema,
@@ -14,12 +15,73 @@ export function registerAssetRoutes(
   studio: StudioService,
   media: MediaService,
 ): void {
+  // --- Media Folders ---
+
+  app.get<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/folders',
+    async (request, reply) => {
+      const project = await studio.getProjectByIdOrSlug(request.params.projectIdOrSlug);
+      if (!project) {
+        return reply.code(404).send({ error: 'Project not found' });
+      }
+      const folders = await studio.listMediaFolders(project.id);
+      return { folders };
+    },
+  );
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/folders',
+    async (request, reply) => {
+      const parsed = z.object({ path: z.string().min(1).max(200) }).safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: 'Validation error',
+          details: parsed.error.flatten(),
+        });
+      }
+      try {
+        const folder = await studio.createMediaFolder(
+          request.params.projectIdOrSlug,
+          parsed.data.path,
+          'user',
+        );
+        if (!folder) {
+          return reply.code(404).send({ error: 'Project not found' });
+        }
+        return reply.code(201).send({ folder });
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Invalid folder path',
+        });
+      }
+    },
+  );
+
+  app.delete<{
+    Params: { projectIdOrSlug: string };
+    Querystring: { path?: string };
+  }>('/api/projects/:projectIdOrSlug/folders', async (request, reply) => {
+    const folderPath = request.query.path?.trim() ?? '';
+    if (!folderPath) {
+      return reply.code(400).send({ error: 'Missing path query parameter' });
+    }
+    const ok = await studio.deleteMediaFolder(request.params.projectIdOrSlug, folderPath);
+    if (!ok) {
+      return reply.code(404).send({ error: 'Project or folder not found' });
+    }
+    return reply.code(204).send();
+  });
+
+  // --- Assets ---
+
   app.get<{
     Params: { projectIdOrSlug: string };
     Querystring: {
       type?: string;
       status?: string;
       qualityTier?: string;
+      folderPath?: string;
+      recursive?: string;
       tag?: string;
       search?: string;
       limit?: string;
@@ -40,10 +102,15 @@ export function registerAssetRoutes(
       ? QualityTierSchema.safeParse(request.query.qualityTier)
       : null;
 
+    const recursive =
+      request.query.recursive === 'true' || request.query.recursive === '1';
+
     const list = await studio.listAssets(project.id, {
       type: typeResult?.success ? typeResult.data : undefined,
       status: statusResult?.success ? statusResult.data : undefined,
       qualityTier: tierResult?.success ? tierResult.data : undefined,
+      folderPath: request.query.folderPath,
+      recursive,
       tag: request.query.tag,
       search: request.query.search,
       limit: request.query.limit ? Number(request.query.limit) : undefined,
@@ -98,6 +165,7 @@ export function registerAssetRoutes(
           buffer: fileBuffer,
           filename,
           mimeType,
+          folderPath: fields.folderPath || undefined,
           title: fields.title || undefined,
           qualityTier: qualityTierParsed?.success ? qualityTierParsed.data : 'test',
           status: statusParsed?.success ? statusParsed.data : 'new',
@@ -126,6 +194,8 @@ export function registerAssetRoutes(
         let buffer: Buffer;
         let filename = data.filename ?? 'asset.bin';
         let mimeType = data.mimeType;
+        let sourceLocalAbsPath: string | undefined;
+        let ingestRelativePath: string | undefined;
 
         if (data.sourceUrl) {
           const fetched = await media.fetchFromUrl(data.sourceUrl);
@@ -137,6 +207,8 @@ export function registerAssetRoutes(
           buffer = loaded.buffer;
           filename = data.filename ?? loaded.filename;
           mimeType = data.mimeType ?? loaded.mimeType;
+          sourceLocalAbsPath = loaded.resolvedAbsPath;
+          ingestRelativePath = loaded.ingestRelativePath;
         } else {
           const cleaned = (data.base64Data ?? '').replace(/^data:[^;]+;base64,/, '');
           buffer = Buffer.from(cleaned, 'base64');
@@ -148,6 +220,10 @@ export function registerAssetRoutes(
           filename,
           mimeType,
           explicitType: data.type,
+          storageMode: data.storageMode,
+          sourceLocalAbsPath,
+          ingestRelativePath,
+          folderPath: data.folderPath,
           title: data.title,
           qualityTier: data.qualityTier,
           status: data.status,

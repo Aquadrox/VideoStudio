@@ -57,6 +57,7 @@ ensure_env_default() {
 }
 
 ensure_env_default "SKILLS_SYNC_DIR" "/skills"
+ensure_env_default "INGEST_HOST_DIR" "./ingest"
 ensure_env_default "INGEST_ALLOWED_DIR" "/ingest"
 ensure_env_default "ALLOWED_FETCH_HOSTS" ""
 

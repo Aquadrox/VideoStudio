@@ -123,6 +123,10 @@ export class MediaService {
   }
 
   resolveMediaFile(relativePath: string): string {
+    if (relativePath.startsWith('ingest://')) {
+      const ingestRel = relativePath.slice('ingest://'.length);
+      return resolveSafePath(this.config.ingestAllowedDir, ingestRel);
+    }
     return resolveSafePath(this.config.dataDir, relativePath);
   }
 
@@ -174,12 +178,17 @@ export class MediaService {
     }
   }
 
-  async readLocalIngestFile(
-    localFilePath: string,
-  ): Promise<{ buffer: Buffer; filename: string; mimeType: string }> {
-    const resolved = path.isAbsolute(localFilePath)
-      ? resolveSafePath(this.config.ingestAllowedDir, path.relative(this.config.ingestAllowedDir, localFilePath))
-      : resolveSafePath(this.config.ingestAllowedDir, localFilePath);
+  async readLocalIngestFile(localFilePath: string): Promise<{
+    buffer: Buffer;
+    filename: string;
+    mimeType: string;
+    resolvedAbsPath: string;
+    ingestRelativePath: string;
+  }> {
+    const ingestRelativePath = path.isAbsolute(localFilePath)
+      ? path.relative(this.config.ingestAllowedDir, localFilePath)
+      : localFilePath;
+    const resolved = resolveSafePath(this.config.ingestAllowedDir, ingestRelativePath);
 
     const stat = await fs.stat(resolved);
     if (!stat.isFile()) {
@@ -195,6 +204,8 @@ export class MediaService {
       buffer,
       filename,
       mimeType: inferMimeType(filename),
+      resolvedAbsPath: resolved,
+      ingestRelativePath: path.relative(this.config.ingestAllowedDir, resolved),
     };
   }
 
@@ -204,11 +215,15 @@ export class MediaService {
     filename: string;
     mimeType?: string;
     explicitType?: AssetType;
+    storageMode?: 'copy' | 'hardlink' | 'reference';
+    sourceLocalAbsPath?: string;
+    ingestRelativePath?: string;
   }): Promise<ProcessedMediaResult> {
     const safeName = sanitizeFilename(params.filename);
     const mimeType = inferMimeType(safeName, params.mimeType);
     const type = params.explicitType ?? inferAssetType(mimeType, safeName);
     const uid = crypto.randomUUID();
+    const storageMode = params.storageMode ?? 'copy';
 
     const originalsRelDir = path.join('projects', params.projectSlug, 'originals');
     const proxiesRelDir = path.join('projects', params.projectSlug, 'proxies');
@@ -220,9 +235,28 @@ export class MediaService {
       fs.mkdir(resolveSafePath(this.config.dataDir, thumbsRelDir), { recursive: true }),
     ]);
 
-    const originalRelPath = path.join(originalsRelDir, `${uid}-${safeName}`);
-    const originalAbsPath = resolveSafePath(this.config.dataDir, originalRelPath);
-    await fs.writeFile(originalAbsPath, params.buffer);
+    let originalRelPath: string;
+    let originalAbsPath: string;
+
+    if (storageMode === 'reference' && params.ingestRelativePath && params.sourceLocalAbsPath) {
+      // Zero-copy reference mode: stream original directly from read-only ingest mount
+      originalRelPath = `ingest://${params.ingestRelativePath}`;
+      originalAbsPath = params.sourceLocalAbsPath;
+    } else {
+      originalRelPath = path.join(originalsRelDir, `${uid}-${safeName}`);
+      originalAbsPath = resolveSafePath(this.config.dataDir, originalRelPath);
+
+      if (storageMode === 'hardlink' && params.sourceLocalAbsPath) {
+        try {
+          await fs.link(params.sourceLocalAbsPath, originalAbsPath);
+        } catch {
+          // Cross-device link (EXDEV) or read-only source: fall back safely to copy
+          await fs.writeFile(originalAbsPath, params.buffer);
+        }
+      } else {
+        await fs.writeFile(originalAbsPath, params.buffer);
+      }
+    }
 
     let proxyPath: string | null = null;
     let thumbnailPath: string | null = null;
@@ -345,7 +379,7 @@ export class MediaService {
   async deleteMediaFiles(paths: Array<string | null | undefined>): Promise<void> {
     await Promise.all(
       paths
-        .filter((p): p is string => Boolean(p))
+        .filter((p): p is string => typeof p === 'string' && p.length > 0 && !p.startsWith('ingest://'))
         .map(async (relPath) => {
           try {
             const abs = resolveSafePath(this.config.dataDir, relPath);

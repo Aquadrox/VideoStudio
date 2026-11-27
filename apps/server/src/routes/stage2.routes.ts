@@ -130,14 +130,23 @@ export function registerStage2Routes(
     return reply.code(204).send();
   });
 
-  app.get<{ Params: { projectIdOrSlug: string } }>(
-    '/api/projects/:projectIdOrSlug/rules',
-    async (request, reply) => {
-      const bundle = await stage2.getResolvedProjectRules(request.params.projectIdOrSlug);
-      if (!bundle) return reply.code(404).send({ error: 'Project not found' });
-      return { rulesBundle: bundle };
-    },
-  );
+  app.get<{
+    Params: { projectIdOrSlug: string };
+    Querystring: { tags?: string };
+  }>('/api/projects/:projectIdOrSlug/rules', async (request, reply) => {
+    const contextTags = request.query.tags
+      ? request.query.tags
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean)
+      : undefined;
+    const bundle = await stage2.getResolvedProjectRules(
+      request.params.projectIdOrSlug,
+      contextTags,
+    );
+    if (!bundle) return reply.code(404).send({ error: 'Project not found' });
+    return { rulesBundle: bundle };
+  });
 
   app.put<{ Params: { projectIdOrSlug: string } }>(
     '/api/projects/:projectIdOrSlug/rulebooks',
@@ -247,6 +256,7 @@ export function registerStage2Routes(
           projectIdOrSlug: z.string().optional(),
           variables: z.record(z.string()).optional(),
           includeProjectRules: z.boolean().default(true),
+          tags: z.array(z.string()).optional(),
         })
         .safeParse(request.body ?? {});
 
@@ -258,6 +268,7 @@ export function registerStage2Routes(
         projectIdOrSlug: parsed.data.projectIdOrSlug,
         variables: parsed.data.variables,
         includeProjectRules: parsed.data.includeProjectRules,
+        tags: parsed.data.tags,
       });
       if (!rendered) return reply.code(404).send({ error: 'Prompt template not found' });
       return { rendered };

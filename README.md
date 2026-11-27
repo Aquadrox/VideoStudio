@@ -62,10 +62,11 @@ Le script effectue automatiquement :
 - reconstruction uniquement des conteneurs applicatifs (`server` & `web`) en **préservant intégralement `./data`, `./skills` et le volume `postgres_data`**
 - vérification de `/api/health`.
 
-### 5. Ingestion depuis ComfyUI (PC sur le LAN)
+### 5. Ingestion depuis ComfyUI (PC sur le LAN ou dossier monté zéro-copie)
 
-Claude Code peut transmettre directement à `register_asset` une URL locale ComfyUI (ex. `http://<IP-PC-COMFYUI>:8188/view?filename=...`).
-Pour restreindre les hôtes autorisés côté serveur, tu peux renseigner `ALLOWED_FETCH_HOSTS` dans ton `.env` local.
+Claude Code peut transmettre directement à `register_asset` :
+- une URL locale ComfyUI (ex. `http://<IP-PC-COMFYUI>:8188/view?filename=...`), en renseignant éventuellement `ALLOWED_FETCH_HOSTS` dans `.env` ;
+- ou un chemin relatif via `localFilePath` dans le dossier monté en lecture seule (`INGEST_HOST_DIR` dans `.env`, `./ingest` par défaut). En passant `storageMode: "reference"`, VideoStudio lit directement les originaux depuis ce montage sans dupliquer les fichiers lourds dans `./data/originals/` (seules les vignettes/proxies sont générés dans `./data`).
 
 ## Sécurité (Dépôt Public)
 
