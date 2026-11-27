@@ -57,7 +57,7 @@ export function createVideoStudioMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.5.2',
+    version: '0.5.3',
   });
 
   // --- MCP Resources ---
