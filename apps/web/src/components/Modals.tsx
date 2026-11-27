@@ -211,6 +211,26 @@ export function McpSetupModal({ health, onClose, onCopyText }: McpSetupModalProp
                 {health?.services.ffmpeg ?? 'inconnu'}
               </div>
             </div>
+            <div className="meta-kv">
+              <div className="meta-k">Déploiement Blue/Green</div>
+              <div
+                className="meta-v"
+                style={{
+                  color:
+                    health?.slot === 'blue'
+                      ? 'var(--status-live)'
+                      : health?.slot === 'green'
+                        ? 'var(--status-approved)'
+                        : 'var(--text-secondary)',
+                }}
+              >
+                {health?.slot ? `slot ${health.slot}` : 'standalone'}
+              </div>
+            </div>
+            <div className="meta-kv">
+              <div className="meta-k">Version API</div>
+              <div className="meta-v">{health?.version ?? '—'}</div>
+            </div>
           </div>
 
           <div className="field">

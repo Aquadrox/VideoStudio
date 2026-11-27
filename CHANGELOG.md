@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-27
+
+### Added
+- **Zero-Downtime Blue/Green Deployment (`docker-compose.yml`, `scripts/update.sh`, `scripts/rollback.sh`, Closes #14)**: Added persistent Nginx reverse-proxy `gateway` with dynamic Docker DNS upstream switching (`docker/gateway.conf`, `docker/gateway-entrypoint.sh`), dual `blue`/`green` application slots (`server-blue`/`web-blue`, `server-green`/`web-green` with isolated image tags and `/healthz` probes), live `slot` reporting on `/api/health`, transparent one-time migration from legacy single-slot containers, automatic rollback on failed standby healthchecks, graceful draining, and instant 1-command `./scripts/rollback.sh` — preserving `./data`, `./skills`, and `postgres_data` untouched.
+- **Automated Tests**: Added `health.routes.test.ts` and `blue-green.test.ts` covering `/api/health` slot reporting, Docker Compose Blue/Green & PostgreSQL isolation invariants, gateway Nginx directives, and shell script syntax checks.
+
 ## [0.3.2] - 2026-11-27
 
 ### Added

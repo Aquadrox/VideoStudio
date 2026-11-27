@@ -47,6 +47,7 @@ import type {
 export interface HealthResponse {
   status: string;
   version: string;
+  slot?: string;
   services: {
     database: string;
     ffmpeg: string;
