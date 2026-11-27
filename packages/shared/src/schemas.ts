@@ -241,6 +241,62 @@ export const JobDtoSchema = z.object({
 });
 export type JobDto = z.infer<typeof JobDtoSchema>;
 
+// --- Agent Live Task List (Checklist / Execution Plan) ---
+
+export const AgentTaskStatusSchema = z.enum([
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'skipped',
+]);
+export type AgentTaskStatus = z.infer<typeof AgentTaskStatusSchema>;
+
+export const AgentTaskDtoSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  externalKey: z.string().nullable(),
+  title: z.string(),
+  detail: z.string(),
+  status: AgentTaskStatusSchema,
+  progress: z.number().int().min(0).max(100).nullable(),
+  groupName: z.string(),
+  assetRef: z.string().nullable(),
+  sortOrder: z.number().int(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type AgentTaskDto = z.infer<typeof AgentTaskDtoSchema>;
+
+export const SyncAgentTaskItemSchema = z.object({
+  key: z.string().trim().min(1).max(100).optional(),
+  title: z.string().trim().min(1).max(240),
+  detail: z.string().max(1000).default(''),
+  status: AgentTaskStatusSchema.default('pending'),
+  progress: z.number().int().min(0).max(100).nullable().optional(),
+  groupName: z.string().trim().max(120).default(''),
+  assetRef: z.string().trim().max(120).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(10000).optional(),
+});
+export type SyncAgentTaskItem = z.infer<typeof SyncAgentTaskItemSchema>;
+
+export const SyncAgentTasksInputSchema = z.object({
+  tasks: z.array(SyncAgentTaskItemSchema).max(200),
+  replace: z.boolean().default(true),
+});
+export type SyncAgentTasksInput = z.infer<typeof SyncAgentTasksInputSchema>;
+
+export const UpdateAgentTaskInputSchema = z.object({
+  title: z.string().trim().min(1).max(240).optional(),
+  detail: z.string().max(1000).optional(),
+  status: AgentTaskStatusSchema.optional(),
+  progress: z.number().int().min(0).max(100).nullable().optional(),
+  groupName: z.string().trim().max(120).optional(),
+  assetRef: z.string().trim().max(120).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(10000).optional(),
+});
+export type UpdateAgentTaskInput = z.infer<typeof UpdateAgentTaskInputSchema>;
+
 // --- Realtime WebSocket Events ---
 
 export const RealtimeEventSchema = z.discriminatedUnion('type', [
@@ -255,6 +311,13 @@ export const RealtimeEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('activity.logged'), payload: ActivityDtoSchema }),
   z.object({ type: z.literal('job.updated'), payload: JobDtoSchema }),
+  z.object({
+    type: z.literal('tasks.changed'),
+    payload: z.object({
+      projectId: z.string().uuid(),
+      tasks: z.array(AgentTaskDtoSchema),
+    }),
+  }),
   z.object({
     type: z.literal('annotation.changed'),
     payload: z.object({ assetId: z.string().uuid(), projectId: z.string().uuid() }),

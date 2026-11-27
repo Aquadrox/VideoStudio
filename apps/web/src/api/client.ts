@@ -1,5 +1,6 @@
 import type {
   ActivityDto,
+  AgentTaskDto,
   AnnotationDto,
   AssetDto,
   AudioTrackDto,
@@ -218,6 +219,24 @@ export const api = {
     const qs = projectId ? `?project=${encodeURIComponent(projectId)}` : '';
     const res = await apiFetch<{ jobs: JobDto[] }>(`/api/jobs${qs}`);
     return res.jobs;
+  },
+
+  async listAgentTasks(projectId: string): Promise<AgentTaskDto[]> {
+    const res = await apiFetch<{ tasks: AgentTaskDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks`,
+    );
+    return res.tasks;
+  },
+
+  async clearAgentTasks(
+    projectId: string,
+    scope: 'completed' | 'all' = 'completed',
+  ): Promise<AgentTaskDto[]> {
+    const res = await apiFetch<{ tasks: AgentTaskDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/tasks?scope=${scope}`,
+      { method: 'DELETE' },
+    );
+    return res.tasks;
   },
 
   // --- Stage 2: Annotations & Feedback ---
