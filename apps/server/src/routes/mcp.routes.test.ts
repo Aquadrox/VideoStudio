@@ -124,6 +124,8 @@ describe('MCP Streamable HTTP route', () => {
       const toolsText = await toolsRes.text();
       // Stage 1 + v0.4.0 DAM / QC / Batch
       expect(toolsText).toContain('register_asset');
+      expect(toolsText).toContain('delete_asset');
+      expect(toolsText).toContain('delete_assets_batch');
       expect(toolsText).toContain('ingest_folder');
       expect(toolsText).toContain('get_asset');
       expect(toolsText).toContain('record_qc');
@@ -172,6 +174,107 @@ describe('MCP Streamable HTTP route', () => {
       expect(toolsText).toContain('list_webhooks');
       expect(toolsText).toContain('create_webhook');
       expect(toolsText).toContain('upload_youtube_draft');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('executes delete_asset and delete_assets_batch with protection for approved/winner/final_master assets', async () => {
+    const app = Fastify({ logger: false });
+    const deletedIds: string[] = [];
+
+    const mockAssets: Record<string, {
+      id: string;
+      handle: string;
+      title: string;
+      projectSlug: string;
+      folderPath: string;
+      status: string;
+      qualityTier: string;
+    }> = {
+      '@img-001': {
+        id: '11111111-1111-4111-8111-111111111111',
+        handle: '@img-001',
+        title: 'Test draft',
+        projectSlug: 'demo',
+        folderPath: 'drafts',
+        status: 'needs_revision',
+        qualityTier: 'test',
+      },
+      '@img-002': {
+        id: '22222222-2222-4222-8222-222222222222',
+        handle: '@img-002',
+        title: 'Approved keyframe',
+        projectSlug: 'demo',
+        folderPath: 'finals',
+        status: 'approved',
+        qualityTier: 'hq_upscale',
+      },
+    };
+
+    const studio = {
+      resolveReference: async (ref: string) => {
+        const asset = mockAssets[ref];
+        return asset ? { entityType: 'asset', asset } : null;
+      },
+      deleteAsset: async (id: string) => {
+        deletedIds.push(id);
+        return true;
+      },
+    } as unknown as StudioService;
+
+    registerMcpRoutes(app, {
+      config: createTestConfig(),
+      studio,
+      media: {} as MediaService,
+      stage2: {} as Stage2Service,
+      stage3: {} as Stage3Service,
+      stage4: {} as Stage4Service,
+    });
+
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const callTool = async (id: number, name: string, args: Record<string, unknown>) => {
+      const res = await fetch(`${address}/mcp`, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer unit-test-token-123456',
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        }),
+      });
+      expect(res.status).toBe(200);
+      return res.text();
+    };
+
+    try {
+      // 1. Protected asset blocked when force=false
+      const blockedText = await callTool(10, 'delete_asset', { ref: '@img-002' });
+      expect(blockedText).toContain('Refused to delete protected asset @img-002');
+      expect(deletedIds).toEqual([]);
+
+      // 2. Normal test asset deleted cleanly
+      const okText = await callTool(11, 'delete_asset', { ref: '@img-001' });
+      expect(okText).toContain('\\"deleted\\": true');
+      expect(deletedIds).toEqual(['11111111-1111-4111-8111-111111111111']);
+
+      // 3. Batch delete skips protected and reports missing refs
+      const batchText = await callTool(12, 'delete_assets_batch', {
+        refs: ['@img-001', '@img-002', '@img-999'],
+      });
+      expect(batchText).toContain('skippedProtected');
+      expect(batchText).toContain('@img-002');
+      expect(batchText).toContain('@img-999');
+
+      // 4. Protected asset deleted when force=true
+      const forcedText = await callTool(13, 'delete_asset', { ref: '@img-002', force: true });
+      expect(forcedText).toContain('\\"deleted\\": true');
+      expect(deletedIds).toContain('22222222-2222-4222-8222-222222222222');
     } finally {
       await app.close();
     }

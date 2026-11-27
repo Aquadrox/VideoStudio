@@ -57,7 +57,7 @@ export function createVideoStudioMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.5.3',
+    version: '0.5.4',
   });
 
   // --- MCP Resources ---
@@ -792,6 +792,143 @@ export function createVideoStudioMcpServer(
 
       return {
         content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
+      };
+    },
+  );
+
+  const isProtectedAsset = (asset: { status: string; qualityTier: string }): boolean =>
+    asset.status === 'approved' ||
+    asset.status === 'winner' ||
+    asset.qualityTier === 'final_master';
+
+  server.tool(
+    'delete_asset',
+    'Delete an asset by @ref handle, studio:// URI, or UUID (removes DB record and managed files in DATA_DIR; never touches read-only ingest:// source files). Protected assets (approved, winner, final_master) require force: true.',
+    {
+      ref: z.string().min(1).describe('Asset reference (@img-001, slug/img-001, studio://...) or UUID'),
+      project: z.string().optional().describe('Optional project slug or UUID to disambiguate short @ref'),
+      force: z
+        .boolean()
+        .default(false)
+        .describe('Set true to allow deleting approved, winner, or final_master assets'),
+    },
+    async ({ ref, project, force }) => {
+      const resolved = await studio.resolveReference(ref, project);
+      if (!resolved?.asset) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Asset reference not found: ${ref}` }],
+        };
+      }
+
+      const target = resolved.asset;
+      if (!force && isProtectedAsset(target)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Refused to delete protected asset ${target.handle} (status=${target.status}, tier=${target.qualityTier}). Pass force: true to confirm deletion.`,
+            },
+          ],
+        };
+      }
+
+      const deleted = await studio.deleteAsset(target.id, 'claude');
+      if (!deleted) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Asset could not be deleted: ${target.handle}` }],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                deleted: true,
+                id: target.id,
+                handle: target.handle,
+                title: target.title,
+                projectSlug: target.projectSlug,
+                folderPath: target.folderPath,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'delete_assets_batch',
+    'Delete multiple assets in a single call by @ref handles or UUIDs. Protected assets (approved, winner, final_master) are skipped unless force: true.',
+    {
+      refs: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(100)
+        .describe('List of asset references (@img-001, slug/img-001, studio://...) or UUIDs'),
+      project: z.string().optional().describe('Optional project slug or UUID to disambiguate short @refs'),
+      force: z
+        .boolean()
+        .default(false)
+        .describe('Set true to allow deleting approved, winner, or final_master assets'),
+    },
+    async ({ refs, project, force }) => {
+      const deleted: Array<{ id: string; handle: string; title: string }> = [];
+      const skippedProtected: Array<{ ref: string; handle: string; status: string; qualityTier: string }> = [];
+      const notFound: string[] = [];
+      const seenIds = new Set<string>();
+
+      for (const ref of refs) {
+        const resolved = await studio.resolveReference(ref, project);
+        if (!resolved?.asset) {
+          notFound.push(ref);
+          continue;
+        }
+        const target = resolved.asset;
+        if (seenIds.has(target.id)) continue;
+        seenIds.add(target.id);
+
+        if (!force && isProtectedAsset(target)) {
+          skippedProtected.push({
+            ref,
+            handle: target.handle,
+            status: target.status,
+            qualityTier: target.qualityTier,
+          });
+          continue;
+        }
+
+        const ok = await studio.deleteAsset(target.id, 'claude');
+        if (ok) {
+          deleted.push({ id: target.id, handle: target.handle, title: target.title });
+        } else {
+          notFound.push(ref);
+        }
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                deletedCount: deleted.length,
+                deleted,
+                skippedProtected,
+                notFound,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     },
   );

@@ -30,7 +30,7 @@ describe('Health route with Blue/Green slot reporting', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('0.5.3');
+    expect(body.version).toBe('0.5.4');
     expect(body.slot).toBe('green');
     expect(body.inFlightRequests).toBe(3);
     expect(body.services.database).toBe('up');

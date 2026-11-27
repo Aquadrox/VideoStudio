@@ -967,6 +967,12 @@ export class StudioService {
       type: 'asset.deleted',
       payload: { id: assetId, projectId: existing.asset.projectId },
     });
+    if (existing.asset.folderPath) {
+      this.realtime.broadcast({
+        type: 'folders.changed',
+        payload: { projectId: existing.asset.projectId },
+      });
+    }
 
     await this.logActivity({
       projectId: existing.asset.projectId,
