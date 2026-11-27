@@ -1,32 +1,50 @@
+import type { DragEvent } from 'react';
 import { Copy, FileText, Film, Image as ImageIcon, Music, Star } from 'lucide-react';
 import type { AssetDto } from '@videostudio/shared';
+import { ASSET_DRAG_MIME } from '../utils/drag';
 import { formatDuration, QUALITY_TIER_SHORT, STATUS_LABELS } from '../utils/format';
 
 interface AssetCardProps {
   asset: AssetDto;
   selected: boolean;
+  dragging?: boolean;
   onSelect: (asset: AssetDto) => void;
   onDoubleClick?: (asset: AssetDto) => void;
   onCopyRef: (text: string) => void;
+  onDragStartAsset?: (asset: AssetDto) => void;
+  onDragEndAsset?: () => void;
 }
 
 export function AssetCard({
   asset,
   selected,
+  dragging = false,
   onSelect,
   onDoubleClick,
   onCopyRef,
+  onDragStartAsset,
+  onDragEndAsset,
 }: AssetCardProps) {
   const thumbUrl = asset.urls.thumbnail ?? asset.urls.proxy ?? asset.urls.original;
 
+  const handleDragStart = (e: DragEvent<HTMLElement>) => {
+    e.dataTransfer.setData(ASSET_DRAG_MIME, asset.id);
+    e.dataTransfer.setData('text/plain', asset.handle);
+    e.dataTransfer.effectAllowed = 'move';
+    onDragStartAsset?.(asset);
+  };
+
   return (
     <article
-      className={`asset-card ${selected ? 'selected' : ''}`}
+      className={`asset-card ${selected ? 'selected' : ''} ${dragging ? 'dragging' : ''}`}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={() => onDragEndAsset?.()}
       onClick={() => onSelect(asset)}
       onDoubleClick={() => onDoubleClick?.(asset)}
       role="button"
       tabIndex={0}
-      title="Cliquer pour inspecter · Double-cliquer pour ouvrir en grand"
+      title="Cliquer pour inspecter · Double-cliquer pour ouvrir · Glisser vers un dossier pour déplacer"
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -36,12 +54,17 @@ export function AssetCard({
     >
       <div className="asset-thumb-wrap">
         {asset.type === 'image' ? (
-          <img src={thumbUrl} alt={asset.title} loading="lazy" />
+          <img src={thumbUrl} alt={asset.title} loading="lazy" draggable={false} />
         ) : asset.type === 'video' ? (
           asset.urls.thumbnail ? (
-            <img src={asset.urls.thumbnail} alt={asset.title} loading="lazy" />
+            <img src={asset.urls.thumbnail} alt={asset.title} loading="lazy" draggable={false} />
           ) : (
-            <video src={asset.urls.proxy ?? asset.urls.original} muted preload="metadata" />
+            <video
+              src={asset.urls.proxy ?? asset.urls.original}
+              muted
+              preload="metadata"
+              draggable={false}
+            />
           )
         ) : asset.type === 'audio' ? (
           <div className="asset-thumb-placeholder">

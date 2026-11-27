@@ -1582,6 +1582,19 @@ textarea {
   background: var(--accent-amber-soft);
 }
 
+.breadcrumb-btn.drop-ready,
+.folder-breadcrumbs .btn.drop-ready {
+  border: 1px dashed rgba(229, 160, 56, 0.45);
+}
+
+.breadcrumb-btn.drop-target-active,
+.folder-breadcrumbs .btn.drop-target-active {
+  border: 1px solid var(--accent-amber);
+  background: rgba(229, 160, 56, 0.22);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 2px rgba(229, 160, 56, 0.25);
+}
+
 .folder-actions {
   display: flex;
   align-items: center;
@@ -1612,12 +1625,80 @@ textarea {
   border-radius: var(--radius-md);
   padding: 10px 12px;
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .folder-card:hover {
   border-color: var(--accent-amber);
   background: var(--bg-elevated);
+}
+
+.folder-card.drop-ready {
+  border-style: dashed;
+  border-color: rgba(229, 160, 56, 0.55);
+}
+
+.folder-card.drop-target-active {
+  border-style: solid;
+  border-color: var(--accent-amber);
+  background: rgba(229, 160, 56, 0.16);
+  box-shadow: 0 0 0 2px rgba(229, 160, 56, 0.28);
+  transform: translateY(-1px);
+}
+
+.folder-card.drop-target-active .folder-card-count {
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+.asset-card[draggable='true'] {
+  cursor: grab;
+}
+
+.asset-card.dragging {
+  opacity: 0.5;
+  border-style: dashed;
+  border-color: var(--accent-amber);
+  cursor: grabbing;
+}
+
+.folder-drop-dock {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 22px;
+  background: rgba(229, 160, 56, 0.08);
+  border-bottom: 1px solid rgba(229, 160, 56, 0.3);
+}
+
+.folder-drop-dock-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent-amber);
+  margin-right: 4px;
+}
+
+.folder-drop-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px dashed rgba(229, 160, 56, 0.5);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: copy;
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.folder-drop-pill.drop-target-active {
+  border-style: solid;
+  border-color: var(--accent-amber);
+  background: rgba(229, 160, 56, 0.22);
+  transform: scale(1.04);
 }
 
 .folder-card-main {
