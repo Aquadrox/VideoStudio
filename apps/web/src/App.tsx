@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type FormEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   Activity,
   BookOpen,
@@ -22,6 +31,10 @@ import {
   List,
   Maximize2,
   Music,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Search,
   Server,
   ShieldCheck,
@@ -96,6 +109,14 @@ import {
   type MediaViewMode,
   type RecentWindow,
 } from './utils/media-view';
+import {
+  clampPanelWidth,
+  DEFAULT_PANEL_LAYOUT,
+  LEFT_PANEL_DEFAULT_WIDTH,
+  parseStoredPanelLayout,
+  RIGHT_PANEL_DEFAULT_WIDTH,
+  type PanelLayoutState,
+} from './utils/panel-layout';
 
 type WorkspaceMode =
   | 'media'
@@ -206,6 +227,73 @@ export function App() {
       // Ignore storage quota / private mode restrictions
     }
   }, [mediaSortBy]);
+
+  const [panelLayout, setPanelLayout] = useState<PanelLayoutState>(() => {
+    if (typeof window === 'undefined') return { ...DEFAULT_PANEL_LAYOUT };
+    return parseStoredPanelLayout(window.localStorage.getItem('videostudio:panelLayout'));
+  });
+  const [resizingSide, setResizingSide] = useState<'left' | 'right' | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('videostudio:panelLayout', JSON.stringify(panelLayout));
+    } catch {
+      // Ignore storage quota / private mode restrictions
+    }
+  }, [panelLayout]);
+
+  const startPanelResize = useCallback(
+    (side: 'left' | 'right', e: ReactPointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = side === 'left' ? panelLayout.leftWidth : panelLayout.rightWidth;
+      const otherOccupied =
+        side === 'left'
+          ? panelLayout.rightOpen
+            ? panelLayout.rightWidth
+            : 0
+          : panelLayout.leftOpen
+            ? panelLayout.leftWidth
+            : 0;
+
+      setResizingSide(side);
+
+      const handlePointerMove = (moveEvt: PointerEvent) => {
+        const delta = side === 'left' ? moveEvt.clientX - startX : startX - moveEvt.clientX;
+        const clamped = clampPanelWidth(
+          side,
+          startWidth + delta,
+          window.innerWidth,
+          otherOccupied,
+        );
+        setPanelLayout((prev) =>
+          side === 'left' ? { ...prev, leftWidth: clamped } : { ...prev, rightWidth: clamped },
+        );
+      };
+
+      const handlePointerUp = () => {
+        setResizingSide(null);
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        window.removeEventListener('pointercancel', handlePointerUp);
+      };
+
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', handlePointerUp);
+      window.addEventListener('pointercancel', handlePointerUp);
+    },
+    [panelLayout.leftOpen, panelLayout.leftWidth, panelLayout.rightOpen, panelLayout.rightWidth],
+  );
+
+  const nudgePanelWidth = useCallback((side: 'left' | 'right', delta: number) => {
+    setPanelLayout((prev) => {
+      const current = side === 'left' ? prev.leftWidth : prev.rightWidth;
+      const otherOccupied =
+        side === 'left' ? (prev.rightOpen ? prev.rightWidth : 0) : prev.leftOpen ? prev.leftWidth : 0;
+      const clamped = clampPanelWidth(side, current + delta, window.innerWidth, otherOccupied);
+      return side === 'left' ? { ...prev, leftWidth: clamped } : { ...prev, rightWidth: clamped };
+    });
+  }, []);
 
   const [showNewProject, setShowNewProject] = useState(false);
   const [showMcpModal, setShowMcpModal] = useState(false);
@@ -822,6 +910,16 @@ export function App() {
         return;
       }
 
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          setPanelLayout((prev) => ({ ...prev, rightOpen: !prev.rightOpen }));
+        } else {
+          setPanelLayout((prev) => ({ ...prev, leftOpen: !prev.leftOpen }));
+        }
+        return;
+      }
+
       if (showCommandPalette || showNewProject || showMcpModal) return;
       if (isTypingTarget(e.target)) return;
 
@@ -983,10 +1081,40 @@ export function App() {
         id: 'action-shortcuts',
         category: 'action',
         label: 'Afficher les raccourcis clavier Pro',
-        subtitle: 'J/K/L, A/R, 1-5, Cmd+K',
+        subtitle: 'J/K/L, A/R, 1-5, Cmd+K, Ctrl+B',
         shortcut: '?',
         keywords: ['help', 'keyboard', 'raccourcis'],
         onSelect: () => setShowShortcutsHelp(true),
+      },
+      {
+        id: 'action-toggle-left-panel',
+        category: 'action',
+        label: panelLayout.leftOpen
+          ? 'Masquer le panneau gauche (Projets)'
+          : 'Afficher le panneau gauche (Projets)',
+        subtitle: 'Libérer de la place à gauche',
+        shortcut: 'Ctrl+B',
+        keywords: ['sidebar', 'gauche', 'projets', 'masquer', 'panel'],
+        onSelect: () => setPanelLayout((prev) => ({ ...prev, leftOpen: !prev.leftOpen })),
+      },
+      {
+        id: 'action-toggle-right-panel',
+        category: 'action',
+        label: panelLayout.rightOpen
+          ? "Masquer le panneau droit (Inspecteur / Live)"
+          : "Afficher le panneau droit (Inspecteur / Live)",
+        subtitle: 'Libérer de la place à droite',
+        shortcut: 'Ctrl+Shift+B',
+        keywords: ['inspector', 'droite', 'live', 'masquer', 'panel'],
+        onSelect: () => setPanelLayout((prev) => ({ ...prev, rightOpen: !prev.rightOpen })),
+      },
+      {
+        id: 'action-reset-panels',
+        category: 'action',
+        label: 'Réinitialiser la largeur des panneaux',
+        subtitle: 'Rétablir les panneaux gauche et droit par défaut',
+        keywords: ['layout', 'reset', 'largeur', 'resize', 'panneaux'],
+        onSelect: () => setPanelLayout({ ...DEFAULT_PANEL_LAYOUT }),
       },
     ];
 
@@ -1042,108 +1170,143 @@ export function App() {
     }
 
     return items;
-  }, [assets, projects, showToast]);
+  }, [assets, panelLayout.leftOpen, panelLayout.rightOpen, projects, showToast]);
 
   return (
-    <div className="studio-shell">
+    <div className={`studio-shell ${resizingSide ? 'is-resizing' : ''}`}>
       {/* Left Sidebar: Projects & Server Status */}
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="brand-mark">
-            <div className="brand-icon" aria-hidden="true">
-              <Clapperboard size={17} />
-            </div>
-            <div>
-              <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.5.2 · MCP · LAN</div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowCommandPalette(true)}
-              title="Palette de commandes (Ctrl+K / ⌘K)"
-            >
-              <Command size={14} />
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowShortcutsHelp(true)}
-              title="Raccourcis clavier Pro (?)"
-            >
-              <Keyboard size={14} />
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowMcpModal(true)}
-              title="Configuration MCP Claude Code & Santé Serveur"
-            >
-              <Terminal size={14} />
-            </button>
-          </div>
-        </div>
-
-        <div className="sidebar-section-header">
-          <span>Projets ({projects.length})</span>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => setShowNewProject(true)}
-            title="Nouveau projet"
-          >
-            <FolderPlus size={14} />
-          </button>
-        </div>
-
-        <nav className="project-list" aria-label="Projets vidéo">
-          {projects.map((proj) => (
-            <button
-              key={proj.id}
-              type="button"
-              className={`project-item ${proj.id === activeProjectId ? 'active' : ''}`}
-              onClick={() => setActiveProjectId(proj.id)}
-            >
-              <div className="project-item-top">
-                <span className="project-item-name">{proj.name}</span>
-                <span className="project-item-count">{proj.assetCount}</span>
+      {panelLayout.leftOpen && (
+        <>
+          <aside className="sidebar" style={{ width: panelLayout.leftWidth }}>
+            <div className="sidebar-brand">
+              <div className="brand-mark">
+                <div className="brand-icon" aria-hidden="true">
+                  <Clapperboard size={17} />
+                </div>
+                <div>
+                  <div className="brand-title">VideoStudio</div>
+                  <div className="brand-sub">v0.5.3 · MCP · LAN</div>
+                </div>
               </div>
-              <div className="project-item-meta">
-                <span>{proj.aspectRatio}</span>
-                <span>{proj.fps}fps</span>
-                <span>{proj.targetResolution}</span>
+
+              <div style={{ display: 'flex', gap: 2 }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowCommandPalette(true)}
+                  title="Palette de commandes (Ctrl+K / ⌘K)"
+                >
+                  <Command size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowShortcutsHelp(true)}
+                  title="Raccourcis clavier Pro (?)"
+                >
+                  <Keyboard size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowMcpModal(true)}
+                  title="Configuration MCP Claude Code & Santé Serveur"
+                >
+                  <Terminal size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setPanelLayout((prev) => ({ ...prev, leftOpen: false }))}
+                  title="Masquer le panneau Projets (Ctrl+B)"
+                  aria-label="Masquer le panneau gauche"
+                >
+                  <PanelLeftClose size={14} />
+                </button>
               </div>
-            </button>
-          ))}
-
-          {projects.length === 0 && (
-            <div style={{ padding: '16px 8px', fontSize: 12.5, color: 'var(--text-muted)' }}>
-              Aucun projet pour le moment. Crée ton premier projet ou demande à Claude Code de le
-              faire via MCP.
             </div>
-          )}
-        </nav>
 
-        <div className="sidebar-footer">
-          <div className="connection-row">
-            <span className="connection-status">
-              <span className={`status-dot ${connected ? 'online' : 'offline'}`} />
-              <span>{connected ? 'Temps réel actif (WS)' : 'Reconnexion WS...'}</span>
-            </span>
-          </div>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            style={{ width: '100%' }}
-            onClick={() => setShowMcpModal(true)}
-          >
-            <Terminal size={13} /> Connecter Claude Code (MCP)
-          </button>
-        </div>
-      </aside>
+            <div className="sidebar-section-header">
+              <span>Projets ({projects.length})</span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowNewProject(true)}
+                title="Nouveau projet"
+              >
+                <FolderPlus size={14} />
+              </button>
+            </div>
+
+            <nav className="project-list" aria-label="Projets vidéo">
+              {projects.map((proj) => (
+                <button
+                  key={proj.id}
+                  type="button"
+                  className={`project-item ${proj.id === activeProjectId ? 'active' : ''}`}
+                  onClick={() => setActiveProjectId(proj.id)}
+                >
+                  <div className="project-item-top">
+                    <span className="project-item-name">{proj.name}</span>
+                    <span className="project-item-count">{proj.assetCount}</span>
+                  </div>
+                  <div className="project-item-meta">
+                    <span>{proj.aspectRatio}</span>
+                    <span>{proj.fps}fps</span>
+                    <span>{proj.targetResolution}</span>
+                  </div>
+                </button>
+              ))}
+
+              {projects.length === 0 && (
+                <div style={{ padding: '16px 8px', fontSize: 12.5, color: 'var(--text-muted)' }}>
+                  Aucun projet pour le moment. Crée ton premier projet ou demande à Claude Code de le
+                  faire via MCP.
+                </div>
+              )}
+            </nav>
+
+            <div className="sidebar-footer">
+              <div className="connection-row">
+                <span className="connection-status">
+                  <span className={`status-dot ${connected ? 'online' : 'offline'}`} />
+                  <span>{connected ? 'Temps réel actif (WS)' : 'Reconnexion WS...'}</span>
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                style={{ width: '100%' }}
+                onClick={() => setShowMcpModal(true)}
+              >
+                <Terminal size={13} /> Connecter Claude Code (MCP)
+              </button>
+            </div>
+          </aside>
+
+          <div
+            className={`panel-resizer panel-resizer-left ${resizingSide === 'left' ? 'active' : ''}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Redimensionner le panneau gauche"
+            tabIndex={0}
+            title="Glisser pour redimensionner · Double-cliquer pour réinitialiser"
+            onPointerDown={(e) => startPanelResize('left', e)}
+            onDoubleClick={() =>
+              setPanelLayout((prev) => ({ ...prev, leftWidth: LEFT_PANEL_DEFAULT_WIDTH }))
+            }
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                nudgePanelWidth('left', -16);
+              } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                nudgePanelWidth('left', 16);
+              }
+            }}
+          />
+        </>
+      )}
 
       {/* Center Workspace */}
       <main
@@ -1166,8 +1329,25 @@ export function App() {
         )}
 
         <header className="workspace-header">
-          {activeProject ? (
-            <>
+          <div className="workspace-header-left">
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm panel-toggle-btn ${!panelLayout.leftOpen ? 'panel-closed' : ''}`}
+              onClick={() => setPanelLayout((prev) => ({ ...prev, leftOpen: !prev.leftOpen }))}
+              title={
+                panelLayout.leftOpen
+                  ? 'Masquer le panneau Projets (Ctrl+B)'
+                  : 'Afficher le panneau Projets (Ctrl+B)'
+              }
+              aria-label={
+                panelLayout.leftOpen ? 'Masquer le panneau gauche' : 'Afficher le panneau gauche'
+              }
+              aria-pressed={panelLayout.leftOpen}
+            >
+              {panelLayout.leftOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
+            </button>
+
+            {activeProject ? (
               <div className="workspace-title-group">
                 <div className="workspace-title-row">
                   <h1 className="workspace-h1">{activeProject.name}</h1>
@@ -1203,8 +1383,19 @@ export function App() {
                   <span>{assets.length} médias</span>
                 </div>
               </div>
+            ) : (
+              <div className="workspace-title-group">
+                <h1 className="workspace-h1">VideoStudio</h1>
+                <div className="workspace-subtitle">
+                  Sélectionne ou crée un projet pour commencer
+                </div>
+              </div>
+            )}
+          </div>
 
-              <div className="workspace-actions">
+          <div className="workspace-actions">
+            {activeProject && (
+              <>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -1228,16 +1419,30 @@ export function App() {
                       ? `Importer dans /${currentFolderPath.split('/').pop()}`
                       : 'Importer média'}
                 </button>
-              </div>
-            </>
-          ) : (
-            <div className="workspace-title-group">
-              <h1 className="workspace-h1">VideoStudio</h1>
-              <div className="workspace-subtitle">
-                Sélectionne ou crée un projet pour commencer
-              </div>
-            </div>
-          )}
+              </>
+            )}
+
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm panel-toggle-btn ${!panelLayout.rightOpen ? 'panel-closed' : ''}`}
+              onClick={() => setPanelLayout((prev) => ({ ...prev, rightOpen: !prev.rightOpen }))}
+              title={
+                panelLayout.rightOpen
+                  ? "Masquer l'Inspecteur & Live (Ctrl+Shift+B)"
+                  : "Afficher l'Inspecteur & Live (Ctrl+Shift+B)"
+              }
+              aria-label={
+                panelLayout.rightOpen ? 'Masquer le panneau droit' : 'Afficher le panneau droit'
+              }
+              aria-pressed={panelLayout.rightOpen}
+            >
+              {panelLayout.rightOpen ? (
+                <PanelRightClose size={15} />
+              ) : (
+                <PanelRightOpen size={15} />
+              )}
+            </button>
+          </div>
         </header>
 
         {/* Studio Mode Tabs */}
@@ -2100,72 +2305,110 @@ export function App() {
       </main>
 
       {/* Right Panel: Asset Inspector & Claude Live Feed */}
-      <aside className="inspector">
-        <div className="inspector-tabs">
-          <button
-            type="button"
-            className={`inspector-tab ${rightTab === 'inspector' ? 'active' : ''}`}
-            onClick={() => setRightTab('inspector')}
-          >
-            <SlidersHorizontal size={14} /> Inspecteur
-          </button>
-          <button
-            type="button"
-            className={`inspector-tab ${rightTab === 'activity' ? 'active' : ''}`}
-            onClick={() => setRightTab('activity')}
-          >
-            <Activity size={14} /> Live ({activities.length})
-          </button>
-        </div>
+      {panelLayout.rightOpen && (
+        <>
+          <div
+            className={`panel-resizer panel-resizer-right ${resizingSide === 'right' ? 'active' : ''}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Redimensionner le panneau droit"
+            tabIndex={0}
+            title="Glisser pour redimensionner · Double-cliquer pour réinitialiser"
+            onPointerDown={(e) => startPanelResize('right', e)}
+            onDoubleClick={() =>
+              setPanelLayout((prev) => ({ ...prev, rightWidth: RIGHT_PANEL_DEFAULT_WIDTH }))
+            }
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                nudgePanelWidth('right', 16);
+              } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                nudgePanelWidth('right', -16);
+              }
+            }}
+          />
 
-        <div className="inspector-body">
-          {rightTab === 'inspector' ? (
-            <AssetInspector
-              asset={selectedAsset}
-              lineage={selectedLineage}
-              folders={folders}
-              annotationRefreshSignal={annotationRefresh}
-              onUpdate={async (id, patch) => {
-                const updated = await api.updateAsset(id, patch);
-                setAssets((prev) => prev.map((a) => (a.id === id ? updated : a)));
-                if (patch.folderPath !== undefined && activeProjectId) {
-                  void refreshFolders(activeProjectId);
-                }
-                showToast(`Mis à jour ${updated.handle}`);
-              }}
-              onDelete={async (id) => {
-                await api.deleteAsset(id);
-                setAssets((prev) => prev.filter((a) => a.id !== id));
-                setSelectedAssetId(null);
-                setLightboxAssetId((curr) => (curr === id ? null : curr));
-                showToast('Média supprimé');
-              }}
-              onSelectAsset={(target) => setSelectedAssetId(target.id)}
-              onOpenCompare={(target, compareWith) => {
-                setComparePair({
-                  leftId: compareWith?.id ?? assets.find((a) => a.id !== target.id)?.id ?? target.id,
-                  rightId: target.id,
-                });
-                setWorkspaceMode('compare');
-              }}
-              onCopyText={handleCopyText}
-              onNotify={showToast}
-            />
-          ) : (
-            <ActivityFeed
-              activities={activities}
-              onSelectEntityId={(entityId) => {
-                const exists = assets.some((a) => a.id === entityId);
-                if (exists) {
-                  setSelectedAssetId(entityId);
-                  setWorkspaceMode('media');
-                  setRightTab('inspector');
-                }
-              }}
-            />
-          )}
-        </div>
-      </aside>
+          <aside className="inspector" style={{ width: panelLayout.rightWidth }}>
+            <div className="inspector-tabs">
+              <button
+                type="button"
+                className={`inspector-tab ${rightTab === 'inspector' ? 'active' : ''}`}
+                onClick={() => setRightTab('inspector')}
+              >
+                <SlidersHorizontal size={14} /> Inspecteur
+              </button>
+              <button
+                type="button"
+                className={`inspector-tab ${rightTab === 'activity' ? 'active' : ''}`}
+                onClick={() => setRightTab('activity')}
+              >
+                <Activity size={14} /> Live ({activities.length})
+              </button>
+              <button
+                type="button"
+                className="inspector-close-btn"
+                onClick={() => setPanelLayout((prev) => ({ ...prev, rightOpen: false }))}
+                title="Masquer le panneau droit (Ctrl+Shift+B)"
+                aria-label="Masquer le panneau droit"
+              >
+                <PanelRightClose size={14} />
+              </button>
+            </div>
+
+            <div className="inspector-body">
+              {rightTab === 'inspector' ? (
+                <AssetInspector
+                  asset={selectedAsset}
+                  lineage={selectedLineage}
+                  folders={folders}
+                  annotationRefreshSignal={annotationRefresh}
+                  onUpdate={async (id, patch) => {
+                    const updated = await api.updateAsset(id, patch);
+                    setAssets((prev) => prev.map((a) => (a.id === id ? updated : a)));
+                    if (patch.folderPath !== undefined && activeProjectId) {
+                      void refreshFolders(activeProjectId);
+                    }
+                    showToast(`Mis à jour ${updated.handle}`);
+                  }}
+                  onDelete={async (id) => {
+                    await api.deleteAsset(id);
+                    setAssets((prev) => prev.filter((a) => a.id !== id));
+                    setSelectedAssetId(null);
+                    setLightboxAssetId((curr) => (curr === id ? null : curr));
+                    showToast('Média supprimé');
+                  }}
+                  onSelectAsset={(target) => setSelectedAssetId(target.id)}
+                  onOpenCompare={(target, compareWith) => {
+                    setComparePair({
+                      leftId:
+                        compareWith?.id ??
+                        assets.find((a) => a.id !== target.id)?.id ??
+                        target.id,
+                      rightId: target.id,
+                    });
+                    setWorkspaceMode('compare');
+                  }}
+                  onCopyText={handleCopyText}
+                  onNotify={showToast}
+                />
+              ) : (
+                <ActivityFeed
+                  activities={activities}
+                  onSelectEntityId={(entityId) => {
+                    const exists = assets.some((a) => a.id === entityId);
+                    if (exists) {
+                      setSelectedAssetId(entityId);
+                      setWorkspaceMode('media');
+                      setRightTab('inspector');
+                    }
+                  }}
+                />
+              )}
+            </div>
+          </aside>
+        </>
+      )}
 
       {lightboxAsset && (
         <MediaLightbox

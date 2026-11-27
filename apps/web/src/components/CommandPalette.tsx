@@ -143,8 +143,10 @@ const SHORTCUT_GROUPS: Array<{
     title: 'Navigation & Palette',
     items: [
       { keys: ['Ctrl', 'K'], label: 'Ouvrir la Palette de commandes (⌘K sur macOS)' },
+      { keys: ['Ctrl', 'B'], label: 'Afficher / masquer le panneau gauche (Projets)' },
+      { keys: ['Ctrl', 'Shift', 'B'], label: "Afficher / masquer le panneau droit (Inspecteur)" },
       { keys: ['?'], label: 'Afficher / masquer cette aide des raccourcis' },
-      { keys: ['Esc'], label: 'Fermer la modale ou la lightbox ouverte' },
+      { keys: ['Esc'], label: 'Fermer la modale, la lightbox ou la sélection' },
     ],
   },
   {

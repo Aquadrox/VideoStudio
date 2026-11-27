@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-27
+
+### Added
+- **Panneaux latéraux gauche et droite redimensionnables & masquables (`App.tsx`, `panel-layout.ts`, `studio.css`)** :
+  - Séparateurs interactifs (`.panel-resizer`, curseur `↔`) permettant d'ajuster librement la largeur du panneau **Projets** (gauche) et de l'**Inspecteur / Live** (droite) avec garde-fou sur l'espace central, double-clic pour réinitialiser la largeur par défaut et ajustement clavier (`←`/`→`).
+  - Boutons dédiés pour **masquer / ré-afficher** chacun des panneaux depuis l'en-tête central (et depuis la barre latérale/inspecteur), raccourcis **`Ctrl/Cmd+B`** (panneau gauche) et **`Ctrl/Cmd+Shift+B`** (panneau droit), commandes dans la Palette `Cmd/Ctrl+K`, et persistance automatique dans `localStorage`.
+
 ## [0.5.2] - 2026-11-27
 
 ### Added
