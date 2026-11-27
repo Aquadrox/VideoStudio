@@ -5,6 +5,7 @@ import {
   CheckSquare,
   ChevronRight,
   Clapperboard,
+  Clock,
   Columns2,
   Command,
   Copy,
@@ -17,12 +18,16 @@ import {
   GitBranch,
   Keyboard,
   Layers,
+  LayoutGrid,
+  List,
+  Maximize2,
   Music,
   Search,
   Server,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Table2,
   Terminal,
   Trash2,
   Upload,
@@ -57,6 +62,7 @@ import {
 import { CompareView } from './components/CompareView';
 import { LibraryPanel } from './components/LibraryPanel';
 import { MediaLightbox } from './components/MediaLightbox';
+import { MediaDetailsTable, MediaListView } from './components/MediaListViews';
 import { CreateProjectModal, McpSetupModal } from './components/Modals';
 import { OpsPanel } from './components/OpsPanel';
 import { PreprodPanel } from './components/PreprodPanel';
@@ -81,6 +87,15 @@ import {
   QUALITY_TIER_LABELS,
   STATUS_LABELS,
 } from './utils/format';
+import {
+  countRecentAssets,
+  isAssetWithinRecentWindow,
+  RECENT_WINDOW_LABELS,
+  sortMediaAssets,
+  type MediaSortBy,
+  type MediaViewMode,
+  type RecentWindow,
+} from './utils/media-view';
 
 type WorkspaceMode =
   | 'media'
@@ -152,6 +167,45 @@ export function App() {
   const [tierFilter, setTierFilter] = useState<QualityTier | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState<AssetStatus | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [mediaViewMode, setMediaViewMode] = useState<MediaViewMode>(() => {
+    if (typeof window === 'undefined') return 'grid';
+    const saved = window.localStorage.getItem('videostudio:mediaViewMode');
+    if (saved === 'grid' || saved === 'large' || saved === 'list' || saved === 'details') {
+      return saved;
+    }
+    return 'grid';
+  });
+  const [mediaSortBy, setMediaSortBy] = useState<MediaSortBy>(() => {
+    if (typeof window === 'undefined') return 'updated_desc';
+    const saved = window.localStorage.getItem('videostudio:mediaSortBy');
+    if (
+      saved === 'updated_desc' ||
+      saved === 'created_desc' ||
+      saved === 'title_asc' ||
+      saved === 'rating_desc' ||
+      saved === 'size_desc'
+    ) {
+      return saved;
+    }
+    return 'updated_desc';
+  });
+  const [recentWindow, setRecentWindow] = useState<RecentWindow>('off');
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('videostudio:mediaViewMode', mediaViewMode);
+    } catch {
+      // Ignore storage quota / private mode restrictions
+    }
+  }, [mediaViewMode]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('videostudio:mediaSortBy', mediaSortBy);
+    } catch {
+      // Ignore storage quota / private mode restrictions
+    }
+  }, [mediaSortBy]);
 
   const [showNewProject, setShowNewProject] = useState(false);
   const [showMcpModal, setShowMcpModal] = useState(false);
@@ -406,10 +460,15 @@ export function App() {
     }));
   }, [currentFolderPath]);
 
+  const recent24hCount = useMemo(() => countRecentAssets(assets, '24h'), [assets]);
+
   const filteredAssets = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return assets.filter((asset) => {
-      if (!includeSubfolders) {
+    const isRecentActive = recentWindow !== 'off';
+    const matched = assets.filter((asset) => {
+      if (isRecentActive) {
+        if (!isAssetWithinRecentWindow(asset, recentWindow)) return false;
+      } else if (!includeSubfolders) {
         if (asset.folderPath !== currentFolderPath) return false;
       } else if (currentFolderPath) {
         const inTree =
@@ -437,10 +496,14 @@ export function App() {
       }
       return true;
     });
+
+    return sortMediaAssets(matched, mediaSortBy);
   }, [
     assets,
     currentFolderPath,
     includeSubfolders,
+    recentWindow,
+    mediaSortBy,
     typeFilter,
     tierFilter,
     statusFilter,
@@ -992,7 +1055,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.5.1 · MCP · LAN</div>
+              <div className="brand-sub">v0.5.2 · MCP · LAN</div>
             </div>
           </div>
 
@@ -1347,7 +1410,113 @@ export function App() {
                       </option>
                     ))}
                   </select>
+
+                  <div className="recent-filter-group">
+                    <button
+                      type="button"
+                      className={`chip chip-recent ${recentWindow !== 'off' ? 'active' : ''}`}
+                      onClick={() => {
+                        if (recentWindow === 'off') {
+                          setRecentWindow('24h');
+                          setMediaSortBy('updated_desc');
+                        } else {
+                          setRecentWindow('off');
+                        }
+                      }}
+                      title="Afficher uniquement les médias ajoutés ou modifiés récemment (tous dossiers confondus)"
+                    >
+                      <Clock size={12} /> Récents
+                      {recent24hCount > 0 && (
+                        <span className="recent-count-badge">{recent24hCount}</span>
+                      )}
+                    </button>
+                    {recentWindow !== 'off' && (
+                      <select
+                        aria-label="Période des modifications récentes"
+                        className="select-compact"
+                        value={recentWindow}
+                        onChange={(e) => setRecentWindow(e.target.value as RecentWindow)}
+                      >
+                        <option value="1h">1 heure</option>
+                        <option value="24h">24 heures</option>
+                        <option value="7d">7 jours</option>
+                      </select>
+                    )}
+                  </div>
+
+                  <select
+                    aria-label="Trier les médias"
+                    className="select-compact"
+                    value={mediaSortBy}
+                    onChange={(e) => setMediaSortBy(e.target.value as MediaSortBy)}
+                  >
+                    <option value="updated_desc">Tri : Récents (modifiés)</option>
+                    <option value="created_desc">Tri : Récents (ajoutés)</option>
+                    <option value="title_asc">Tri : Nom (A → Z)</option>
+                    <option value="rating_desc">Tri : Note ★</option>
+                    <option value="size_desc">Tri : Taille</option>
+                  </select>
+
+                  <div className="view-mode-switch" role="group" aria-label="Mode d'affichage des médias">
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${mediaViewMode === 'grid' ? 'active' : ''}`}
+                      onClick={() => setMediaViewMode('grid')}
+                      title="Miniatures (grille standard)"
+                      aria-pressed={mediaViewMode === 'grid'}
+                    >
+                      <LayoutGrid size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${mediaViewMode === 'large' ? 'active' : ''}`}
+                      onClick={() => setMediaViewMode('large')}
+                      title="Grandes miniatures"
+                      aria-pressed={mediaViewMode === 'large'}
+                    >
+                      <Maximize2 size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${mediaViewMode === 'list' ? 'active' : ''}`}
+                      onClick={() => setMediaViewMode('list')}
+                      title="Liste compacte"
+                      aria-pressed={mediaViewMode === 'list'}
+                    >
+                      <List size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`view-mode-btn ${mediaViewMode === 'details' ? 'active' : ''}`}
+                      onClick={() => setMediaViewMode('details')}
+                      title="Détails (tableau complet)"
+                      aria-pressed={mediaViewMode === 'details'}
+                    >
+                      <Table2 size={14} />
+                    </button>
+                  </div>
                 </div>
+              </div>
+            )}
+
+            {activeProject && recentWindow !== 'off' && (
+              <div className="recent-filter-banner" role="status">
+                <div className="recent-filter-banner-text">
+                  <Clock size={14} color="var(--accent-amber)" />
+                  <strong>
+                    Modifications & ajouts récents ({RECENT_WINDOW_LABELS[recentWindow]})
+                  </strong>
+                  <span>
+                    · Tous les dossiers du projet · {filteredAssets.length} média(s)
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setRecentWindow('off')}
+                >
+                  <X size={13} /> Retour au dossier
+                </button>
               </div>
             )}
 
@@ -1356,10 +1525,13 @@ export function App() {
                 <div className="folder-breadcrumbs" aria-label="Chemin du dossier média">
                   <button
                     type="button"
-                    className={`breadcrumb-btn ${currentFolderPath === '' ? 'current' : ''} ${
+                    className={`breadcrumb-btn ${currentFolderPath === '' && recentWindow === 'off' ? 'current' : ''} ${
                       isDraggingAssets ? 'drop-ready' : ''
                     } ${dragOverFolderPath === '' ? 'drop-target-active' : ''}`}
-                    onClick={() => setCurrentFolderPath('')}
+                    onClick={() => {
+                      setRecentWindow('off');
+                      setCurrentFolderPath('');
+                    }}
                     onDragOver={(e) => handleFolderDragOver(e, '')}
                     onDragLeave={(e) => handleFolderDragLeave(e, '')}
                     onDrop={(e) => handleFolderDrop(e, '')}
@@ -1376,11 +1548,16 @@ export function App() {
                       <button
                         type="button"
                         className={`breadcrumb-btn ${
-                          idx === breadcrumbSegments.length - 1 ? 'current' : ''
+                          idx === breadcrumbSegments.length - 1 && recentWindow === 'off'
+                            ? 'current'
+                            : ''
                         } ${isDraggingAssets ? 'drop-ready' : ''} ${
                           dragOverFolderPath === seg.path ? 'drop-target-active' : ''
                         }`}
-                        onClick={() => setCurrentFolderPath(seg.path)}
+                        onClick={() => {
+                          setRecentWindow('off');
+                          setCurrentFolderPath(seg.path);
+                        }}
                         onDragOver={(e) => handleFolderDragOver(e, seg.path)}
                         onDragLeave={(e) => handleFolderDragLeave(e, seg.path)}
                         onDrop={(e) => handleFolderDrop(e, seg.path)}
@@ -1399,7 +1576,10 @@ export function App() {
                           : ''
                       }`}
                       title="Remonter au dossier parent · Glisser un ou plusieurs médias ici pour les remonter d'un niveau"
-                      onClick={() => setCurrentFolderPath(getParentFolder(currentFolderPath))}
+                      onClick={() => {
+                        setRecentWindow('off');
+                        setCurrentFolderPath(getParentFolder(currentFolderPath));
+                      }}
                       onDragOver={(e) =>
                         handleFolderDragOver(e, getParentFolder(currentFolderPath))
                       }
@@ -1437,14 +1617,18 @@ export function App() {
                     </button>
                   )}
 
-                  <button
-                    type="button"
-                    className={`chip ${includeSubfolders ? 'active' : ''}`}
-                    onClick={() => setIncludeSubfolders((v) => !v)}
-                    title="Afficher aussi les médias contenus dans les sous-dossiers"
-                  >
-                    {includeSubfolders ? 'Vue à plat (sous-dossiers inclus)' : 'Inclure sous-dossiers'}
-                  </button>
+                  {recentWindow === 'off' && (
+                    <button
+                      type="button"
+                      className={`chip ${includeSubfolders ? 'active' : ''}`}
+                      onClick={() => setIncludeSubfolders((v) => !v)}
+                      title="Afficher aussi les médias contenus dans les sous-dossiers"
+                    >
+                      {includeSubfolders
+                        ? 'Vue à plat (sous-dossiers inclus)'
+                        : 'Inclure sous-dossiers'}
+                    </button>
+                  )}
 
                   {showNewFolderInput ? (
                     <form
@@ -1585,7 +1769,7 @@ export function App() {
                 </div>
               ) : (
                 <>
-                  {!includeSubfolders && childFolders.length > 0 && (
+                  {recentWindow === 'off' && !includeSubfolders && childFolders.length > 0 && (
                     <div className="folder-grid" aria-label="Sous-dossiers">
                       {childFolders.map((folder) => {
                         const isOver = dragOverFolderPath === folder.path;
@@ -1644,41 +1828,124 @@ export function App() {
                     <div className="empty-state">
                       <Upload size={34} color="var(--text-muted)" />
                       <h2>
-                        {currentFolderPath
-                          ? `Aucun média dans /${currentFolderPath}`
-                          : 'Aucun média dans cette vue'}
+                        {recentWindow !== 'off'
+                          ? `Aucune modification sur : ${RECENT_WINDOW_LABELS[recentWindow]}`
+                          : currentFolderPath
+                            ? `Aucun média dans /${currentFolderPath}`
+                            : 'Aucun média dans cette vue'}
                       </h2>
                       <p>
-                        Glisse-dépose des fichiers ici ou demande à Claude Code d'enregistrer une
-                        génération ComfyUI via <code>register_asset</code> sur{' '}
-                        <code>@proj-{activeProject.slug}</code>
-                        {currentFolderPath ? (
+                        {recentWindow !== 'off' ? (
+                          <>Essaie d'élargir la période (24h / 7 jours) ou reviens à la vue dossiers.</>
+                        ) : (
                           <>
-                            {' '}
-                            (<code>folderPath: "{currentFolderPath}"</code>)
+                            Glisse-dépose des fichiers ici ou demande à Claude Code d'enregistrer une
+                            génération ComfyUI via <code>register_asset</code> sur{' '}
+                            <code>@proj-{activeProject.slug}</code>
+                            {currentFolderPath ? (
+                              <>
+                                {' '}
+                                (<code>folderPath: "{currentFolderPath}"</code>)
+                              </>
+                            ) : null}
+                            .
                           </>
-                        ) : null}
-                        .
+                        )}
                       </p>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => fileInputRef.current?.click()}
-                        >
-                          <Upload size={14} /> Importer un fichier
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => setShowNewFolderInput(true)}
-                        >
-                          <FolderPlus size={14} /> Créer un sous-dossier
-                        </button>
+                        {recentWindow !== 'off' ? (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => setRecentWindow('off')}
+                          >
+                            Afficher tous les médias
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => fileInputRef.current?.click()}
+                            >
+                              <Upload size={14} /> Importer un fichier
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => setShowNewFolderInput(true)}
+                            >
+                              <FolderPlus size={14} /> Créer un sous-dossier
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
+                  ) : mediaViewMode === 'list' ? (
+                    <MediaListView
+                      assets={filteredAssets}
+                      selectedAssetId={selectedAssetId}
+                      multiSelectedIds={multiSelectedIds}
+                      draggingAssetSet={draggingAssetSet}
+                      sortBy={mediaSortBy}
+                      onChangeSort={setMediaSortBy}
+                      onSelect={handleSelectAssetCard}
+                      onToggleCheck={handleToggleAssetCheck}
+                      onDoubleClick={(item) => {
+                        setSelectedAssetId(item.id);
+                        setLightboxAssetId(item.id);
+                      }}
+                      onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                      onNavigateFolder={(folderPath) => {
+                        setRecentWindow('off');
+                        setCurrentFolderPath(folderPath);
+                      }}
+                      onDragStartAsset={(item) =>
+                        setDraggingAssetIds(resolveDragAssetIds(item.id, multiSelectedIds))
+                      }
+                      onDragEndAsset={() => {
+                        setDraggingAssetIds([]);
+                        setDragOverFolderPath(null);
+                      }}
+                    />
+                  ) : mediaViewMode === 'details' ? (
+                    <MediaDetailsTable
+                      assets={filteredAssets}
+                      selectedAssetId={selectedAssetId}
+                      multiSelectedIds={multiSelectedIds}
+                      draggingAssetSet={draggingAssetSet}
+                      sortBy={mediaSortBy}
+                      onChangeSort={setMediaSortBy}
+                      onSelect={handleSelectAssetCard}
+                      onToggleCheck={handleToggleAssetCheck}
+                      onToggleSelectAll={() =>
+                        multiSelectedIds.length === filteredAssets.length
+                          ? handleClearMultiSelection()
+                          : handleSelectAllVisible()
+                      }
+                      onDoubleClick={(item) => {
+                        setSelectedAssetId(item.id);
+                        setLightboxAssetId(item.id);
+                      }}
+                      onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                      onNavigateFolder={(folderPath) => {
+                        setRecentWindow('off');
+                        setCurrentFolderPath(folderPath);
+                      }}
+                      onDragStartAsset={(item) =>
+                        setDraggingAssetIds(resolveDragAssetIds(item.id, multiSelectedIds))
+                      }
+                      onDragEndAsset={() => {
+                        setDraggingAssetIds([]);
+                        setDragOverFolderPath(null);
+                      }}
+                    />
                   ) : (
-                    <div className="gallery-grid">
+                    <div
+                      className={`gallery-grid ${
+                        mediaViewMode === 'large' ? 'gallery-grid-large' : ''
+                      }`}
+                    >
                       {filteredAssets.map((asset) => {
                         const dragIdsForCard = resolveDragAssetIds(asset.id, multiSelectedIds);
                         return (
@@ -1690,6 +1957,11 @@ export function App() {
                             selectionMode={multiSelectedIds.length > 0}
                             dragging={draggingAssetSet.has(asset.id)}
                             dragAssetIds={dragIdsForCard}
+                            showRecentStamp={
+                              recentWindow !== 'off' ||
+                              mediaSortBy === 'updated_desc' ||
+                              mediaSortBy === 'created_desc'
+                            }
                             onSelect={handleSelectAssetCard}
                             onToggleCheck={handleToggleAssetCheck}
                             onDoubleClick={(item) => {
@@ -1697,6 +1969,10 @@ export function App() {
                               setLightboxAssetId(item.id);
                             }}
                             onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                            onNavigateFolder={(folderPath) => {
+                              setRecentWindow('off');
+                              setCurrentFolderPath(folderPath);
+                            }}
                             onDragStartAsset={(item) =>
                               setDraggingAssetIds(resolveDragAssetIds(item.id, multiSelectedIds))
                             }
