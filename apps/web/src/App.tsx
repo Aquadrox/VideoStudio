@@ -64,6 +64,11 @@ import { TimelinePanel } from './components/TimelinePanel';
 import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
 import {
+  extractDraggedAssetId,
+  getParentFolder,
+  isExternalFileDrag,
+} from './utils/drag';
+import {
   copyToClipboard,
   PROJECT_STATUS_LABELS,
   QUALITY_TIER_LABELS,
@@ -146,6 +151,8 @@ export function App() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [draggingAssetId, setDraggingAssetId] = useState<string | null>(null);
+  const [dragOverFolderPath, setDragOverFolderPath] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -493,7 +500,10 @@ export function App() {
     }
   };
 
-  const handleUploadFiles = async (files: FileList | File[]) => {
+  const handleUploadFiles = async (
+    files: FileList | File[],
+    targetFolderPath: string = currentFolderPath,
+  ) => {
     if (!activeProjectId) return;
     const list = Array.from(files);
     if (list.length === 0) return;
@@ -502,13 +512,14 @@ export function App() {
     try {
       for (const file of list) {
         const uploaded = await api.uploadAssetFile(activeProjectId, file, {
-          folderPath: currentFolderPath || undefined,
+          folderPath: targetFolderPath || undefined,
         });
         setSelectedAssetId(uploaded.id);
         setRightTab('inspector');
       }
+      await refreshFolders(activeProjectId);
       showToast(
-        `${list.length} fichier(s) importé(s)${currentFolderPath ? ` dans /${currentFolderPath}` : ''}`,
+        `${list.length} fichier(s) importé(s)${targetFolderPath ? ` dans /${targetFolderPath}` : ''}`,
       );
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Erreur d'import");
@@ -517,12 +528,90 @@ export function App() {
     }
   };
 
+  const handleMoveAssetToFolder = async (assetId: string, targetFolderPath: string) => {
+    if (!activeProjectId) return;
+    const targetAsset = assets.find((a) => a.id === assetId);
+    if (!targetAsset) return;
+
+    const currentPath = targetAsset.folderPath ?? '';
+    if (currentPath === targetFolderPath) {
+      showToast(
+        targetFolderPath
+          ? `${targetAsset.handle} est déjà dans /${targetFolderPath}`
+          : `${targetAsset.handle} est déjà à la racine`,
+      );
+      return;
+    }
+
+    try {
+      const updated = await api.updateAsset(assetId, { folderPath: targetFolderPath });
+      setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      await refreshFolders(activeProjectId);
+      showToast(
+        targetFolderPath
+          ? `Déplacé ${updated.handle} dans /${targetFolderPath}`
+          : `Déplacé ${updated.handle} à la racine`,
+      );
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Erreur lors du déplacement du média');
+    }
+  };
+
+  const handleFolderDragOver = (e: DragEvent, targetFolderPath: string) => {
+    const hasAsset = Boolean(draggingAssetId) || Array.from(e.dataTransfer.types ?? []).includes('application/x-videostudio-asset-id');
+    const hasFiles = isExternalFileDrag(e.dataTransfer, draggingAssetId);
+    if (!hasAsset && !hasFiles) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = hasAsset ? 'move' : 'copy';
+    setIsDragging(false);
+    if (dragOverFolderPath !== targetFolderPath) {
+      setDragOverFolderPath(targetFolderPath);
+    }
+  };
+
+  const handleFolderDragLeave = (e: DragEvent<HTMLElement>, targetFolderPath: string) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDragOverFolderPath((curr) => (curr === targetFolderPath ? null : curr));
+  };
+
+  const handleFolderDrop = (e: DragEvent, targetFolderPath: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolderPath(null);
+    setIsDragging(false);
+
+    const droppedAssetId = extractDraggedAssetId(e.dataTransfer, draggingAssetId);
+    setDraggingAssetId(null);
+
+    if (droppedAssetId) {
+      void handleMoveAssetToFolder(droppedAssetId, targetFolderPath);
+      return;
+    }
+
+    if (e.dataTransfer.files?.length) {
+      void handleUploadFiles(e.dataTransfer.files, targetFolderPath);
+    }
+  };
+
   const handleDragOver = (e: DragEvent) => {
+    if (!isExternalFileDrag(e.dataTransfer, draggingAssetId)) return;
     e.preventDefault();
     if (activeProjectId && workspaceMode === 'media') setIsDragging(true);
   };
 
+  const handleDragLeave = (e: DragEvent<HTMLElement>) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setIsDragging(false);
+  };
+
   const handleDrop = (e: DragEvent) => {
+    if (!isExternalFileDrag(e.dataTransfer, draggingAssetId)) {
+      setDraggingAssetId(null);
+      setDragOverFolderPath(null);
+      return;
+    }
     e.preventDefault();
     setIsDragging(false);
     if (workspaceMode !== 'media') return;
@@ -868,7 +957,7 @@ export function App() {
       <main
         className="workspace"
         onDragOver={handleDragOver}
-        onDragLeave={() => setIsDragging(false)}
+        onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         {isDragging && (
@@ -1138,8 +1227,14 @@ export function App() {
                 <div className="folder-breadcrumbs" aria-label="Chemin du dossier média">
                   <button
                     type="button"
-                    className={`breadcrumb-btn ${currentFolderPath === '' ? 'current' : ''}`}
+                    className={`breadcrumb-btn ${currentFolderPath === '' ? 'current' : ''} ${
+                      draggingAssetId ? 'drop-ready' : ''
+                    } ${dragOverFolderPath === '' ? 'drop-target-active' : ''}`}
                     onClick={() => setCurrentFolderPath('')}
+                    onDragOver={(e) => handleFolderDragOver(e, '')}
+                    onDragLeave={(e) => handleFolderDragLeave(e, '')}
+                    onDrop={(e) => handleFolderDrop(e, '')}
+                    title="Racine · Glisser un média ici pour le déplacer à la racine"
                   >
                     <Folder size={13} /> Racine
                   </button>
@@ -1153,8 +1248,14 @@ export function App() {
                         type="button"
                         className={`breadcrumb-btn ${
                           idx === breadcrumbSegments.length - 1 ? 'current' : ''
+                        } ${draggingAssetId ? 'drop-ready' : ''} ${
+                          dragOverFolderPath === seg.path ? 'drop-target-active' : ''
                         }`}
                         onClick={() => setCurrentFolderPath(seg.path)}
+                        onDragOver={(e) => handleFolderDragOver(e, seg.path)}
+                        onDragLeave={(e) => handleFolderDragLeave(e, seg.path)}
+                        onDrop={(e) => handleFolderDrop(e, seg.path)}
+                        title={`/${seg.path} · Glisser un média ici pour le déplacer`}
                       >
                         {seg.name}
                       </button>
@@ -1163,12 +1264,20 @@ export function App() {
                   {currentFolderPath && (
                     <button
                       type="button"
-                      className="btn btn-ghost btn-sm"
-                      title="Remonter au dossier parent"
-                      onClick={() => {
-                        const parts = currentFolderPath.split('/');
-                        setCurrentFolderPath(parts.slice(0, -1).join('/'));
-                      }}
+                      className={`btn btn-ghost btn-sm ${draggingAssetId ? 'drop-ready' : ''} ${
+                        dragOverFolderPath === getParentFolder(currentFolderPath)
+                          ? 'drop-target-active'
+                          : ''
+                      }`}
+                      title="Remonter au dossier parent · Glisser un média ici pour le remonter d'un niveau"
+                      onClick={() => setCurrentFolderPath(getParentFolder(currentFolderPath))}
+                      onDragOver={(e) =>
+                        handleFolderDragOver(e, getParentFolder(currentFolderPath))
+                      }
+                      onDragLeave={(e) =>
+                        handleFolderDragLeave(e, getParentFolder(currentFolderPath))
+                      }
+                      onDrop={(e) => handleFolderDrop(e, getParentFolder(currentFolderPath))}
                     >
                       <CornerLeftUp size={13} /> Parent
                     </button>
@@ -1225,6 +1334,35 @@ export function App() {
               </div>
             )}
 
+            {activeProject && draggingAssetId && folders.length > 0 && (
+              <div className="folder-drop-dock" aria-label="Déposer dans un dossier du projet">
+                <span className="folder-drop-dock-label">Déplacer vers :</span>
+                <button
+                  type="button"
+                  className={`folder-drop-pill ${dragOverFolderPath === '' ? 'drop-target-active' : ''}`}
+                  onDragOver={(e) => handleFolderDragOver(e, '')}
+                  onDragLeave={(e) => handleFolderDragLeave(e, '')}
+                  onDrop={(e) => handleFolderDrop(e, '')}
+                >
+                  <Folder size={12} /> Racine
+                </button>
+                {folders.map((folder) => (
+                  <button
+                    key={folder.path}
+                    type="button"
+                    className={`folder-drop-pill ${
+                      dragOverFolderPath === folder.path ? 'drop-target-active' : ''
+                    }`}
+                    onDragOver={(e) => handleFolderDragOver(e, folder.path)}
+                    onDragLeave={(e) => handleFolderDragLeave(e, folder.path)}
+                    onDrop={(e) => handleFolderDrop(e, folder.path)}
+                  >
+                    <Folder size={12} color="var(--accent-amber)" /> /{folder.path}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <section className="gallery-scroll">
               {!activeProject ? (
                 <div className="empty-state">
@@ -1246,44 +1384,54 @@ export function App() {
                 <>
                   {!includeSubfolders && childFolders.length > 0 && (
                     <div className="folder-grid" aria-label="Sous-dossiers">
-                      {childFolders.map((folder) => (
-                        <div
-                          key={folder.path}
-                          className="folder-card"
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => setCurrentFolderPath(folder.path)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              setCurrentFolderPath(folder.path);
-                            }
-                          }}
-                        >
-                          <div className="folder-card-main">
-                            <Folder size={17} color="var(--accent-amber)" />
-                            <div style={{ minWidth: 0 }}>
-                              <div className="folder-card-name" title={folder.path}>
-                                {folder.name}
-                              </div>
-                              <div className="folder-card-count">
-                                {folder.totalRecursiveCount} média(s)
-                              </div>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm"
-                            title={`Supprimer le dossier /${folder.path} (les médias remontent au parent)`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void handleDeleteFolder(folder.path);
+                      {childFolders.map((folder) => {
+                        const isOver = dragOverFolderPath === folder.path;
+                        return (
+                          <div
+                            key={folder.path}
+                            className={`folder-card ${draggingAssetId ? 'drop-ready' : ''} ${
+                              isOver ? 'drop-target-active' : ''
+                            }`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setCurrentFolderPath(folder.path)}
+                            onDragOver={(e) => handleFolderDragOver(e, folder.path)}
+                            onDragLeave={(e) => handleFolderDragLeave(e, folder.path)}
+                            onDrop={(e) => handleFolderDrop(e, folder.path)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setCurrentFolderPath(folder.path);
+                              }
                             }}
                           >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      ))}
+                            <div className="folder-card-main">
+                              <Folder size={17} color="var(--accent-amber)" />
+                              <div style={{ minWidth: 0 }}>
+                                <div className="folder-card-name" title={folder.path}>
+                                  {folder.name}
+                                </div>
+                                <div className="folder-card-count">
+                                  {isOver
+                                    ? 'Déposer ici'
+                                    : `${folder.totalRecursiveCount} média(s)`}
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              title={`Supprimer le dossier /${folder.path} (les médias remontent au parent)`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleDeleteFolder(folder.path);
+                              }}
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 
@@ -1331,6 +1479,7 @@ export function App() {
                           key={asset.id}
                           asset={asset}
                           selected={asset.id === selectedAssetId}
+                          dragging={asset.id === draggingAssetId}
                           onSelect={(item) => {
                             setSelectedAssetId(item.id);
                             setRightTab('inspector');
@@ -1340,6 +1489,11 @@ export function App() {
                             setLightboxAssetId(item.id);
                           }}
                           onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                          onDragStartAsset={(item) => setDraggingAssetId(item.id)}
+                          onDragEndAsset={() => {
+                            setDraggingAssetId(null);
+                            setDragOverFolderPath(null);
+                          }}
                         />
                       ))}
                     </div>
