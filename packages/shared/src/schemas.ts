@@ -252,5 +252,12 @@ export const RealtimeEventSchema = z.discriminatedUnion('type', [
     type: z.literal('library.changed'),
     payload: z.object({ kind: z.enum(['prompt', 'workflow', 'skill']) }),
   }),
+  z.object({
+    type: z.literal('stage3.changed'),
+    payload: z.object({
+      projectId: z.string().uuid(),
+      domain: z.enum(['script', 'bible', 'storyboard', 'audio', 'youtube', 'git']),
+    }),
+  }),
 ]);
 export type RealtimeEvent = z.infer<typeof RealtimeEventSchema>;

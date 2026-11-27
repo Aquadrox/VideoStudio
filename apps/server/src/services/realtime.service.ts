@@ -72,6 +72,7 @@ export class RealtimeHub {
       case 'asset.deleted':
       case 'job.updated':
       case 'annotation.changed':
+      case 'stage3.changed':
         return event.payload.projectId;
       case 'activity.logged':
       case 'rules.changed':

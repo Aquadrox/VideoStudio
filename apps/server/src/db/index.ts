@@ -244,6 +244,136 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS skill_versions_skill_idx ON skill_versions (skill_id, version);
+
+    -- Stage 3: Pre-production (Scripts, Continuity Bible, Storyboard)
+    CREATE TABLE IF NOT EXISTS project_scripts (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title text NOT NULL DEFAULT 'Scénario principal',
+      content text NOT NULL DEFAULT '',
+      version integer NOT NULL DEFAULT 1,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS project_scripts_project_uidx ON project_scripts (project_id);
+
+    CREATE TABLE IF NOT EXISTS script_versions (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      script_id uuid NOT NULL REFERENCES project_scripts(id) ON DELETE CASCADE,
+      version integer NOT NULL,
+      content text NOT NULL,
+      change_summary text NOT NULL DEFAULT '',
+      author text NOT NULL DEFAULT 'user',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS script_versions_script_idx ON script_versions (script_id, version);
+
+    CREATE TABLE IF NOT EXISTS bible_entities (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      entity_type text NOT NULL DEFAULT 'character',
+      ref_code text NOT NULL,
+      name text NOT NULL,
+      description text NOT NULL DEFAULT '',
+      visual_prompt text NOT NULL DEFAULT '',
+      lora_name text NOT NULL DEFAULT '',
+      reference_asset_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+      tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS bible_entities_project_ref_uidx ON bible_entities (project_id, ref_code);
+
+    CREATE TABLE IF NOT EXISTS scenes (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      scene_number integer NOT NULL,
+      title text NOT NULL,
+      summary text NOT NULL DEFAULT '',
+      location_ref text NOT NULL DEFAULT '',
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS scenes_project_sort_idx ON scenes (project_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS shots (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      scene_id uuid NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      shot_code text NOT NULL,
+      title text NOT NULL,
+      visual_description text NOT NULL DEFAULT '',
+      camera_movement text NOT NULL DEFAULT '',
+      dialogue text NOT NULL DEFAULT '',
+      prompt text NOT NULL DEFAULT '',
+      duration_sec double precision NOT NULL DEFAULT 4,
+      status text NOT NULL DEFAULT 'planned',
+      keyframe_asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
+      video_asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
+      bible_entity_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS shots_project_code_uidx ON shots (project_id, shot_code);
+    CREATE INDEX IF NOT EXISTS shots_scene_sort_idx ON shots (scene_id, sort_order);
+
+    -- Stage 3: Audio, Music, Lyrics & Lip-Sync
+    CREATE TABLE IF NOT EXISTS audio_tracks (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
+      ref_code text NOT NULL,
+      title text NOT NULL,
+      category text NOT NULL DEFAULT 'music',
+      bpm double precision,
+      musical_key text NOT NULL DEFAULT '',
+      prompt_used text NOT NULL DEFAULT '',
+      lyrics text NOT NULL DEFAULT '',
+      lrc_content text NOT NULL DEFAULT '',
+      srt_content text NOT NULL DEFAULT '',
+      markers jsonb NOT NULL DEFAULT '[]'::jsonb,
+      notes text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS audio_tracks_project_ref_uidx ON audio_tracks (project_id, ref_code);
+
+    -- Stage 3: YouTube Packaging Hub
+    CREATE TABLE IF NOT EXISTS youtube_packages (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      titles jsonb NOT NULL DEFAULT '[]'::jsonb,
+      description text NOT NULL DEFAULT '',
+      tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+      hashtags jsonb NOT NULL DEFAULT '[]'::jsonb,
+      category text NOT NULL DEFAULT 'Entertainment',
+      language text NOT NULL DEFAULT 'fr',
+      playlist text NOT NULL DEFAULT '',
+      pinned_comment text NOT NULL DEFAULT '',
+      ai_disclosure boolean NOT NULL DEFAULT true,
+      thumbnail_asset_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+      chapters jsonb NOT NULL DEFAULT '[]'::jsonb,
+      srt_subtitles text NOT NULL DEFAULT '',
+      checklist jsonb NOT NULL DEFAULT '[]'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS youtube_packages_project_uidx ON youtube_packages (project_id);
+
+    -- Stage 3 / Issue #4: Per-Project Local Git & GitHub Repo
+    CREATE TABLE IF NOT EXISTS project_repos (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      local_path text NOT NULL,
+      default_branch text NOT NULL DEFAULT 'main',
+      github_remote_url text,
+      auto_commit boolean NOT NULL DEFAULT false,
+      last_commit_sha text,
+      last_synced_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS project_repos_project_uidx ON project_repos (project_id);
   `);
 
   // Seed one default reusable Rulebook if none exist yet

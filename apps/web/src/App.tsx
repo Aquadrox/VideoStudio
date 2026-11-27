@@ -5,14 +5,18 @@ import {
   Clapperboard,
   Columns2,
   Copy,
+  FileText,
   FolderPlus,
+  GitBranch,
   Layers,
+  Music,
   Search,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Terminal,
   Upload,
+  Youtube,
 } from 'lucide-react';
 import type {
   ActivityDto,
@@ -29,15 +33,28 @@ import { api, type AssetLineage, type HealthResponse } from './api/client';
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetCard } from './components/AssetCard';
 import { AssetInspector } from './components/AssetInspector';
+import { AudioPanel } from './components/AudioPanel';
 import { CompareView } from './components/CompareView';
 import { LibraryPanel } from './components/LibraryPanel';
 import { CreateProjectModal, McpSetupModal } from './components/Modals';
+import { PreprodPanel } from './components/PreprodPanel';
+import { ProjectGitPanel } from './components/ProjectGitPanel';
 import { RulesPanel } from './components/RulesPanel';
 import { SkillsPanel } from './components/SkillsPanel';
+import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
 import { copyToClipboard, QUALITY_TIER_LABELS, STATUS_LABELS } from './utils/format';
 
-type WorkspaceMode = 'media' | 'compare' | 'rules' | 'library' | 'skills';
+type WorkspaceMode =
+  | 'media'
+  | 'preprod'
+  | 'audio'
+  | 'compare'
+  | 'rules'
+  | 'library'
+  | 'skills'
+  | 'youtube'
+  | 'git';
 
 export function App() {
   const [projects, setProjects] = useState<ProjectDto[]>([]);
@@ -59,6 +76,7 @@ export function App() {
   const [rulesRefresh, setRulesRefresh] = useState(0);
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [skillsRefresh, setSkillsRefresh] = useState(0);
+  const [stage3Refresh, setStage3Refresh] = useState(0);
 
   const [rightTab, setRightTab] = useState<'inspector' | 'activity'>('inspector');
   const [typeFilter, setTypeFilter] = useState<AssetType | 'all'>('all');
@@ -203,6 +221,9 @@ export function App() {
             setLibraryRefresh((n) => n + 1);
           }
           break;
+        case 'stage3.changed':
+          setStage3Refresh((n) => n + 1);
+          break;
       }
     },
     [activeProjectId, showToast],
@@ -299,7 +320,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.2 · MCP · LAN</div>
+              <div className="brand-sub">v0.3 · MCP · LAN</div>
             </div>
           </div>
 
@@ -459,10 +480,24 @@ export function App() {
           </button>
           <button
             type="button"
+            className={`mode-tab ${workspaceMode === 'preprod' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('preprod')}
+          >
+            <FileText size={14} /> Pré-prod
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'audio' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('audio')}
+          >
+            <Music size={14} /> Audio
+          </button>
+          <button
+            type="button"
             className={`mode-tab ${workspaceMode === 'compare' ? 'active' : ''}`}
             onClick={() => setWorkspaceMode('compare')}
           >
-            <Columns2 size={14} /> Comparateur A/B
+            <Columns2 size={14} /> Comparateur
           </button>
           <button
             type="button"
@@ -476,14 +511,28 @@ export function App() {
             className={`mode-tab ${workspaceMode === 'library' ? 'active' : ''}`}
             onClick={() => setWorkspaceMode('library')}
           >
-            <Sparkles size={14} /> Prompts & ComfyUI
+            <Sparkles size={14} /> Prompts
           </button>
           <button
             type="button"
             className={`mode-tab ${workspaceMode === 'skills' ? 'active' : ''}`}
             onClick={() => setWorkspaceMode('skills')}
           >
-            <BookOpen size={14} /> Skills Claude
+            <BookOpen size={14} /> Skills
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'youtube' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('youtube')}
+          >
+            <Youtube size={14} /> YouTube
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'git' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('git')}
+          >
+            <GitBranch size={14} /> Git
           </button>
         </nav>
 
@@ -623,6 +672,26 @@ export function App() {
           </>
         )}
 
+        {workspaceMode === 'preprod' && (
+          <PreprodPanel
+            project={activeProject}
+            assets={assets}
+            refreshSignal={stage3Refresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
+        {workspaceMode === 'audio' && (
+          <AudioPanel
+            project={activeProject}
+            assets={assets}
+            refreshSignal={stage3Refresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
         {workspaceMode === 'compare' && (
           <CompareView
             assets={assets}
@@ -654,6 +723,24 @@ export function App() {
             project={activeProject}
             refreshSignal={skillsRefresh}
             onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
+        {workspaceMode === 'youtube' && (
+          <YouTubePanel
+            project={activeProject}
+            assets={assets}
+            refreshSignal={stage3Refresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
+        {workspaceMode === 'git' && (
+          <ProjectGitPanel
+            project={activeProject}
+            refreshSignal={stage3Refresh}
             onNotify={showToast}
           />
         )}

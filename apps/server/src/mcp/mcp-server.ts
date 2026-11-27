@@ -3,6 +3,9 @@ import { z } from 'zod';
 import {
   AssetStatusSchema,
   AssetTypeSchema,
+  AudioCategorySchema,
+  AudioMarkerSchema,
+  BibleEntityTypeSchema,
   ComfyWorkflowCategorySchema,
   JobStatusSchema,
   ProjectTypeSchema,
@@ -10,20 +13,24 @@ import {
   QualityTierSchema,
   RuleCategorySchema,
   RuleSeveritySchema,
+  ShotStatusSchema,
   SkillScopeSchema,
+  YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
+import type { Stage3Service } from '../services/stage3.service.js';
 import type { StudioService } from '../services/studio.service.js';
 
 export function createVideoStudioMcpServer(
   studio: StudioService,
   media: MediaService,
   stage2: Stage2Service,
+  stage3: Stage3Service,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.2.0',
+    version: '0.3.0',
   });
 
   // --- MCP Resources ---
@@ -853,6 +860,362 @@ export function createVideoStudioMcpServer(
         author: 'claude',
       });
       return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+    },
+  );
+
+  // ==========================================================================
+  // Stage 3 MCP Resources (Script, Bible, Storyboard, Audio, YouTube, Git)
+  // ==========================================================================
+
+  server.resource(
+    'project-script',
+    new ResourceTemplate('studio://projects/{slug}/script', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const script = await stage3.getProjectScript(slug);
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(script ?? { error: `Project not found: ${slug}` }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    'project-bible',
+    new ResourceTemplate('studio://projects/{slug}/bible', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const entities = await stage3.listBibleEntities(slug);
+      return {
+        contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(entities, null, 2) }],
+      };
+    },
+  );
+
+  server.resource(
+    'project-storyboard',
+    new ResourceTemplate('studio://projects/{slug}/storyboard', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const storyboard = await stage3.getStoryboard(slug);
+      return {
+        contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(storyboard, null, 2) }],
+      };
+    },
+  );
+
+  server.resource(
+    'project-audio',
+    new ResourceTemplate('studio://projects/{slug}/audio', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const tracks = await stage3.listAudioTracks(slug);
+      return {
+        contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(tracks, null, 2) }],
+      };
+    },
+  );
+
+  server.resource(
+    'project-youtube',
+    new ResourceTemplate('studio://projects/{slug}/youtube', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const pkg = await stage3.getYouTubePackage(slug);
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(pkg ?? { error: `Project not found: ${slug}` }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    'project-git',
+    new ResourceTemplate('studio://projects/{slug}/git', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const status = await stage3.getProjectRepoStatus(slug);
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(status ?? { error: `Project not found: ${slug}` }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  // ==========================================================================
+  // Stage 3 MCP Tools (Script, Bible, Storyboard, Audio, YouTube, Project Git)
+  // ==========================================================================
+
+  server.tool(
+    'get_script',
+    'Read the current project script and version history.',
+    { project: z.string().min(1) },
+    async ({ project }) => {
+      const script = await stage3.getProjectScript(project);
+      if (!script) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(script, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'update_script',
+    'Save a new version of the project screenplay/script with a change summary.',
+    {
+      project: z.string().min(1),
+      title: z.string().optional(),
+      content: z.string(),
+      changeSummary: z.string().default('Mis à jour par Claude Code'),
+    },
+    async (args) => {
+      const updated = await stage3.updateProjectScript(args.project, {
+        title: args.title,
+        content: args.content,
+        changeSummary: args.changeSummary,
+        author: 'claude',
+      });
+      if (!updated) return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'upsert_bible_entity',
+    'Create or update a Continuity Bible entry (character, location, prop, or visual style) with its canonical @ref and consistent visual prompt/LoRA.',
+    {
+      project: z.string().min(1),
+      refCode: z.string().regex(/^[a-z0-9-]+$/).optional(),
+      entityType: BibleEntityTypeSchema.default('character'),
+      name: z.string().min(1),
+      description: z.string().default(''),
+      visualPrompt: z.string().default(''),
+      loraName: z.string().default(''),
+      referenceAssetIds: z.array(z.string().uuid()).default([]),
+      tags: z.array(z.string()).default([]),
+    },
+    async (args) => {
+      const saved = await stage3.upsertBibleEntity(
+        args.project,
+        {
+          refCode: args.refCode,
+          entityType: args.entityType,
+          name: args.name,
+          description: args.description,
+          visualPrompt: args.visualPrompt,
+          loraName: args.loraName,
+          referenceAssetIds: args.referenceAssetIds,
+          tags: args.tags,
+        },
+        'claude',
+      );
+      if (!saved) return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'get_storyboard',
+    'Get all scenes and shots (storyboard breakdown) for a project.',
+    { project: z.string().min(1) },
+    async ({ project }) => {
+      const storyboard = await stage3.getStoryboard(project);
+      return { content: [{ type: 'text', text: JSON.stringify(storyboard, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'create_scene',
+    'Create a new scene in the project storyboard.',
+    {
+      project: z.string().min(1),
+      title: z.string().min(1),
+      summary: z.string().default(''),
+      locationRef: z.string().default(''),
+    },
+    async (args) => {
+      const created = await stage3.createScene(
+        args.project,
+        { title: args.title, summary: args.summary, locationRef: args.locationRef },
+        'claude',
+      );
+      if (!created) return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'create_shot',
+    'Create a new shot inside a scene with visual description, camera movement, dialogue, prompt, duration, and linked assets/bible entities.',
+    {
+      project: z.string().min(1),
+      sceneId: z.string().uuid(),
+      title: z.string().min(1),
+      visualDescription: z.string().default(''),
+      cameraMovement: z.string().default(''),
+      dialogue: z.string().default(''),
+      prompt: z.string().default(''),
+      durationSec: z.number().min(0.5).max(300).default(4),
+      status: ShotStatusSchema.default('planned'),
+      keyframeAssetId: z.string().uuid().optional(),
+      videoAssetId: z.string().uuid().optional(),
+      bibleEntityRefs: z.array(z.string()).default([]),
+    },
+    async (args) => {
+      const created = await stage3.createShot(args.project, args, 'claude');
+      if (!created) return { isError: true, content: [{ type: 'text', text: 'Project or scene not found' }] };
+      return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'update_shot',
+    'Update a storyboard shot (attach keyframe/video asset UUID, refine prompt, update status or duration).',
+    {
+      shotId: z.string().uuid(),
+      title: z.string().optional(),
+      visualDescription: z.string().optional(),
+      cameraMovement: z.string().optional(),
+      dialogue: z.string().optional(),
+      prompt: z.string().optional(),
+      durationSec: z.number().min(0.5).max(300).optional(),
+      status: ShotStatusSchema.optional(),
+      keyframeAssetId: z.string().uuid().nullable().optional(),
+      videoAssetId: z.string().uuid().nullable().optional(),
+    },
+    async ({ shotId, ...patch }) => {
+      const updated = await stage3.updateShot(shotId, patch, 'claude');
+      if (!updated) return { isError: true, content: [{ type: 'text', text: `Shot not found: ${shotId}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'upsert_audio_track',
+    'Register or update a music, stem, voiceover, dialogue, or SFX track with structured lyrics, LRC timing, auto-generated SRT, BPM, and beat/lip-sync markers.',
+    {
+      project: z.string().min(1),
+      id: z.string().uuid().optional(),
+      assetId: z.string().uuid().nullable().optional(),
+      title: z.string().min(1),
+      category: AudioCategorySchema.default('music'),
+      bpm: z.number().min(20).max(300).nullable().optional(),
+      musicalKey: z.string().default(''),
+      promptUsed: z.string().default(''),
+      lyrics: z.string().default(''),
+      lrcContent: z.string().default(''),
+      srtContent: z.string().default(''),
+      markers: z.array(AudioMarkerSchema).default([]),
+      notes: z.string().default(''),
+    },
+    async ({ project, ...payload }) => {
+      const saved = await stage3.upsertAudioTrack(project, payload, 'claude');
+      if (!saved) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'update_youtube_package',
+    'Update YouTube packaging (up to 3 A/B titles & thumbnail asset UUIDs, description, tags, hashtags, chapters, subtitles, AI disclosure).',
+    {
+      project: z.string().min(1),
+      titles: z.array(z.string()).max(3).optional(),
+      description: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      hashtags: z.array(z.string()).optional(),
+      pinnedComment: z.string().optional(),
+      aiDisclosure: z.boolean().optional(),
+      thumbnailAssetIds: z.array(z.string().uuid()).max(3).optional(),
+      chapters: z.array(YouTubeChapterSchema).optional(),
+      srtSubtitles: z.string().optional(),
+    },
+    async ({ project, ...patch }) => {
+      const updated = await stage3.updateYouTubePackage(project, patch, 'claude');
+      if (!updated) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'prepare_youtube_pack',
+    'Export the complete YouTube Ready Pack (metadata.md, metadata.json, subtitles.srt, A/B thumbnail files) into the project exports folder.',
+    { project: z.string().min(1) },
+    async ({ project }) => {
+      const pack = await stage3.exportYouTubeReadyPack(project);
+      if (!pack) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(pack, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'init_project_git_repo',
+    'Initialize or configure the dedicated local Git repository and optional GitHub remote URL (no embedded tokens) for a VideoStudio project.',
+    {
+      project: z.string().min(1),
+      githubRemoteUrl: z.string().nullable().optional(),
+      defaultBranch: z.string().default('main'),
+      autoCommit: z.boolean().optional(),
+    },
+    async (args) => {
+      try {
+        const status = await stage3.initOrConfigureProjectRepo(
+          args.project,
+          {
+            githubRemoteUrl: args.githubRemoteUrl,
+            defaultBranch: args.defaultBranch,
+            autoCommit: args.autoCommit,
+          },
+          'claude',
+        );
+        if (!status) return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+      }
+    },
+  );
+
+  server.tool(
+    'sync_and_commit_project_repo',
+    'Export the project snapshot (script, bible, storyboard, resolved rules, audio lyrics, YouTube metadata) to its local Git repository and commit.',
+    {
+      project: z.string().min(1),
+      message: z.string().min(1),
+      exportSnapshot: z.boolean().default(true),
+    },
+    async (args) => {
+      const res = await stage3.syncAndCommitProjectRepo(
+        args.project,
+        { message: args.message, exportSnapshot: args.exportSnapshot },
+        'claude',
+      );
+      if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'get_project_git_status',
+    'Inspect local Git repository status, configured GitHub remote, dirty files, and recent commits for a project.',
+    { project: z.string().min(1) },
+    async ({ project }) => {
+      const status = await stage3.getProjectRepoStatus(project);
+      if (!status) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
     },
   );
 

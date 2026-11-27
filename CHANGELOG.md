@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
+### Added
+- **Per-Project Local Git & GitHub Integration (Closes #4)**: Each project can initialize its own local Git repository under `/data/projects/<slug>/repo` with a safe `.gitignore` (excluding raw heavy media & secrets), link a GitHub remote URL (strictly rejecting embedded tokens/credentials), export structured snapshots (script, bible, storyboard, resolved rules, audio lyrics, YouTube metadata), commit, push, and inspect commit history via Web UI (`ProjectGitPanel`) and MCP (`init_project_git_repo`, `sync_and_commit_project_repo`, `get_project_git_status`, `studio://projects/{slug}/git`).
+- **Pre-Production Studio (`PreprodPanel`)**: Versioned screenplay/script editor with LCS line-by-line diff viewer, Continuity Bible (`@char-*`, `@loc-*`, `@prop-*`, `@style-*` with visual prompts & LoRAs), and Storyboard breakdown (Scenes → Shots with camera movement, duration, prompts, asset links & status).
+- **Audio, Music, Lyrics & Lip-Sync Studio (`AudioPanel`)**: Interactive waveform playback bar with clickable beat/section/lip-sync markers, structured lyrics editor, timed `.lrc` parser, and automatic `.srt` subtitle export.
+- **YouTube Packaging Hub (`YouTubePanel`)**: A/B Testing for up to 3 thumbnails & 3 titles (with 60-char mobile truncation & 100-char hard limit checks), Desktop/Mobile & Dark/Light YouTube Feed Simulator with bottom-right duration badge safe-zone overlay, auto-generated chapters from Storyboard, AI disclosure toggle, pre-publish checklist, and 1-click **YouTube Ready Pack** server export (`metadata.md`, `metadata.json`, `subtitles.srt`, thumbnail variants).
+- **Non-Destructive Update Script (`scripts/update.sh`)**: Safe one-command Debian/Docker update script that pulls `main`, adds new optional `.env` defaults without modifying secrets, creates a pre-update PostgreSQL dump in `backups/`, rebuilds only app images while preserving all existing `./data` assets and `postgres_data`, and verifies `/api/health`.
+- **MCP Server v3**: Added Stage 3 resources & tools covering script, bible, storyboard, audio, YouTube packaging, and per-project Git repos.
+- **Automated Tests**: Added `stage3-utils.test.ts`, `project-git.service.test.ts` (real temp Git repo tests), `stage3.routes.test.ts`, `youtube.test.ts`, and expanded `mcp.routes.test.ts`.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

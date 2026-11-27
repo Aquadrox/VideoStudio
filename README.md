@@ -49,7 +49,20 @@ claude mcp add --transport http videostudio http://localhost:3100/mcp \
 
 *(Si tu as modifié `STUDIO_PORT` dans `.env`, adapte le port `3100` en conséquence.)*
 
-### 4. Ingestion depuis ComfyUI (PC sur le LAN)
+### 4. Mettre à jour VideoStudio sans jamais perdre tes assets ni ta base
+
+```bash
+./scripts/update.sh
+```
+
+Le script effectue automatiquement :
+- `git pull --ff-only origin main`
+- sauvegarde PostgreSQL préalable dans `backups/`
+- ajout des nouvelles variables optionnelles dans `.env` sans jamais modifier tes secrets existants
+- reconstruction uniquement des conteneurs applicatifs (`server` & `web`) en **préservant intégralement `./data`, `./skills` et le volume `postgres_data`**
+- vérification de `/api/health`.
+
+### 5. Ingestion depuis ComfyUI (PC sur le LAN)
 
 Claude Code peut transmettre directement à `register_asset` une URL locale ComfyUI (ex. `http://<IP-PC-COMFYUI>:8188/view?filename=...`).
 Pour restreindre les hôtes autorisés côté serveur, tu peux renseigner `ALLOWED_FETCH_HOSTS` dans ton `.env` local.
