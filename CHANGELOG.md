@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
+### Added
+- **Stage 4 — Multi-Track NLE Timeline, Animatic, FFmpeg Render & NLE Export (`TimelinePanel`, `Stage4Service`, Closes #6)**:
+  - Added additive `timeline_tracks`, `timeline_clips`, and `timeline_renders` tables plus `projects.timeline_quality_mode`.
+  - Built playable in-browser **Timeline** tab (`TimelinePanel`) with synchronized animatic preview, multi-track `V1`/`A1` sequencer, 1-click Storyboard → Animatic builder, **Draft Proxy ↔ HQ Master** toggle with automatic lineage swapping, background server-side **FFmpeg MP4 render** (live Job progress + ETA, auto-registered into `/renders`), and 1-click **OpenTimelineIO (`.otio`)**, **Final Cut Pro XML (`.fcpxml`)**, and **CMX 3600 (`.edl`)** exports.
+  - Added Stage 4 MCP resource (`studio://projects/{slug}/timeline`) and tools (`get_timeline`, `save_timeline`, `build_animatic_from_storyboard`, `switch_timeline_quality`, `render_timeline`, `export_nle`).
+- **Live ETA Countdown, Sub-Steps & ComfyUI Job Tracking (`ClaudeLiveBar`, `StudioService`)**:
+  - Added `etaSeconds`, `estimatedCompletionAt`, `stepCurrent`, `stepTotal`, `message`, and `comfyPromptIds` on live jobs plus `etaSeconds`/`estimatedCompletionAt` on `agent_tasks`.
+  - Upgraded `ClaudeLiveBar` with a 1-second live countdown ETA pill (`ETA 6m 42s`), sub-step counter (`41/62`), job status message, and per-task ETA pills.
+  - Added optional background ComfyUI `/history` poller when `COMFYUI_BASE_URL` is configured and `comfyPromptIds[]` are passed to `start_job`.
+- **Zero-Downtime Request Draining & Stateless MCP**:
+  - Exposed live `inFlightRequests` and `mcpMode: "stateless"` on `/api/health`, added `stop_grace_period: 60s` in `docker-compose.yml`, and upgraded `scripts/update.sh` to poll `inFlightRequests === 0` before stopping the old Blue/Green slot so heavy uploads (`register_asset`) never get cut mid-flight.
+- **Compact Paginated MCP Responses & Single-Asset Detail**:
+  - Defaulted `list_assets` to `compact: true` with cursor pagination (`cursor`, `limit`, returning `{ total, count, nextCursor, assets }`), defaulted `get_storyboard` to `compact: true` with cumulative absolute `startSec` timecodes, and added `get_asset(ref)`.
+- **Idempotent Batch Operations & Multi-Root Read-Only Ingest**:
+  - Added `upsert_storyboard` (keyed by `externalId` e.g. `"S04"` so re-runs never create duplicates) and `ingest_folder` (idempotent batch ingestion with automatic parent stem matching e.g. `S10_4k.png` → `S10.png`).
+  - Added `INGEST_EXTRA_DIRS` env var for mounting multiple read-only roots via local `docker-compose.override.yml`, plus `localPath` on projects.
+- **Asset Relation Types & Compare Deep-Links (`CompareView`)**:
+  - Added `relationType` (`revision | upscale | crop | variant`) on assets so upscales/crops/variants stay `v1` instead of bumping revision numbers.
+  - Added `/compare?left=@ref&right=@ref` URL deep-linking, smart auto-suggested pairs (`Upscale / HQ`, `Rejet ↔ Correction`), and a 1-click **Copier lien** button in `CompareView`.
+- **Server-Side Visual QC, Shot Auto-Linking & Enhanced LRC / Suno Alignment**:
+  - Added `record_qc`, `get_frame`, and `contact_sheet` MCP tools + REST endpoints (`PATCH /api/assets/:id/qc`, `POST /api/assets/:id/frame`, `POST /api/assets/:id/contact-sheet`) and visual QC badges (`QC ✓` / `QC !` / `QC ✗`) on `AssetCard` + interactive QC checklist in `AssetInspector`.
+  - Auto-linked annotations with `timecodeSec` (or linked keyframe/video asset) to matching storyboard shots (`shotId`/`shotCode`), and added incremental `since` filtering to `get_pending_feedback`.
+  - Added `compose_prompt` (combining Continuity Bible entries, ordered reference assets, filtered active rules, and shot prompt), word-level Enhanced LRC (`<mm:ss.xx>`) parsing, and `import_suno_alignment`.
+
 ## [0.3.3] - 2026-11-27
 
 ### Added

@@ -8,6 +8,7 @@ import {
   Copy,
   CornerLeftUp,
   FileText,
+  Film,
   Folder,
   FolderPlus,
   GitBranch,
@@ -50,6 +51,7 @@ import { PreprodPanel } from './components/PreprodPanel';
 import { ProjectGitPanel } from './components/ProjectGitPanel';
 import { RulesPanel } from './components/RulesPanel';
 import { SkillsPanel } from './components/SkillsPanel';
+import { TimelinePanel } from './components/TimelinePanel';
 import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
 import {
@@ -62,6 +64,7 @@ import {
 type WorkspaceMode =
   | 'media'
   | 'preprod'
+  | 'timeline'
   | 'audio'
   | 'compare'
   | 'rules'
@@ -70,10 +73,32 @@ type WorkspaceMode =
   | 'youtube'
   | 'git';
 
+function parseCompareDeepLink(): { active: boolean; leftRef: string | null; rightRef: string | null } {
+  if (typeof window === 'undefined') return { active: false, leftRef: null, rightRef: null };
+  const url = new URL(window.location.href);
+  const pathIsCompare = url.pathname.replace(/\/+$/, '') === '/compare';
+  const modeParam = url.searchParams.get('mode');
+  const leftRef = url.searchParams.get('left');
+  const rightRef = url.searchParams.get('right');
+  const active = pathIsCompare || modeParam === 'compare' || Boolean(leftRef || rightRef);
+  return { active, leftRef, rightRef };
+}
+
 export function App() {
+  const initialCompareLink = useMemo(() => parseCompareDeepLink(), []);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('media');
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(
+    initialCompareLink.active ? 'compare' : 'media',
+  );
+  const [pendingCompareRefs, setPendingCompareRefs] = useState<{
+    leftRef: string | null;
+    rightRef: string | null;
+  } | null>(
+    initialCompareLink.leftRef || initialCompareLink.rightRef
+      ? { leftRef: initialCompareLink.leftRef, rightRef: initialCompareLink.rightRef }
+      : null,
+  );
   const [assets, setAssets] = useState<AssetDto[]>([]);
   const [folders, setFolders] = useState<MediaFolderDto[]>([]);
   const [currentFolderPath, setCurrentFolderPath] = useState('');
@@ -98,6 +123,7 @@ export function App() {
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [skillsRefresh, setSkillsRefresh] = useState(0);
   const [stage3Refresh, setStage3Refresh] = useState(0);
+  const [timelineRefresh, setTimelineRefresh] = useState(0);
 
   const [rightTab, setRightTab] = useState<'inspector' | 'activity'>('inspector');
   const [typeFilter, setTypeFilter] = useState<AssetType | 'all'>('all');
@@ -176,6 +202,35 @@ export function App() {
     setSelectedAssetId(null);
     setSelectedLineage(null);
   }, [activeProjectId, refreshFolders]);
+
+  // Resolve deep-linked /compare?left=@img-038-v2&right=@img-144 once assets load
+  useEffect(() => {
+    if (!pendingCompareRefs || assets.length === 0) return;
+    const matchAsset = (ref: string | null) => {
+      if (!ref) return null;
+      const clean = ref.trim().toLowerCase();
+      const withoutAt = clean.replace(/^@/, '');
+      return (
+        assets.find(
+          (a) =>
+            a.id.toLowerCase() === clean ||
+            a.handle.toLowerCase() === clean ||
+            a.refCode.toLowerCase() === withoutAt,
+        ) ?? null
+      );
+    };
+
+    const leftMatch = matchAsset(pendingCompareRefs.leftRef);
+    const rightMatch = matchAsset(pendingCompareRefs.rightRef);
+    if (leftMatch || rightMatch) {
+      setComparePair({
+        leftId: leftMatch?.id ?? null,
+        rightId: rightMatch?.id ?? null,
+      });
+      setWorkspaceMode('compare');
+      setPendingCompareRefs(null);
+    }
+  }, [assets, pendingCompareRefs]);
 
   // Load lineage when an asset is selected
   useEffect(() => {
@@ -275,6 +330,9 @@ export function App() {
           break;
         case 'stage3.changed':
           setStage3Refresh((n) => n + 1);
+          break;
+        case 'timeline.changed':
+          setTimelineRefresh((n) => n + 1);
           break;
       }
     },
@@ -472,7 +530,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.3.3 · MCP · LAN</div>
+              <div className="brand-sub">v0.4.0 · MCP · LAN</div>
             </div>
           </div>
 
@@ -654,6 +712,13 @@ export function App() {
             onClick={() => setWorkspaceMode('preprod')}
           >
             <FileText size={14} /> Pré-prod
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'timeline' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('timeline')}
+          >
+            <Film size={14} /> Timeline
           </button>
           <button
             type="button"
@@ -1026,6 +1091,20 @@ export function App() {
           />
         )}
 
+        {workspaceMode === 'timeline' && activeProject && (
+          <TimelinePanel
+            projectId={activeProject.id}
+            assets={assets}
+            refreshSignal={timelineRefresh}
+            onNotify={showToast}
+            onOpenAssetId={(assetId) => {
+              setSelectedAssetId(assetId);
+              setRightTab('inspector');
+              setWorkspaceMode('media');
+            }}
+          />
+        )}
+
         {workspaceMode === 'audio' && (
           <AudioPanel
             project={activeProject}
@@ -1041,6 +1120,7 @@ export function App() {
             assets={assets}
             initialLeftId={comparePair.leftId}
             initialRightId={comparePair.rightId}
+            onCopyLink={(url) => handleCopyText(url, 'Lien comparateur')}
           />
         )}
 

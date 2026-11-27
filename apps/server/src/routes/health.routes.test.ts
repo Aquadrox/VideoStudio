@@ -23,15 +23,19 @@ describe('Health route with Blue/Green slot reporting', () => {
       pool: { query: vi.fn().mockResolvedValue({ rows: [{ '?column?': 1 }] }) } as unknown as pg.Pool,
       media: { checkFfmpegAvailable: vi.fn().mockResolvedValue(true) } as unknown as MediaService,
       realtime: { clientCount: 2 } as unknown as RealtimeHub,
+      getInFlightRequests: () => 3,
     });
 
     const res = await app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.status).toBe('ok');
+    expect(body.version).toBe('0.4.0');
     expect(body.slot).toBe('green');
+    expect(body.inFlightRequests).toBe(3);
     expect(body.services.database).toBe('up');
     expect(body.services.ffmpeg).toBe('available');
+    expect(body.services.mcpMode).toBe('stateless');
     await app.close();
   });
 

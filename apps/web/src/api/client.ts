@@ -18,11 +18,13 @@ import type {
   CreateShotInput,
   JobDto,
   MediaFolderDto,
+  NleExportFormat,
   ProjectDto,
   ProjectRepoStatusDto,
   ProjectRulesBundle,
   ProjectScriptDto,
   PromptTemplateDto,
+  RecordQcInput,
   RenderedPromptResult,
   RulebookDto,
   RuleDto,
@@ -30,6 +32,10 @@ import type {
   ShotDto,
   SkillDto,
   SkillVersionDto,
+  StartTimelineRenderInput,
+  TimelineDto,
+  TimelineQualityMode,
+  TimelineRenderDto,
   UpdateAnnotationInput,
   UpdateAssetInput,
   UpdateProjectInput,
@@ -41,6 +47,7 @@ import type {
   UpsertBibleEntityInput,
   UpsertProjectRuleOverrideInput,
   UpsertSkillInput,
+  UpsertTimelineInput,
   YouTubePackageDto,
 } from '@videostudio/shared';
 
@@ -48,11 +55,13 @@ export interface HealthResponse {
   status: string;
   version: string;
   slot?: string;
+  inFlightRequests?: number;
   services: {
     database: string;
     ffmpeg: string;
     websocketClients: number;
     mcpEndpoint: string;
+    mcpMode?: string;
   };
   timestamp: string;
 }
@@ -678,5 +687,81 @@ export const api = {
     return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/git/push`, {
       method: 'POST',
     });
+  },
+
+  // --- v0.4.0 Visual QC ---
+
+  async recordAssetQc(assetId: string, input: RecordQcInput): Promise<AssetDto> {
+    const res = await apiFetch<{ asset: AssetDto }>(
+      `/api/assets/${encodeURIComponent(assetId)}/qc`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.asset;
+  },
+
+  // --- Stage 4: Multi-Track NLE Timeline, Animatic, Render & NLE Export ---
+
+  async getTimeline(projectId: string): Promise<TimelineDto> {
+    const res = await apiFetch<{ timeline: TimelineDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline`,
+    );
+    return res.timeline;
+  },
+
+  async saveTimeline(projectId: string, input: UpsertTimelineInput): Promise<TimelineDto> {
+    const res = await apiFetch<{ timeline: TimelineDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.timeline;
+  },
+
+  async buildTimelineFromStoryboard(
+    projectId: string,
+    includeAudio = true,
+  ): Promise<TimelineDto> {
+    const res = await apiFetch<{ timeline: TimelineDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline/from-storyboard`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ includeAudio }),
+      },
+    );
+    return res.timeline;
+  },
+
+  async swapTimelineQualityMode(
+    projectId: string,
+    mode: TimelineQualityMode,
+  ): Promise<{ timeline: TimelineDto; swappedCount: number }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/quality-mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+  },
+
+  async startTimelineRender(
+    projectId: string,
+    input: StartTimelineRenderInput = {},
+  ): Promise<{ render: TimelineRenderDto; jobId: string }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  },
+
+  getTimelineExportUrl(projectId: string, format: NleExportFormat): string {
+    return `/api/projects/${encodeURIComponent(projectId)}/timeline/export?format=${format}&download=1`;
   },
 };

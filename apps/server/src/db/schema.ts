@@ -17,6 +17,7 @@ import type {
   ChecklistItem,
   ComfyMetadata,
   PromptVariable,
+  QcCheckValue,
   YouTubeChapter,
 } from '@videostudio/shared';
 
@@ -32,6 +33,8 @@ export const projects = pgTable(
     fps: integer('fps').notNull().default(24),
     targetResolution: text('target_resolution').notNull().default('1920x1080'),
     status: text('status').notNull().default('pre_production'),
+    localPath: text('local_path').notNull().default(''),
+    timelineQualityMode: text('timeline_quality_mode').notNull().default('draft_proxy'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -55,6 +58,7 @@ export const assets = pgTable(
     parentAssetId: uuid('parent_asset_id').references((): AnyPgColumn => assets.id, {
       onDelete: 'set null',
     }),
+    relationType: text('relation_type').notNull().default('revision'),
     versionNumber: integer('version_number').notNull().default(1),
     originalFilename: text('original_filename').notNull(),
     filePath: text('file_path').notNull(),
@@ -73,6 +77,9 @@ export const assets = pgTable(
     comfyMetadata: jsonb('comfy_metadata').$type<ComfyMetadata | null>(),
     tags: jsonb('tags').$type<string[]>().notNull().default([]),
     notes: text('notes').notNull().default(''),
+    qcChecks: jsonb('qc_checks').$type<Record<string, QcCheckValue>>().notNull().default({}),
+    qcStatus: text('qc_status').notNull().default('pending'),
+    qcNotes: text('qc_notes').notNull().default(''),
     createdBy: text('created_by').notNull().default('claude'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -112,6 +119,12 @@ export const jobs = pgTable(
     title: text('title').notNull(),
     status: text('status').notNull().default('pending'),
     progress: integer('progress').notNull().default(0),
+    stepCurrent: integer('step_current'),
+    stepTotal: integer('step_total'),
+    message: text('message').notNull().default(''),
+    comfyPromptIds: jsonb('comfy_prompt_ids').$type<string[]>().notNull().default([]),
+    etaSeconds: integer('eta_seconds'),
+    estimatedCompletionAt: timestamp('estimated_completion_at', { withTimezone: true }),
     resultAssetId: uuid('result_asset_id').references(() => assets.id, { onDelete: 'set null' }),
     errorMessage: text('error_message'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -134,6 +147,8 @@ export const agentTasks = pgTable(
     progress: integer('progress'),
     groupName: text('group_name').notNull().default(''),
     assetRef: text('asset_ref'),
+    etaSeconds: integer('eta_seconds'),
+    estimatedCompletionAt: timestamp('estimated_completion_at', { withTimezone: true }),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -156,6 +171,8 @@ export const annotations = pgTable(
     author: text('author').notNull().default('user'),
     frameNumber: integer('frame_number'),
     timecodeSec: doublePrecision('timecode_sec'),
+    shotId: uuid('shot_id').references((): AnyPgColumn => shots.id, { onDelete: 'set null' }),
+    shotCode: text('shot_code'),
     shapeType: text('shape_type').notNull().default('pin'),
     x: doublePrecision('x').notNull(),
     y: doublePrecision('y').notNull(),
@@ -421,11 +438,13 @@ export const shots = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
     shotCode: text('shot_code').notNull(),
+    externalId: text('external_id'),
     title: text('title').notNull(),
     visualDescription: text('visual_description').notNull().default(''),
     cameraMovement: text('camera_movement').notNull().default(''),
     dialogue: text('dialogue').notNull().default(''),
     prompt: text('prompt').notNull().default(''),
+    startSec: doublePrecision('start_sec'),
     durationSec: doublePrecision('duration_sec').notNull().default(4),
     status: text('status').notNull().default('planned'),
     keyframeAssetId: uuid('keyframe_asset_id').references(() => assets.id, { onDelete: 'set null' }),
@@ -508,4 +527,76 @@ export const projectRepos = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [uniqueIndex('project_repos_project_uidx').on(table.projectId)],
+);
+
+// --- Stage 4 Tables (Multi-Track NLE Timeline & Server Renders) ---
+
+export const timelineTracks = pgTable(
+  'timeline_tracks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    trackType: text('track_type').notNull().default('video'),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    muted: boolean('muted').notNull().default(false),
+    locked: boolean('locked').notNull().default(false),
+    volume: doublePrecision('volume').notNull().default(1),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('timeline_tracks_project_sort_idx').on(table.projectId, table.sortOrder)],
+);
+
+export const timelineClips = pgTable(
+  'timeline_clips',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    trackId: uuid('track_id')
+      .notNull()
+      .references(() => timelineTracks.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    startSec: doublePrecision('start_sec').notNull().default(0),
+    durationSec: doublePrecision('duration_sec').notNull().default(4),
+    inSec: doublePrecision('in_sec').notNull().default(0),
+    outSec: doublePrecision('out_sec'),
+    transition: text('transition').notNull().default('cut'),
+    transitionDurationSec: doublePrecision('transition_duration_sec').notNull().default(0),
+    volume: doublePrecision('volume').notNull().default(1),
+    muted: boolean('muted').notNull().default(false),
+    notes: text('notes').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('timeline_clips_project_track_idx').on(table.projectId, table.trackId, table.startSec)],
+);
+
+export const timelineRenders = pgTable(
+  'timeline_renders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    jobId: uuid('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+    outputAssetId: uuid('output_asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    qualityMode: text('quality_mode').notNull().default('draft_proxy'),
+    resolution: text('resolution').notNull().default('1280x720'),
+    fps: integer('fps').notNull().default(24),
+    status: text('status').notNull().default('queued'),
+    progress: integer('progress').notNull().default(0),
+    durationSec: doublePrecision('duration_sec'),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('timeline_renders_project_idx').on(table.projectId, table.createdAt)],
 );

@@ -122,12 +122,68 @@ export class MediaService {
     }
   }
 
+  getAllowedIngestRoots(): string[] {
+    return [this.config.ingestAllowedDir, ...this.config.ingestExtraDirs];
+  }
+
   resolveMediaFile(relativePath: string): string {
     if (relativePath.startsWith('ingest://')) {
       const ingestRel = relativePath.slice('ingest://'.length);
       return resolveSafePath(this.config.ingestAllowedDir, ingestRel);
     }
+    if (relativePath.startsWith('ingest-root://')) {
+      const rest = relativePath.slice('ingest-root://'.length);
+      const slashIdx = rest.indexOf('/');
+      if (slashIdx <= 0) {
+        throw new Error('Invalid ingest-root URI');
+      }
+      const rootIdx = Number(rest.slice(0, slashIdx));
+      const rel = rest.slice(slashIdx + 1);
+      const roots = this.getAllowedIngestRoots();
+      const rootDir = roots[rootIdx];
+      if (!Number.isInteger(rootIdx) || !rootDir) {
+        throw new Error(`Unknown ingest root index: ${rootIdx}`);
+      }
+      return resolveSafePath(rootDir, rel);
+    }
     return resolveSafePath(this.config.dataDir, relativePath);
+  }
+
+  resolveAllowedIngestPath(targetPath: string): {
+    absPath: string;
+    rootIdx: number;
+    relPath: string;
+    referenceUri: string;
+  } {
+    const roots = this.getAllowedIngestRoots();
+    if (path.isAbsolute(targetPath)) {
+      const normalizedTarget = path.resolve(targetPath);
+      for (let i = 0; i < roots.length; i += 1) {
+        const root = roots[i]!;
+        const rel = path.relative(root, normalizedTarget);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+          const safeAbs = resolveSafePath(root, rel);
+          return {
+            absPath: safeAbs,
+            rootIdx: i,
+            relPath: rel,
+            referenceUri: i === 0 ? `ingest://${rel}` : `ingest-root://${i}/${rel}`,
+          };
+        }
+      }
+      throw new Error(
+        `Path is outside allowed ingest roots (configure INGEST_ALLOWED_DIR / INGEST_EXTRA_DIRS)`,
+      );
+    }
+
+    const safeAbs = resolveSafePath(this.config.ingestAllowedDir, targetPath);
+    const rel = path.relative(this.config.ingestAllowedDir, safeAbs);
+    return {
+      absPath: safeAbs,
+      rootIdx: 0,
+      relPath: rel,
+      referenceUri: `ingest://${rel}`,
+    };
   }
 
   async fetchFromUrl(
@@ -184,13 +240,36 @@ export class MediaService {
     mimeType: string;
     resolvedAbsPath: string;
     ingestRelativePath: string;
+    referenceUri: string;
   }> {
-    const ingestRelativePath = path.isAbsolute(localFilePath)
-      ? path.relative(this.config.ingestAllowedDir, localFilePath)
-      : localFilePath;
-    const resolved = resolveSafePath(this.config.ingestAllowedDir, ingestRelativePath);
+    let located = this.resolveAllowedIngestPath(localFilePath);
 
-    const stat = await fs.stat(resolved);
+    // If relative path was not found in primary ingest dir, try extra roots
+    if (!path.isAbsolute(localFilePath)) {
+      try {
+        await fs.access(located.absPath);
+      } catch {
+        const roots = this.getAllowedIngestRoots();
+        for (let i = 1; i < roots.length; i += 1) {
+          const candidate = resolveSafePath(roots[i]!, localFilePath);
+          try {
+            await fs.access(candidate);
+            const rel = path.relative(roots[i]!, candidate);
+            located = {
+              absPath: candidate,
+              rootIdx: i,
+              relPath: rel,
+              referenceUri: `ingest-root://${i}/${rel}`,
+            };
+            break;
+          } catch {
+            // Try next root
+          }
+        }
+      }
+    }
+
+    const stat = await fs.stat(located.absPath);
     if (!stat.isFile()) {
       throw new Error('localFilePath is not a file');
     }
@@ -198,15 +277,69 @@ export class MediaService {
       throw new Error('Local file exceeds MAX_UPLOAD_MB limit');
     }
 
-    const buffer = await fs.readFile(resolved);
-    const filename = sanitizeFilename(path.basename(resolved));
+    const buffer = await fs.readFile(located.absPath);
+    const filename = sanitizeFilename(path.basename(located.absPath));
     return {
       buffer,
       filename,
       mimeType: inferMimeType(filename),
-      resolvedAbsPath: resolved,
-      ingestRelativePath: path.relative(this.config.ingestAllowedDir, resolved),
+      resolvedAbsPath: located.absPath,
+      ingestRelativePath: located.relPath,
+      referenceUri: located.referenceUri,
     };
+  }
+
+  async scanIngestFolder(params: {
+    localDir: string;
+    glob?: string;
+    recursive?: boolean;
+    limit?: number;
+  }): Promise<Array<{ absPath: string; relToDir: string; filename: string; referenceUri: string }>> {
+    const locatedDir = this.resolveAllowedIngestPath(params.localDir);
+    const stat = await fs.stat(locatedDir.absPath);
+    if (!stat.isDirectory()) {
+      throw new Error(`Path is not a directory: ${params.localDir}`);
+    }
+
+    const globRegex = params.glob ? globToRegExp(params.glob) : null;
+    const maxFiles = Math.max(1, Math.min(params.limit ?? 500, 1000));
+    const results: Array<{ absPath: string; relToDir: string; filename: string; referenceUri: string }> = [];
+    const rootDir = this.getAllowedIngestRoots()[locatedDir.rootIdx]!;
+
+    const walk = async (dirAbs: string): Promise<void> => {
+      if (results.length >= maxFiles) return;
+      const entries = await fs.readdir(dirAbs, { withFileTypes: true });
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        if (results.length >= maxFiles) break;
+        if (entry.name.startsWith('.')) continue;
+        const full = path.join(dirAbs, entry.name);
+        if (entry.isDirectory()) {
+          if (params.recursive) {
+            await walk(full);
+          }
+        } else if (entry.isFile()) {
+          const relToDir = path.relative(locatedDir.absPath, full).replace(/\\/g, '/');
+          if (globRegex && !globRegex.test(entry.name) && !globRegex.test(relToDir)) {
+            continue;
+          }
+          const relToRoot = path.relative(rootDir, full).replace(/\\/g, '/');
+          const referenceUri =
+            locatedDir.rootIdx === 0
+              ? `ingest://${relToRoot}`
+              : `ingest-root://${locatedDir.rootIdx}/${relToRoot}`;
+          results.push({
+            absPath: full,
+            relToDir,
+            filename: entry.name,
+            referenceUri,
+          });
+        }
+      }
+    };
+
+    await walk(locatedDir.absPath);
+    return results;
   }
 
   async storeAndProcessMedia(params: {
@@ -218,6 +351,7 @@ export class MediaService {
     storageMode?: 'copy' | 'hardlink' | 'reference';
     sourceLocalAbsPath?: string;
     ingestRelativePath?: string;
+    referenceUri?: string;
   }): Promise<ProcessedMediaResult> {
     const safeName = sanitizeFilename(params.filename);
     const mimeType = inferMimeType(safeName, params.mimeType);
@@ -238,9 +372,13 @@ export class MediaService {
     let originalRelPath: string;
     let originalAbsPath: string;
 
-    if (storageMode === 'reference' && params.ingestRelativePath && params.sourceLocalAbsPath) {
+    if (
+      storageMode === 'reference' &&
+      (params.referenceUri || params.ingestRelativePath) &&
+      params.sourceLocalAbsPath
+    ) {
       // Zero-copy reference mode: stream original directly from read-only ingest mount
-      originalRelPath = `ingest://${params.ingestRelativePath}`;
+      originalRelPath = params.referenceUri ?? `ingest://${params.ingestRelativePath}`;
       originalAbsPath = params.sourceLocalAbsPath;
     } else {
       originalRelPath = path.join(originalsRelDir, `${uid}-${safeName}`);
@@ -379,7 +517,13 @@ export class MediaService {
   async deleteMediaFiles(paths: Array<string | null | undefined>): Promise<void> {
     await Promise.all(
       paths
-        .filter((p): p is string => typeof p === 'string' && p.length > 0 && !p.startsWith('ingest://'))
+        .filter(
+          (p): p is string =>
+            typeof p === 'string' &&
+            p.length > 0 &&
+            !p.startsWith('ingest://') &&
+            !p.startsWith('ingest-root://'),
+        )
         .map(async (relPath) => {
           try {
             const abs = resolveSafePath(this.config.dataDir, relPath);
@@ -389,6 +533,154 @@ export class MediaService {
           }
         }),
     );
+  }
+
+  async extractVideoFrame(params: {
+    absPath: string;
+    assetType: AssetType;
+    timecodeSec: number;
+    maxWidth?: number;
+  }): Promise<{ buffer: Buffer; mimeType: string; width: number | null; height: number | null }> {
+    const maxWidth = Math.max(160, Math.min(params.maxWidth ?? 1280, 3840));
+
+    if (params.assetType === 'image') {
+      const pipeline = sharp(params.absPath)
+        .rotate()
+        .resize({ width: maxWidth, withoutEnlargement: true })
+        .jpeg({ quality: 88 });
+      const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
+      return {
+        buffer: data,
+        mimeType: 'image/jpeg',
+        width: info.width ?? null,
+        height: info.height ?? null,
+      };
+    }
+
+    const tmpDir = resolveSafePath(this.config.dataDir, '.tmp');
+    await fs.mkdir(tmpDir, { recursive: true });
+    const outPath = path.join(tmpDir, `frame-${crypto.randomUUID()}.jpg`);
+
+    try {
+      const tc = Math.max(0, params.timecodeSec).toFixed(3);
+      const ok = await this.runFfmpeg([
+        '-y',
+        '-ss',
+        tc,
+        '-i',
+        params.absPath,
+        '-vframes',
+        '1',
+        '-vf',
+        `scale='min(${maxWidth},iw)':-2`,
+        '-q:v',
+        '2',
+        outPath,
+      ]);
+      if (!ok) {
+        throw new Error(`FFmpeg failed to extract frame at t=${tc}s`);
+      }
+      const buffer = await fs.readFile(outPath);
+      const meta = await sharp(buffer).metadata().catch(() => null);
+      return {
+        buffer,
+        mimeType: 'image/jpeg',
+        width: meta?.width ?? null,
+        height: meta?.height ?? null,
+      };
+    } finally {
+      await fs.unlink(outPath).catch(() => undefined);
+    }
+  }
+
+  async generateContactSheet(params: {
+    absPath: string;
+    assetType: AssetType;
+    everySec?: number;
+    columns?: number;
+    tileWidth?: number;
+    maxFrames?: number;
+  }): Promise<{
+    buffer: Buffer;
+    mimeType: string;
+    width: number | null;
+    height: number | null;
+    everySec: number;
+    columns: number;
+    rows: number;
+    frameCount: number;
+    durationSec: number | null;
+  }> {
+    const everySec = Math.max(0.1, Math.min(params.everySec ?? 0.5, 60));
+    const columns = Math.max(1, Math.min(params.columns ?? 4, 12));
+    const tileWidth = Math.max(120, Math.min(params.tileWidth ?? 360, 960));
+    const maxFrames = Math.max(1, Math.min(params.maxFrames ?? 36, 120));
+
+    if (params.assetType === 'image') {
+      const frame = await this.extractVideoFrame({
+        absPath: params.absPath,
+        assetType: 'image',
+        timecodeSec: 0,
+        maxWidth: tileWidth * 2,
+      });
+      return {
+        ...frame,
+        everySec: 0,
+        columns: 1,
+        rows: 1,
+        frameCount: 1,
+        durationSec: null,
+      };
+    }
+
+    const probe = await this.probeMedia(params.absPath);
+    const durRaw = probe?.format?.duration ?? probe?.streams?.find((s) => s.codec_type === 'video')?.duration;
+    const durationSec = durRaw && Number.isFinite(Number(durRaw)) ? Number(durRaw) : null;
+    const estimatedFrames = durationSec ? Math.max(1, Math.min(maxFrames, Math.ceil(durationSec / everySec))) : Math.min(maxFrames, 16);
+    const rows = Math.max(1, Math.ceil(estimatedFrames / columns));
+
+    const tmpDir = resolveSafePath(this.config.dataDir, '.tmp');
+    await fs.mkdir(tmpDir, { recursive: true });
+    const outPath = path.join(tmpDir, `sheet-${crypto.randomUUID()}.jpg`);
+
+    try {
+      const fpsExpr = `1/${everySec}`;
+      const vf = `fps=${fpsExpr},scale=${tileWidth}:-2,tile=${columns}x${rows}:padding=4:margin=4:color=0x111317`;
+      const ok = await this.runFfmpeg([
+        '-y',
+        '-i',
+        params.absPath,
+        '-vf',
+        vf,
+        '-frames:v',
+        '1',
+        '-q:v',
+        '3',
+        outPath,
+      ]);
+      if (!ok) {
+        throw new Error('FFmpeg failed to generate contact sheet');
+      }
+      const buffer = await fs.readFile(outPath);
+      const meta = await sharp(buffer).metadata().catch(() => null);
+      return {
+        buffer,
+        mimeType: 'image/jpeg',
+        width: meta?.width ?? null,
+        height: meta?.height ?? null,
+        everySec,
+        columns,
+        rows,
+        frameCount: estimatedFrames,
+        durationSec,
+      };
+    } finally {
+      await fs.unlink(outPath).catch(() => undefined);
+    }
+  }
+
+  async executeFfmpeg(args: string[], timeoutMs = 600_000): Promise<void> {
+    await execFileAsync('ffmpeg', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
   }
 
   private async probeMedia(absPath: string): Promise<FfprobeOutput | null> {
@@ -412,4 +704,14 @@ export class MediaService {
       return false;
     }
   }
+}
+
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '<<<DOUBLE_STAR>>>')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '.')
+    .replace(/<<<DOUBLE_STAR>>>/g, '.*');
+  return new RegExp(`^${escaped}$`, 'i');
 }

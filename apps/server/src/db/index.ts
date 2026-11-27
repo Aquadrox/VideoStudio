@@ -408,6 +408,88 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
 
     ALTER TABLE project_rule_overrides ADD COLUMN IF NOT EXISTS auto_inject_override boolean;
     ALTER TABLE project_rule_overrides ADD COLUMN IF NOT EXISTS applies_to_tags_override jsonb;
+
+    -- v0.4.0 Additive Non-Destructive Migrations (Stage 4 Timeline, QC, Relations, ETA & Multi-Root Local Path)
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS local_path text NOT NULL DEFAULT '';
+    ALTER TABLE projects ADD COLUMN IF NOT EXISTS timeline_quality_mode text NOT NULL DEFAULT 'draft_proxy';
+
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS relation_type text NOT NULL DEFAULT 'revision';
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS qc_checks jsonb NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS qc_status text NOT NULL DEFAULT 'pending';
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS qc_notes text NOT NULL DEFAULT '';
+
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_current integer;
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS step_total integer;
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS message text NOT NULL DEFAULT '';
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS comfy_prompt_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS eta_seconds integer;
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS estimated_completion_at timestamptz;
+
+    ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS eta_seconds integer;
+    ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS estimated_completion_at timestamptz;
+
+    ALTER TABLE annotations ADD COLUMN IF NOT EXISTS shot_id uuid REFERENCES shots(id) ON DELETE SET NULL;
+    ALTER TABLE annotations ADD COLUMN IF NOT EXISTS shot_code text;
+
+    ALTER TABLE shots ADD COLUMN IF NOT EXISTS external_id text;
+    ALTER TABLE shots ADD COLUMN IF NOT EXISTS start_sec double precision;
+    CREATE UNIQUE INDEX IF NOT EXISTS shots_project_external_uidx
+      ON shots (project_id, external_id)
+      WHERE external_id IS NOT NULL;
+
+    -- Stage 4: Multi-Track NLE Timeline & Server Renders
+    CREATE TABLE IF NOT EXISTS timeline_tracks (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      track_type text NOT NULL DEFAULT 'video',
+      name text NOT NULL,
+      sort_order integer NOT NULL DEFAULT 0,
+      muted boolean NOT NULL DEFAULT false,
+      locked boolean NOT NULL DEFAULT false,
+      volume double precision NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS timeline_tracks_project_sort_idx ON timeline_tracks (project_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS timeline_clips (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      track_id uuid NOT NULL REFERENCES timeline_tracks(id) ON DELETE CASCADE,
+      asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
+      title text NOT NULL,
+      start_sec double precision NOT NULL DEFAULT 0,
+      duration_sec double precision NOT NULL DEFAULT 4,
+      in_sec double precision NOT NULL DEFAULT 0,
+      out_sec double precision,
+      transition text NOT NULL DEFAULT 'cut',
+      transition_duration_sec double precision NOT NULL DEFAULT 0,
+      volume double precision NOT NULL DEFAULT 1,
+      muted boolean NOT NULL DEFAULT false,
+      notes text NOT NULL DEFAULT '',
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS timeline_clips_project_track_idx ON timeline_clips (project_id, track_id, start_sec);
+
+    CREATE TABLE IF NOT EXISTS timeline_renders (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      job_id uuid REFERENCES jobs(id) ON DELETE SET NULL,
+      output_asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
+      quality_mode text NOT NULL DEFAULT 'draft_proxy',
+      resolution text NOT NULL DEFAULT '1280x720',
+      fps integer NOT NULL DEFAULT 24,
+      status text NOT NULL DEFAULT 'queued',
+      progress integer NOT NULL DEFAULT 0,
+      duration_sec double precision,
+      error_message text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS timeline_renders_project_idx ON timeline_renders (project_id, created_at DESC);
   `);
 
   // Seed one default reusable Rulebook if none exist yet

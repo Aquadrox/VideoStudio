@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import {
   CommitProjectRepoInputSchema,
   ConfigureProjectRepoInputSchema,
@@ -9,6 +10,7 @@ import {
   UpdateYouTubePackageInputSchema,
   UpsertAudioTrackInputSchema,
   UpsertBibleEntityInputSchema,
+  UpsertStoryboardInputSchema,
 } from '@videostudio/shared';
 import type { Stage3Service } from '../services/stage3.service.js';
 
@@ -128,6 +130,46 @@ export function registerStage3Routes(
     return reply.code(204).send();
   });
 
+  app.put<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/storyboard',
+    async (request, reply) => {
+      const parsed = UpsertStoryboardInputSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      const res = await stage3.upsertStoryboard(
+        request.params.projectIdOrSlug,
+        parsed.data,
+        'user',
+      );
+      if (!res) return reply.code(404).send({ error: 'Project not found' });
+      return res;
+    },
+  );
+
+  app.post<{ Params: { projectIdOrSlug: string; shotIdOrCode: string } }>(
+    '/api/projects/:projectIdOrSlug/shots/:shotIdOrCode/compose-prompt',
+    async (request, reply) => {
+      const parsed = z
+        .object({
+          extraTags: z.array(z.string()).optional(),
+          extraPositive: z.string().optional(),
+          extraNegative: z.string().optional(),
+        })
+        .safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      const composed = await stage3.composeShotPrompt(
+        request.params.projectIdOrSlug,
+        request.params.shotIdOrCode,
+        parsed.data,
+      );
+      if (!composed) return reply.code(404).send({ error: 'Project or shot not found' });
+      return { composed };
+    },
+  );
+
   // --- 4. Audio, Music & Lyrics ---
   app.get<{ Params: { projectIdOrSlug: string } }>(
     '/api/projects/:projectIdOrSlug/audio',
@@ -150,6 +192,38 @@ export function registerStage3Routes(
         'user',
       );
       if (!track) return reply.code(404).send({ error: 'Project not found' });
+      return reply.code(201).send({ track });
+    },
+  );
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/audio/import-suno',
+    async (request, reply) => {
+      const parsed = z
+        .object({
+          trackId: z.string().uuid().optional(),
+          title: z.string().min(1).max(200).optional(),
+          pauseThresholdSec: z.number().min(0.2).max(10).optional(),
+          words: z.array(
+            z.object({
+              word: z.string(),
+              startS: z.number().optional(),
+              endS: z.number().optional(),
+              start_s: z.number().optional(),
+              end_s: z.number().optional(),
+            }),
+          ),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      const track = await stage3.importSunoAlignment(
+        request.params.projectIdOrSlug,
+        parsed.data,
+        'user',
+      );
+      if (!track) return reply.code(404).send({ error: 'Project or track not found' });
       return reply.code(201).send({ track });
     },
   );

@@ -139,7 +139,9 @@ ensure_env_default() {
 ensure_env_default "SKILLS_SYNC_DIR" "/skills"
 ensure_env_default "INGEST_HOST_DIR" "./ingest"
 ensure_env_default "INGEST_ALLOWED_DIR" "/ingest"
+ensure_env_default "INGEST_EXTRA_DIRS" ""
 ensure_env_default "ALLOWED_FETCH_HOSTS" ""
+ensure_env_default "COMFYUI_BASE_URL" ""
 
 # 4. Pre-update PostgreSQL safety backup if container is running (online, zero downtime)
 if docker compose ps --status running --services 2>/dev/null | grep -q "^postgres$"; then
@@ -276,10 +278,28 @@ else
   printf '%s\n' "$CURRENT_SLOT" > "$PREV_SLOT_FILE"
   printf '%s\n' "$TARGET_SLOT" > "$SLOT_FILE"
 
-  # Graceful drain before stopping previous slot (never removes volumes or data)
+  # Graceful drain before stopping previous slot (waits until in-flight uploads/MCP calls finish)
   if [[ "$CURRENT_SLOT" != "$TARGET_SLOT" ]]; then
-    echo "🕒 Draining in-flight requests on old slot '${CURRENT_SLOT}' for ${DRAIN_SECONDS}s..."
-    sleep "$DRAIN_SECONDS"
+    MAX_DRAIN="${DRAIN_SECONDS}"
+    if (( MAX_DRAIN < 60 )); then
+      MAX_DRAIN=60
+    fi
+    echo "🕒 Draining in-flight requests on old slot '${CURRENT_SLOT}' (min ${DRAIN_SECONDS}s, max ${MAX_DRAIN}s)..."
+    ELAPSED=0
+    while (( ELAPSED < MAX_DRAIN )); do
+      INFLIGHT=""
+      INFLIGHT="$(docker compose --profile green exec -T gateway wget -qO- "http://server-${CURRENT_SLOT}:3001/api/health" 2>/dev/null \
+        | sed -n 's/.*"inFlightRequests":\([0-9]*\).*/\1/p' || true)"
+      if [[ -n "$INFLIGHT" && "$INFLIGHT" -eq 0 && "$ELAPSED" -ge "$DRAIN_SECONDS" ]]; then
+        echo "✅ Old slot '${CURRENT_SLOT}' drained (0 in-flight requests after ${ELAPSED}s)."
+        break
+      fi
+      if [[ -n "$INFLIGHT" && "$INFLIGHT" -gt 0 ]]; then
+        echo "   ⏳ Waiting for ${INFLIGHT} in-flight request(s) on '${CURRENT_SLOT}' (${ELAPSED}s/${MAX_DRAIN}s)..."
+      fi
+      sleep 1
+      ELAPSED=$((ELAPSED + 1))
+    done
     echo "🛑 Stopping standby old slot '${CURRENT_SLOT}' (image preserved for instant ./scripts/rollback.sh)..."
     docker compose --profile green stop "server-${CURRENT_SLOT}" "web-${CURRENT_SLOT}"
   fi

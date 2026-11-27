@@ -2,6 +2,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { z } from 'zod';
 import {
   AgentTaskStatusSchema,
+  AssetRelationTypeSchema,
   AssetStatusSchema,
   AssetTypeSchema,
   AudioCategorySchema,
@@ -9,9 +10,12 @@ import {
   BibleEntityTypeSchema,
   ComfyWorkflowCategorySchema,
   JobStatusSchema,
+  NleExportFormatSchema,
   ProjectStatusSchema,
   ProjectTypeSchema,
   PromptCategorySchema,
+  QcCheckValueSchema,
+  QcOverallStatusSchema,
   QualityTierSchema,
   RuleCategorySchema,
   RuleSeveritySchema,
@@ -19,11 +23,15 @@ import {
   SkillScopeSchema,
   StorageModeSchema,
   SyncAgentTaskItemSchema,
+  TimelineQualityModeSchema,
+  UpsertStoryboardInputSchema,
+  UpsertTimelineInputSchema,
   YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
+import type { Stage4Service } from '../services/stage4.service.js';
 import type { StudioService } from '../services/studio.service.js';
 
 export function createVideoStudioMcpServer(
@@ -31,10 +39,11 @@ export function createVideoStudioMcpServer(
   media: MediaService,
   stage2: Stage2Service,
   stage3: Stage3Service,
+  stage4: Stage4Service,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.3.3',
+    version: '0.4.0',
   });
 
   // --- MCP Resources ---
@@ -85,7 +94,7 @@ export function createVideoStudioMcpServer(
               {
                 project,
                 assetsCount: projectAssets.length,
-                recentAssets: projectAssets.slice(0, 20),
+                recentAssets: projectAssets.slice(0, 20).map((a) => studio.toCompactAssetDto(a)),
                 activeJobs,
                 agentTasks: agentTaskList,
                 recentActivities,
@@ -128,7 +137,11 @@ export function createVideoStudioMcpServer(
           {
             uri: uri.href,
             mimeType: 'application/json',
-            text: JSON.stringify(projectAssets, null, 2),
+            text: JSON.stringify(
+              projectAssets.map((a) => studio.toCompactAssetDto(a)),
+              null,
+              2,
+            ),
           },
         ],
       };
@@ -161,7 +174,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'list_projects',
-    'List all VideoStudio projects with their slugs, statuses, and asset counts.',
+    'List all VideoStudio projects with their slugs, statuses, localPath, and asset counts.',
     {},
     async () => {
       const list = await studio.listProjects();
@@ -186,6 +199,7 @@ export function createVideoStudioMcpServer(
       aspectRatio: z.string().optional().describe('Aspect ratio such as 16:9 or 9:16'),
       fps: z.number().int().min(1).max(120).optional().describe('Target FPS (e.g. 24, 30, 60)'),
       targetResolution: z.string().optional().describe('Target resolution such as 1920x1080 or 3840x2160'),
+      localPath: z.string().optional().describe('Optional local host/container working directory path for this project'),
     },
     async (args) => {
       const created = await studio.createProject(
@@ -197,6 +211,7 @@ export function createVideoStudioMcpServer(
           aspectRatio: args.aspectRatio ?? '16:9',
           fps: args.fps ?? 24,
           targetResolution: args.targetResolution ?? '1920x1080',
+          localPath: args.localPath ?? '',
         },
         'claude',
       );
@@ -208,7 +223,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'update_project',
-    'Update a project status (pre_production, production, editing, youtube_ready, published, archived) or metadata (name, description, type, aspectRatio, fps, targetResolution).',
+    'Update a project status (pre_production, production, editing, youtube_ready, published, archived) or metadata (name, description, type, aspectRatio, fps, targetResolution, localPath).',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       name: z.string().min(1).max(120).optional(),
@@ -220,6 +235,7 @@ export function createVideoStudioMcpServer(
       status: ProjectStatusSchema.optional().describe(
         'pre_production, production, editing, youtube_ready, published, or archived',
       ),
+      localPath: z.string().optional().describe('Local working directory path where this project files live'),
     },
     async (args) => {
       const updated = await studio.updateProject(
@@ -232,6 +248,7 @@ export function createVideoStudioMcpServer(
           fps: args.fps,
           targetResolution: args.targetResolution,
           status: args.status,
+          localPath: args.localPath,
         },
         'claude',
       );
@@ -249,7 +266,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'get_project_overview',
-    'Get detailed overview, recent assets, and live jobs for a project by slug or UUID.',
+    'Get detailed overview, recent assets (compact), and live jobs for a project by slug or UUID.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
     },
@@ -274,7 +291,7 @@ export function createVideoStudioMcpServer(
             text: JSON.stringify(
               {
                 project,
-                assets: projectAssets,
+                assets: projectAssets.map((a) => studio.toCompactAssetDto(a)),
                 jobs: activeJobs,
                 agentTasks: agentTaskList,
                 recentActivities,
@@ -290,7 +307,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'register_asset',
-    'Ingest an image, video, audio, or document into a VideoStudio project (from a LAN ComfyUI URL, base64 payload, or mounted ingest path). Supports storageMode="reference" for zero-copy streaming from INGEST_ALLOWED_DIR without duplicating files in data/, folderPath for subfolder organization, and automatic ComfyUI PNG/MP4 metadata extraction (including Qwen-Image-Edit nodes).',
+    'Ingest an image, video, audio, or document into a VideoStudio project (from a LAN ComfyUI URL, base64 payload, or mounted ingest path in INGEST_ALLOWED_DIR or INGEST_EXTRA_DIRS). Supports storageMode="reference" for zero-copy streaming, relationType ("revision" | "upscale" | "crop" | "variant") so derivations do not bump version numbers, folderPath, and ComfyUI metadata extraction.',
     {
       project: z.string().min(1).describe('Target project slug or UUID'),
       sourceUrl: z
@@ -305,24 +322,27 @@ export function createVideoStudioMcpServer(
       localFilePath: z
         .string()
         .optional()
-        .describe('Relative path inside the mounted INGEST_ALLOWED_DIR'),
+        .describe('Relative path inside INGEST_ALLOWED_DIR, or absolute path inside INGEST_ALLOWED_DIR / INGEST_EXTRA_DIRS'),
       storageMode: StorageModeSchema.optional().describe(
-        'copy (default: copies into data/), hardlink (hard link if same filesystem, fallback copy), or reference (zero-copy direct read from mounted INGEST_ALLOWED_DIR, only thumbnails/proxies stored in data/)',
+        'copy (default), hardlink, or reference (zero-copy direct read from mounted read-only roots)',
       ),
       folderPath: z
         .string()
         .optional()
-        .describe('Optional subfolder inside the project media library (e.g. "characters/elena" or "scenes/sc01")'),
+        .describe('Optional subfolder inside the project media library (e.g. "characters/elena")'),
       filename: z.string().optional().describe('Original filename with extension (e.g. hero_01.png)'),
       mimeType: z.string().optional().describe('Optional MIME type override'),
       type: AssetTypeSchema.optional().describe('Optional explicit asset type (image, video, audio, document)'),
       title: z.string().optional().describe('Display title in VideoStudio'),
-      qualityTier: QualityTierSchema.optional().describe('test, draft_lowres, hq_upscale, or final_master'),
+      qualityTier: QualityTierSchema.optional().describe('test, draft, hq, or final'),
       status: AssetStatusSchema.optional().describe('new, in_review, needs_revision, approved, winner, archived'),
       parentRef: z
         .string()
         .optional()
-        .describe('Optional parent asset reference (e.g. @img-001 or UUID) to link version lineage or Draft -> HQ'),
+        .describe('Optional parent asset reference (e.g. @img-001 or UUID) to link lineage'),
+      relationType: AssetRelationTypeSchema.optional().describe(
+        'Relation to parentRef: revision (default, bumps -vN), upscale (e.g. 1080p -> 4K), crop, or variant (keeps v1)',
+      ),
       promptUsed: z.string().optional().describe('Generation positive prompt (auto-filled from ComfyUI metadata if omitted)'),
       negativePrompt: z.string().optional().describe('Generation negative prompt'),
       modelName: z.string().optional().describe('Checkpoint / diffusion model name'),
@@ -349,6 +369,7 @@ export function createVideoStudioMcpServer(
         let mimeType = args.mimeType;
         let sourceLocalAbsPath: string | undefined;
         let ingestRelativePath: string | undefined;
+        let referenceUri: string | undefined;
 
         if (args.sourceUrl) {
           const fetched = await media.fetchFromUrl(args.sourceUrl);
@@ -362,6 +383,7 @@ export function createVideoStudioMcpServer(
           mimeType = args.mimeType ?? loaded.mimeType;
           sourceLocalAbsPath = loaded.resolvedAbsPath;
           ingestRelativePath = loaded.ingestRelativePath;
+          referenceUri = loaded.referenceUri;
         } else {
           const cleaned = (args.base64Data ?? '').replace(/^data:[^;]+;base64,/, '');
           buffer = Buffer.from(cleaned, 'base64');
@@ -376,11 +398,13 @@ export function createVideoStudioMcpServer(
           storageMode: args.storageMode,
           sourceLocalAbsPath,
           ingestRelativePath,
+          referenceUri,
           folderPath: args.folderPath,
           title: args.title,
           qualityTier: args.qualityTier,
           status: args.status,
           parentRef: args.parentRef,
+          relationType: args.relationType,
           promptUsed: args.promptUsed,
           negativePrompt: args.negativePrompt,
           modelName: args.modelName,
@@ -391,7 +415,7 @@ export function createVideoStudioMcpServer(
         });
 
         return {
-          content: [{ type: 'text', text: JSON.stringify(created, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(studio.toCompactAssetDto(created), null, 2) }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -404,8 +428,55 @@ export function createVideoStudioMcpServer(
   );
 
   server.tool(
+    'ingest_folder',
+    'Batch-ingest files from an allowed read-only folder (INGEST_ALLOWED_DIR or INGEST_EXTRA_DIRS) idempotently. Skips already-ingested files and can automatically link derivations to parent assets by filename stem (e.g. parentMatch="suffix_strip" links S10_4k.png -> S10.png).',
+    {
+      project: z.string().min(1).describe('Target project slug or UUID'),
+      localDir: z.string().min(1).describe('Directory path inside INGEST_ALLOWED_DIR or INGEST_EXTRA_DIRS'),
+      glob: z.string().optional().describe('Optional glob filter such as "*.png" or "*_4k.png"'),
+      recursive: z.boolean().default(false).describe('Scan nested subfolders and mirror folderPath structure'),
+      folderPath: z.string().default('').describe('Target subfolder in VideoStudio media library'),
+      storageMode: StorageModeSchema.default('reference').describe('Default "reference" (zero-copy)'),
+      qualityTier: QualityTierSchema.default('test'),
+      relationType: AssetRelationTypeSchema.optional().describe('Relation when linked to a parent (defaults to upscale if parent matched)'),
+      parentMatch: z
+        .string()
+        .default('none')
+        .describe('"none", "suffix_strip" (S10_4k.png -> S10.png), or custom regex with capture group 1 for parent stem'),
+      tags: z.array(z.string()).default([]),
+      limit: z.number().int().min(1).max(1000).default(200),
+    },
+    async (args) => {
+      try {
+        const res = await studio.ingestFolderBatch({
+          projectIdOrSlug: args.project,
+          localDir: args.localDir,
+          glob: args.glob,
+          recursive: args.recursive,
+          folderPath: args.folderPath,
+          storageMode: args.storageMode,
+          qualityTier: args.qualityTier,
+          relationType: args.relationType,
+          parentMatch: args.parentMatch,
+          tags: args.tags,
+          limit: args.limit,
+          createdBy: 'claude',
+        });
+        return {
+          content: [{ type: 'text', text: JSON.stringify(res, null, 2) }],
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+        };
+      }
+    },
+  );
+
+  server.tool(
     'list_assets',
-    'List and filter assets inside a VideoStudio project (optionally scoped to a subfolder).',
+    'List and filter assets inside a VideoStudio project with cursor pagination. Returns compact metadata by default (compact=true, without comfyMetadata/prompts) to stay lightweight; pass compact=false or use get_asset(ref) for full detail.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       type: AssetTypeSchema.optional(),
@@ -421,10 +492,15 @@ export function createVideoStudioMcpServer(
         .describe('If true and folderPath is set, include nested subfolders'),
       tag: z.string().optional(),
       search: z.string().optional(),
-      limit: z.number().int().min(1).max(200).optional(),
+      compact: z
+        .boolean()
+        .default(true)
+        .describe('Return compact fields only (default true: id, handle, filename, status, tier, relationType, parent, folder, qcStatus)'),
+      cursor: z.string().optional().describe('Pagination cursor (ISO timestamp returned in nextCursor)'),
+      limit: z.number().int().min(1).max(200).default(50),
     },
     async (args) => {
-      const list = await studio.listAssets(args.project, {
+      const page = await studio.listAssetsPage(args.project, {
         type: args.type,
         status: args.status,
         qualityTier: args.qualityTier,
@@ -432,17 +508,235 @@ export function createVideoStudioMcpServer(
         recursive: args.recursive,
         tag: args.tag,
         search: args.search,
+        cursor: args.cursor,
         limit: args.limit,
       });
+      const payload = {
+        total: page.total,
+        count: page.assets.length,
+        nextCursor: page.nextCursor,
+        assets: args.compact
+          ? page.assets.map((a) => studio.toCompactAssetDto(a))
+          : page.assets,
+      };
       return {
-        content: [{ type: 'text', text: JSON.stringify(list, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
       };
     },
   );
 
   server.tool(
+    'get_asset',
+    'Get full metadata for a single asset by @ref handle, studio:// URI, or UUID (including prompts, ComfyUI metadata, QC checks, and lineage).',
+    {
+      ref: z.string().min(1).describe('Asset reference (@img-001, slug/img-001, studio://...) or UUID'),
+      project: z.string().optional().describe('Optional project slug to disambiguate short @ref'),
+      includeComfyGraph: z
+        .boolean()
+        .default(false)
+        .describe('Include full raw ComfyUI workflow graph (false by default to keep responses small)'),
+    },
+    async ({ ref, project, includeComfyGraph }) => {
+      const resolved = await studio.resolveReference(ref, project);
+      if (!resolved?.asset) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Asset not found: ${ref}` }],
+        };
+      }
+      const asset = { ...resolved.asset };
+      if (!includeComfyGraph && asset.comfyMetadata) {
+        asset.comfyMetadata = {
+          ...asset.comfyMetadata,
+          rawPromptGraph: undefined,
+          rawWorkflow: undefined,
+        };
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                asset,
+                lineage: resolved.lineage
+                  ? {
+                      ancestors: resolved.lineage.ancestors.map((a) => studio.toCompactAssetDto(a)),
+                      children: resolved.lineage.children.map((a) => studio.toCompactAssetDto(a)),
+                    }
+                  : undefined,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'record_qc',
+    'Record structured visual quality-control checks (e.g. {mains: "ok", yeux: "ok", doublon: "ok", age: "warn"}) on an asset. Displays a QC badge directly on the asset card in the Web UI gallery.',
+    {
+      ref: z.string().min(1).describe('Asset reference (@img-001, @vid-012) or UUID'),
+      project: z.string().optional().describe('Optional project slug to disambiguate short @ref'),
+      checks: z
+        .record(QcCheckValueSchema)
+        .describe('Key-value checks where each value is "ok", "warn", "fail", or "na"'),
+      status: QcOverallStatusSchema.optional().describe('Optional overall override (auto-computed from checks if omitted)'),
+      notes: z.string().max(2000).optional().describe('Optional QC summary notes'),
+    },
+    async (args) => {
+      const updated = await studio.recordAssetQc(
+        args.ref,
+        { checks: args.checks, status: args.status, notes: args.notes },
+        'claude',
+        args.project,
+      );
+      if (!updated) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Asset not found: ${args.ref}` }],
+        };
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                handle: updated.handle,
+                qcStatus: updated.qcStatus,
+                qcChecks: updated.qcChecks,
+                qcNotes: updated.qcNotes,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'get_frame',
+    'Extract a single frame from a video asset at timecode t (seconds) using server-side FFmpeg and return it directly as an inspectable image for visual QC.',
+    {
+      ref: z.string().min(1).describe('Asset reference (@vid-001, @img-001) or UUID'),
+      project: z.string().optional(),
+      timecodeSec: z.number().min(0).default(0).describe('Timestamp in seconds to extract'),
+      maxWidth: z.number().int().min(160).max(1920).default(1024),
+    },
+    async ({ ref, project, timecodeSec, maxWidth }) => {
+      const resolved = await studio.resolveReference(ref, project);
+      if (!resolved?.asset) {
+        return { isError: true, content: [{ type: 'text', text: `Asset not found: ${ref}` }] };
+      }
+      const rawInfo = await studio.getAssetById(resolved.asset.id);
+      if (!rawInfo) {
+        return { isError: true, content: [{ type: 'text', text: `Asset not found: ${ref}` }] };
+      }
+      try {
+        const absPath = media.resolveMediaFile(rawInfo.raw.filePath);
+        const frame = await media.extractVideoFrame({
+          absPath,
+          assetType: resolved.asset.type,
+          timecodeSec,
+          maxWidth,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                handle: resolved.asset.handle,
+                timecodeSec,
+                width: frame.width,
+                height: frame.height,
+              }),
+            },
+            {
+              type: 'image',
+              data: frame.buffer.toString('base64'),
+              mimeType: frame.mimeType,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'contact_sheet',
+    'Generate a visual inspection contact sheet (grid of frames sampled every N seconds) from a video asset using server-side FFmpeg and return it as an image for strict visual QC.',
+    {
+      ref: z.string().min(1).describe('Video asset reference (@vid-001) or UUID'),
+      project: z.string().optional(),
+      everySec: z.number().min(0.1).max(60).default(0.5).describe('Sampling interval in seconds (e.g. 0.25 or 0.5)'),
+      columns: z.number().int().min(1).max(12).default(4),
+      tileWidth: z.number().int().min(120).max(640).default(320),
+      maxFrames: z.number().int().min(1).max(64).default(24),
+    },
+    async ({ ref, project, everySec, columns, tileWidth, maxFrames }) => {
+      const resolved = await studio.resolveReference(ref, project);
+      if (!resolved?.asset) {
+        return { isError: true, content: [{ type: 'text', text: `Asset not found: ${ref}` }] };
+      }
+      const rawInfo = await studio.getAssetById(resolved.asset.id);
+      if (!rawInfo) {
+        return { isError: true, content: [{ type: 'text', text: `Asset not found: ${ref}` }] };
+      }
+      try {
+        const absPath = media.resolveMediaFile(rawInfo.raw.filePath);
+        const sheet = await media.generateContactSheet({
+          absPath,
+          assetType: resolved.asset.type,
+          everySec,
+          columns,
+          tileWidth,
+          maxFrames,
+        });
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                handle: resolved.asset.handle,
+                everySec: sheet.everySec,
+                columns: sheet.columns,
+                rows: sheet.rows,
+                frameCount: sheet.frameCount,
+                durationSec: sheet.durationSec,
+                width: sheet.width,
+                height: sheet.height,
+              }),
+            },
+            {
+              type: 'image',
+              data: sheet.buffer.toString('base64'),
+              mimeType: sheet.mimeType,
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+        };
+      }
+    },
+  );
+
+  server.tool(
     'update_asset',
-    'Update metadata, folderPath, status, quality tier, rating, notes, or tags of an existing asset by reference (@img-001) or UUID.',
+    'Update metadata, folderPath, status, quality tier, relationType, rating, notes, or tags of an existing asset by reference (@img-001) or UUID.',
     {
       ref: z.string().min(1).describe('Asset reference (@img-001, slug/img-001, studio://...) or UUID'),
       project: z.string().optional().describe('Optional project slug to disambiguate short @ref'),
@@ -453,6 +747,7 @@ export function createVideoStudioMcpServer(
         .describe('Move asset to another subfolder (use "" to move back to root)'),
       status: AssetStatusSchema.optional(),
       qualityTier: QualityTierSchema.optional(),
+      relationType: AssetRelationTypeSchema.optional(),
       rating: z.number().int().min(0).max(5).optional(),
       notes: z.string().optional(),
       tags: z.array(z.string()).optional(),
@@ -473,6 +768,7 @@ export function createVideoStudioMcpServer(
           folderPath: args.folderPath,
           status: args.status,
           qualityTier: args.qualityTier,
+          relationType: args.relationType,
           rating: args.rating,
           notes: args.notes,
           tags: args.tags,
@@ -593,11 +889,17 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'start_job',
-    'Declare a long-running generation task (image, video draft, upscale, audio) so the user sees live progress in VideoStudio.',
+    'Declare a long-running generation task (image, video draft, upscale, audio) so the user sees live progress, sub-steps (e.g. 41/62), status message, and countdown ETA in the CLAUDE LIVE bar. Optionally pass comfyPromptIds[] to let VideoStudio track ComfyUI /history automatically when COMFYUI_BASE_URL is configured.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
-      type: z.string().default('generation').describe('Job category (image_gen, video_draft, hq_upscale, audio_gen)'),
+      type: z.string().default('generation').describe('Job category (image_gen, video_draft, hq_upscale, audio_gen, timeline_render)'),
       title: z.string().min(1).max(200).describe('Short description shown in the live progress bar'),
+      stepCurrent: z.number().int().min(0).optional().describe('Optional current sub-step (e.g. 0)'),
+      stepTotal: z.number().int().min(1).optional().describe('Optional total sub-steps (e.g. 62)'),
+      message: z.string().max(400).optional().describe('Optional live status message'),
+      comfyPromptIds: z.array(z.string()).optional().describe('Optional ComfyUI prompt_id list to auto-track via /history'),
+      etaSeconds: z.number().int().min(0).max(86400 * 7).optional().describe('Estimated remaining seconds (auto-computes live countdown ETA)'),
+      estimatedCompletionAt: z.string().optional().describe('Optional ISO-8601 timestamp for target completion'),
     },
     async (args) => {
       try {
@@ -605,6 +907,12 @@ export function createVideoStudioMcpServer(
           projectIdOrSlug: args.project,
           type: args.type,
           title: args.title,
+          stepCurrent: args.stepCurrent,
+          stepTotal: args.stepTotal,
+          message: args.message,
+          comfyPromptIds: args.comfyPromptIds,
+          etaSeconds: args.etaSeconds,
+          estimatedCompletionAt: args.estimatedCompletionAt,
         });
         return {
           content: [{ type: 'text', text: JSON.stringify(job, null, 2) }],
@@ -620,11 +928,17 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'update_job',
-    'Update progress, status (running/completed/failed), or attach the resulting asset UUID to an active live job.',
+    'Update progress, sub-steps (stepCurrent/stepTotal), status message, live countdown ETA (etaSeconds or estimatedCompletionAt), status (running/completed/failed), or attach the resulting asset UUID to an active live job.',
     {
       jobId: z.string().uuid().describe('Job UUID returned by start_job'),
       status: JobStatusSchema.optional(),
       progress: z.number().int().min(0).max(100).optional(),
+      stepCurrent: z.number().int().min(0).nullable().optional(),
+      stepTotal: z.number().int().min(1).nullable().optional(),
+      message: z.string().max(400).optional(),
+      comfyPromptIds: z.array(z.string()).optional(),
+      etaSeconds: z.number().int().min(0).max(86400 * 7).nullable().optional(),
+      estimatedCompletionAt: z.string().nullable().optional(),
       resultAssetId: z.string().uuid().optional(),
       errorMessage: z.string().optional(),
     },
@@ -632,6 +946,12 @@ export function createVideoStudioMcpServer(
       const updated = await studio.updateJob(args.jobId, {
         status: args.status,
         progress: args.progress,
+        stepCurrent: args.stepCurrent,
+        stepTotal: args.stepTotal,
+        message: args.message,
+        comfyPromptIds: args.comfyPromptIds,
+        etaSeconds: args.etaSeconds,
+        estimatedCompletionAt: args.estimatedCompletionAt,
         resultAssetId: args.resultAssetId,
         errorMessage: args.errorMessage,
       });
@@ -649,14 +969,14 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'sync_agent_tasks',
-    'Push or update your structured live task checklist (plan / todo list) for a project. The Web UI displays only the active in_progress task in the compact CLAUDE LIVE bar by default, and unfolds the entire ordered list with every task status when the user clicks on it.',
+    'Push or update your structured live task checklist (plan / todo list) for a project, including optional etaSeconds / estimatedCompletionAt per task. The Web UI displays the active in_progress task and live ETA countdown in the compact CLAUDE LIVE bar, and unfolds the full task list on click.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       tasks: z
         .array(SyncAgentTaskItemSchema)
         .max(200)
         .describe(
-          'Ordered list of tasks. Each task has title, status (pending | in_progress | completed | failed | skipped), optional stable key (e.g. "upscale-01"), optional detail, optional progress (0-100), optional groupName, and optional assetRef (e.g. "@img-014").',
+          'Ordered list of tasks. Each task has title, status (pending | in_progress | completed | failed | skipped), optional stable key, detail, progress (0-100), groupName, assetRef, etaSeconds, and estimatedCompletionAt.',
         ),
       replace: z
         .boolean()
@@ -683,7 +1003,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'update_agent_task',
-    'Update the status (pending, in_progress, completed, failed, skipped), progress (0-100), detail, or linked @assetRef of a single live task by UUID or external key.',
+    'Update the status, progress (0-100), detail, live ETA (etaSeconds / estimatedCompletionAt), or linked @assetRef of a single live task by UUID or external key.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       task: z.string().min(1).describe('Task UUID or external key (e.g. "upscale-01")'),
@@ -693,6 +1013,8 @@ export function createVideoStudioMcpServer(
       progress: z.number().int().min(0).max(100).nullable().optional(),
       groupName: z.string().max(120).optional(),
       assetRef: z.string().max(120).nullable().optional(),
+      etaSeconds: z.number().int().min(0).max(86400 * 7).nullable().optional(),
+      estimatedCompletionAt: z.string().nullable().optional(),
       sortOrder: z.number().int().min(0).max(10000).optional(),
     },
     async (args) => {
@@ -706,6 +1028,8 @@ export function createVideoStudioMcpServer(
           progress: args.progress,
           groupName: args.groupName,
           assetRef: args.assetRef,
+          etaSeconds: args.etaSeconds,
+          estimatedCompletionAt: args.estimatedCompletionAt,
           sortOrder: args.sortOrder,
         },
         'claude',
@@ -824,13 +1148,17 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'get_pending_feedback',
-    'Get all open visual annotations (with normalized x/y/w/h coordinates and exact video frame/timecode) and assets marked needs_revision for a project.',
+    'Get all open visual annotations (with normalized x/y/w/h coordinates, video timecode, auto-linked storyboard shotCode, and optional incremental since ISO timestamp filter) and compact assets marked needs_revision for a project.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
+      since: z
+        .string()
+        .optional()
+        .describe('Optional ISO-8601 timestamp to fetch only new annotations created after this time'),
     },
-    async ({ project }) => {
+    async ({ project, since }) => {
       const [openAnnotations, needsRevisionAssets] = await Promise.all([
-        stage2.listProjectFeedback(project, 'open'),
+        stage2.listProjectFeedback(project, 'open', since),
         studio.listAssets(project, { status: 'needs_revision', limit: 100 }),
       ]);
       return {
@@ -839,9 +1167,10 @@ export function createVideoStudioMcpServer(
             type: 'text',
             text: JSON.stringify(
               {
+                checkedAt: new Date().toISOString(),
                 openAnnotationsCount: openAnnotations.length,
                 openAnnotations,
-                needsRevisionAssets,
+                needsRevisionAssets: needsRevisionAssets.map((a) => studio.toCompactAssetDto(a)),
               },
               null,
               2,
@@ -1378,11 +1707,75 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'get_storyboard',
-    'Get all scenes and shots (storyboard breakdown) for a project.',
-    { project: z.string().min(1) },
-    async ({ project }) => {
+    'Get all scenes and shots (storyboard breakdown with absolute startSec timecodes) for a project. Returns compact fields by default (compact=true) to stay lightweight; pass compact=false for full prompts and dialogue.',
+    {
+      project: z.string().min(1),
+      compact: z.boolean().default(true).describe('Return compact shot list without full prompt/dialogue text (default true)'),
+    },
+    async ({ project, compact }) => {
       const storyboard = await stage3.getStoryboard(project);
-      return { content: [{ type: 'text', text: JSON.stringify(storyboard, null, 2) }] };
+      const data = compact ? stage3.toCompactStoryboard(storyboard) : storyboard;
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'upsert_storyboard',
+    'Idempotent batch upsert of the full storyboard (scenes and shots) keyed by sceneNumber and shot externalId (e.g. "S04") or shotCode. Safe to re-run repeatedly without creating duplicates; automatically computes cumulative startSec timecodes.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      scenes: UpsertStoryboardInputSchema.shape.scenes,
+      pruneMissing: z
+        .boolean()
+        .default(false)
+        .describe('If true, deletes existing shots not present in this payload'),
+    },
+    async ({ project, scenes, pruneMissing }) => {
+      const res = await stage3.upsertStoryboard(project, { scenes, pruneMissing }, 'claude');
+      if (!res) {
+        return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                stats: res.stats,
+                scenes: stage3.toCompactStoryboard(res.scenes),
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'compose_prompt',
+    'Compose the exact final generation prompt for a storyboard shot by combining referenced Continuity Bible entries, ordered reference asset images, active project rules filtered by tags, and the shot prompt/camera movement.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      shot: z.string().min(1).describe('Shot UUID, shotCode (e.g. s01-sh01), or externalId (e.g. S04)'),
+      extraTags: z.array(z.string()).optional().describe('Additional context tags for rule filtering'),
+      extraPositive: z.string().optional(),
+      extraNegative: z.string().optional(),
+    },
+    async ({ project, shot, extraTags, extraPositive, extraNegative }) => {
+      const composed = await stage3.composeShotPrompt(project, shot, {
+        extraTags,
+        extraPositive,
+        extraNegative,
+      });
+      if (!composed) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Project or shot not found: ${shot}` }],
+        };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(composed, null, 2) }] };
     },
   );
 
@@ -1408,16 +1801,18 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'create_shot',
-    'Create a new shot inside a scene with visual description, camera movement, dialogue, prompt, duration, and linked assets/bible entities.',
+    'Create a new shot inside a scene with externalId, absolute startSec, visual description, camera movement, dialogue, prompt, duration, and linked assets/bible entities.',
     {
       project: z.string().min(1),
       sceneId: z.string().uuid(),
+      externalId: z.string().max(64).optional().describe('Optional stable external key (e.g. "S04") for idempotent upserts'),
       title: z.string().min(1),
       visualDescription: z.string().default(''),
       cameraMovement: z.string().default(''),
       dialogue: z.string().default(''),
       prompt: z.string().default(''),
-      durationSec: z.number().min(0.5).max(300).default(4),
+      startSec: z.number().min(0).optional().describe('Optional absolute start timecode in seconds'),
+      durationSec: z.number().min(0.2).max(300).default(4),
       status: ShotStatusSchema.default('planned'),
       keyframeAssetId: z.string().uuid().optional(),
       videoAssetId: z.string().uuid().optional(),
@@ -1432,15 +1827,17 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'update_shot',
-    'Update a storyboard shot (attach keyframe/video asset UUID, refine prompt, update status or duration).',
+    'Update a storyboard shot (externalId, startSec, keyframe/video asset UUID, prompt, status, duration).',
     {
       shotId: z.string().uuid(),
+      externalId: z.string().max(64).nullable().optional(),
       title: z.string().optional(),
       visualDescription: z.string().optional(),
       cameraMovement: z.string().optional(),
       dialogue: z.string().optional(),
       prompt: z.string().optional(),
-      durationSec: z.number().min(0.5).max(300).optional(),
+      startSec: z.number().min(0).nullable().optional(),
+      durationSec: z.number().min(0.2).max(300).optional(),
       status: ShotStatusSchema.optional(),
       keyframeAssetId: z.string().uuid().nullable().optional(),
       videoAssetId: z.string().uuid().nullable().optional(),
@@ -1454,7 +1851,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'upsert_audio_track',
-    'Register or update a music, stem, voiceover, dialogue, or SFX track with structured lyrics, LRC timing, auto-generated SRT, BPM, and beat/lip-sync markers.',
+    'Register or update a music, stem, voiceover, dialogue, or SFX track with structured lyrics, standard or word-level Enhanced LRC (<mm:ss.xx>), auto-generated SRT, BPM, and beat/lip-sync markers.',
     {
       project: z.string().min(1),
       id: z.string().uuid().optional(),
@@ -1474,6 +1871,31 @@ export function createVideoStudioMcpServer(
       const saved = await stage3.upsertAudioTrack(project, payload, 'claude');
       if (!saved) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
       return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'import_suno_alignment',
+    'Import Suno word-level alignment JSON ({word, start_s, end_s}[]) directly into an audio track as Enhanced LRC (<mm:ss.xx>) + auto-generated SRT subtitles.',
+    {
+      project: z.string().min(1),
+      trackId: z.string().uuid().optional().describe('Optional existing audio track UUID to update'),
+      title: z.string().min(1).max(200).optional(),
+      pauseThresholdSec: z.number().min(0.2).max(10).default(1.2),
+      words: z.array(
+        z.object({
+          word: z.string(),
+          startS: z.number().optional(),
+          endS: z.number().optional(),
+          start_s: z.number().optional(),
+          end_s: z.number().optional(),
+        }),
+      ),
+    },
+    async ({ project, ...payload }) => {
+      const track = await stage3.importSunoAlignment(project, payload, 'claude');
+      if (!track) return { isError: true, content: [{ type: 'text', text: `Project or track not found` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(track, null, 2) }] };
     },
   );
 
@@ -1565,6 +1987,119 @@ export function createVideoStudioMcpServer(
       const status = await stage3.getProjectRepoStatus(project);
       if (!status) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
       return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+    },
+  );
+
+  // ==========================================================================
+  // Stage 4 MCP Resource & Tools (Multi-Track Timeline, Animatic, Render, NLE)
+  // ==========================================================================
+
+  server.resource(
+    'project-timeline',
+    new ResourceTemplate('studio://projects/{slug}/timeline', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const timeline = await stage4.getTimeline(slug);
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(timeline ?? { error: `Project not found: ${slug}` }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'get_timeline',
+    'Get the multi-track NLE timeline (video & audio tracks, clips with timing/trim/asset refs, and render history) for a project.',
+    { project: z.string().min(1) },
+    async ({ project }) => {
+      const timeline = await stage4.getTimeline(project);
+      if (!timeline) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(timeline, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'save_timeline',
+    'Save or replace the project multi-track NLE timeline tracks and clips (supports assetId or assetRef like @vid-001).',
+    {
+      project: z.string().min(1),
+      tracks: UpsertTimelineInputSchema.shape.tracks,
+    },
+    async ({ project, tracks }) => {
+      const saved = await stage4.saveTimeline(project, { tracks }, 'claude');
+      if (!saved) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'build_animatic_from_storyboard',
+    'Automatically build a playable multi-track animatic timeline from the project storyboard shots (keyframes/videos) + primary audio track.',
+    {
+      project: z.string().min(1),
+      includeAudio: z.boolean().default(true),
+    },
+    async ({ project, includeAudio }) => {
+      const timeline = await stage4.buildTimelineFromStoryboard(project, { includeAudio }, 'claude');
+      if (!timeline) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(timeline, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'switch_timeline_quality',
+    'Swap timeline clips automatically between Draft Proxy (draft_proxy) and HQ Master (hq_master) versions.',
+    {
+      project: z.string().min(1),
+      mode: TimelineQualityModeSchema.describe('"draft_proxy" or "hq_master"'),
+    },
+    async ({ project, mode }) => {
+      const res = await stage4.swapTimelineQualityMode(project, mode, 'claude');
+      if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'render_timeline',
+    'Start a server-side FFmpeg MP4 render of the project timeline (animatic draft_proxy or hq_master) with live Job progress + ETA and automatic registration in /renders.',
+    {
+      project: z.string().min(1),
+      qualityMode: TimelineQualityModeSchema.default('draft_proxy'),
+      resolution: z.string().optional().describe('Optional override e.g. "1280x720" or "1920x1080"'),
+      fps: z.number().int().min(1).max(120).optional(),
+      title: z.string().optional(),
+    },
+    async ({ project, ...input }) => {
+      try {
+        const res = await stage4.startServerRender(project, input, 'claude');
+        if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'export_nle',
+    'Export the project timeline to a standard NLE interchange format: OpenTimelineIO (.otio), Final Cut Pro XML (.fcpxml), or DaVinci Resolve / Premiere CMX 3600 (.edl).',
+    {
+      project: z.string().min(1),
+      format: NleExportFormatSchema.default('otio'),
+    },
+    async ({ project, format }) => {
+      const exported = await stage4.exportNle(project, format);
+      if (!exported) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(exported, null, 2) }] };
     },
   );
 

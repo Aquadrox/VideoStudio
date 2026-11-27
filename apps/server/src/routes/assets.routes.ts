@@ -1,10 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  AssetRelationTypeSchema,
   AssetStatusSchema,
   AssetTypeSchema,
   IngestAssetJsonInputSchema,
   QualityTierSchema,
+  RecordQcInputSchema,
+  StorageModeSchema,
   UpdateAssetInputSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
@@ -85,6 +88,8 @@ export function registerAssetRoutes(
       tag?: string;
       search?: string;
       limit?: string;
+      cursor?: string;
+      compact?: string;
     };
   }>('/api/projects/:projectIdOrSlug/assets', async (request, reply) => {
     const project = await studio.getProjectByIdOrSlug(request.params.projectIdOrSlug);
@@ -104,8 +109,9 @@ export function registerAssetRoutes(
 
     const recursive =
       request.query.recursive === 'true' || request.query.recursive === '1';
+    const compact = request.query.compact === 'true' || request.query.compact === '1';
 
-    const list = await studio.listAssets(project.id, {
+    const page = await studio.listAssetsPage(project.id, {
       type: typeResult?.success ? typeResult.data : undefined,
       status: statusResult?.success ? statusResult.data : undefined,
       qualityTier: tierResult?.success ? tierResult.data : undefined,
@@ -114,9 +120,14 @@ export function registerAssetRoutes(
       tag: request.query.tag,
       search: request.query.search,
       limit: request.query.limit ? Number(request.query.limit) : undefined,
+      cursor: request.query.cursor,
     });
 
-    return { assets: list };
+    return {
+      assets: compact ? page.assets.map((a) => studio.toCompactAssetDto(a)) : page.assets,
+      nextCursor: page.nextCursor,
+      total: page.total,
+    };
   });
 
   // Supports both multipart/form-data (browser upload) and JSON (sourceUrl / base64Data / localFilePath)
@@ -153,6 +164,9 @@ export function registerAssetRoutes(
           ? QualityTierSchema.safeParse(fields.qualityTier)
           : null;
         const statusParsed = fields.status ? AssetStatusSchema.safeParse(fields.status) : null;
+        const relationParsed = fields.relationType
+          ? AssetRelationTypeSchema.safeParse(fields.relationType)
+          : null;
         const tags = fields.tags
           ? fields.tags
               .split(',')
@@ -171,6 +185,7 @@ export function registerAssetRoutes(
           status: statusParsed?.success ? statusParsed.data : 'new',
           parentAssetId: fields.parentAssetId || undefined,
           parentRef: fields.parentRef || undefined,
+          relationType: relationParsed?.success ? relationParsed.data : 'revision',
           promptUsed: fields.promptUsed || undefined,
           negativePrompt: fields.negativePrompt || undefined,
           tags,
@@ -196,6 +211,7 @@ export function registerAssetRoutes(
         let mimeType = data.mimeType;
         let sourceLocalAbsPath: string | undefined;
         let ingestRelativePath: string | undefined;
+        let referenceUri: string | undefined;
 
         if (data.sourceUrl) {
           const fetched = await media.fetchFromUrl(data.sourceUrl);
@@ -209,6 +225,7 @@ export function registerAssetRoutes(
           mimeType = data.mimeType ?? loaded.mimeType;
           sourceLocalAbsPath = loaded.resolvedAbsPath;
           ingestRelativePath = loaded.ingestRelativePath;
+          referenceUri = loaded.referenceUri;
         } else {
           const cleaned = (data.base64Data ?? '').replace(/^data:[^;]+;base64,/, '');
           buffer = Buffer.from(cleaned, 'base64');
@@ -223,12 +240,14 @@ export function registerAssetRoutes(
           storageMode: data.storageMode,
           sourceLocalAbsPath,
           ingestRelativePath,
+          referenceUri,
           folderPath: data.folderPath,
           title: data.title,
           qualityTier: data.qualityTier,
           status: data.status,
           parentAssetId: data.parentAssetId,
           parentRef: data.parentRef,
+          relationType: data.relationType,
           promptUsed: data.promptUsed,
           negativePrompt: data.negativePrompt,
           modelName: data.modelName,
@@ -242,6 +261,41 @@ export function registerAssetRoutes(
       } catch (err) {
         return reply.code(400).send({
           error: err instanceof Error ? err.message : 'Asset ingestion failed',
+        });
+      }
+    },
+  );
+
+  // Batch folder ingestion (idempotent, supports parentMatch)
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/ingest-folder',
+    async (request, reply) => {
+      const schema = z.object({
+        localDir: z.string().min(1),
+        glob: z.string().optional(),
+        recursive: z.boolean().default(false),
+        folderPath: z.string().default(''),
+        storageMode: StorageModeSchema.default('reference'),
+        qualityTier: QualityTierSchema.default('test'),
+        relationType: AssetRelationTypeSchema.optional(),
+        parentMatch: z.string().default('none'),
+        tags: z.array(z.string()).default([]),
+        limit: z.number().int().min(1).max(1000).default(500),
+      });
+      const parsed = schema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      try {
+        const result = await studio.ingestFolderBatch({
+          projectIdOrSlug: request.params.projectIdOrSlug,
+          ...parsed.data,
+          createdBy: 'user',
+        });
+        return result;
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Folder ingestion failed',
         });
       }
     },
@@ -270,6 +324,80 @@ export function registerAssetRoutes(
       return reply.code(404).send({ error: 'Asset not found' });
     }
     return { asset: updated };
+  });
+
+  app.patch<{ Params: { id: string } }>('/api/assets/:id/qc', async (request, reply) => {
+    const parsed = RecordQcInputSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'Validation error',
+        details: parsed.error.flatten(),
+      });
+    }
+    const updated = await studio.recordAssetQc(request.params.id, parsed.data, 'user');
+    if (!updated) {
+      return reply.code(404).send({ error: 'Asset not found' });
+    }
+    return { asset: updated };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/assets/:id/frame', async (request, reply) => {
+    const parsed = z
+      .object({
+        timecodeSec: z.number().min(0).default(0),
+        maxWidth: z.number().int().min(160).max(3840).optional(),
+      })
+      .safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+    }
+    const found = await studio.getAssetById(request.params.id);
+    if (!found) return reply.code(404).send({ error: 'Asset not found' });
+
+    try {
+      const absPath = media.resolveMediaFile(found.raw.filePath);
+      const frame = await media.extractVideoFrame({
+        absPath,
+        assetType: found.asset.type,
+        timecodeSec: parsed.data.timecodeSec,
+        maxWidth: parsed.data.maxWidth,
+      });
+      return reply.type(frame.mimeType).send(frame.buffer);
+    } catch (err) {
+      return reply.code(400).send({
+        error: err instanceof Error ? err.message : 'Frame extraction failed',
+      });
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/assets/:id/contact-sheet', async (request, reply) => {
+    const parsed = z
+      .object({
+        everySec: z.number().min(0.1).max(60).optional(),
+        columns: z.number().int().min(1).max(12).optional(),
+        tileWidth: z.number().int().min(120).max(960).optional(),
+        maxFrames: z.number().int().min(1).max(120).optional(),
+      })
+      .safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+    }
+    const found = await studio.getAssetById(request.params.id);
+    if (!found) return reply.code(404).send({ error: 'Asset not found' });
+
+    try {
+      const absPath = media.resolveMediaFile(found.raw.filePath);
+      const sheet = await media.generateContactSheet({
+        absPath,
+        assetType: found.asset.type,
+        ...parsed.data,
+      });
+      return reply.type(sheet.mimeType).send(sheet.buffer);
+    } catch (err) {
+      return reply.code(400).send({
+        error: err instanceof Error ? err.message : 'Contact sheet generation failed',
+      });
+    }
   });
 
   app.delete<{ Params: { id: string } }>('/api/assets/:id', async (request, reply) => {

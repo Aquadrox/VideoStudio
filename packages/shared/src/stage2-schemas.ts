@@ -38,6 +38,8 @@ export const AnnotationDtoSchema = z.object({
   projectId: z.string().uuid(),
   assetRef: z.string(),
   assetTitle: z.string(),
+  shotId: z.string().uuid().nullable(),
+  shotCode: z.string().nullable(),
   author: ActorSchema,
   frameNumber: z.number().int().nullable(),
   timecodeSec: z.number().nullable(),

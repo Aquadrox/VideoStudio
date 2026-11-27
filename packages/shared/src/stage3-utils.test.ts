@@ -4,6 +4,7 @@ import {
   formatYoutubeChapters,
   lrcToSrt,
   parseLrc,
+  sunoAlignmentToEnhancedLrc,
 } from './stage3-utils.js';
 
 describe('computeLineDiff', () => {
@@ -30,6 +31,24 @@ describe('LRC lyrics parser & SRT converter', () => {
     const srt = lrcToSrt(lrc, 3);
     expect(srt).toContain('1\n00:00:00,500 --> 00:00:04,250\nNéon sous la pluie');
     expect(srt).toContain("2\n00:00:04,250 --> 00:00:07,250\nLes ombres s'allument");
+  });
+
+  it('parses word-level Enhanced LRC (<mm:ss.xx>) and converts Suno alignment JSON', () => {
+    const enhanced = sunoAlignmentToEnhancedLrc([
+      { word: 'Néon', start_s: 0.5, end_s: 0.9 },
+      { word: 'rouge\n', start_s: 1.0, end_s: 1.4 },
+      { word: 'pluie', start_s: 2.25, end_s: 2.8 },
+    ]);
+    expect(enhanced).toBe('[00:00.50] <00:00.50>Néon <00:01.00>rouge\n[00:02.25] <00:02.25>pluie');
+
+    const parsed = parseLrc(enhanced);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.text).toBe('Néon rouge');
+    expect(parsed[0]?.words).toEqual([
+      { timeSec: 0.5, word: 'Néon' },
+      { timeSec: 1, word: 'rouge' },
+    ]);
+    expect(parsed[1]?.words).toEqual([{ timeSec: 2.25, word: 'pluie' }]);
   });
 });
 

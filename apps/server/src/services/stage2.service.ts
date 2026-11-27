@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
 import {
   buildAssetHandle,
   extractTemplateVariables,
@@ -47,6 +47,8 @@ import {
   promptTemplates,
   rulebooks,
   rules,
+  scenes,
+  shots,
   skills,
   skillVersions,
 } from '../db/schema.js';
@@ -87,6 +89,7 @@ export class Stage2Service {
   async listProjectFeedback(
     projectIdOrSlug: string,
     status: AnnotationStatus | 'all' = 'open',
+    since?: string,
   ): Promise<AnnotationDto[]> {
     const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
     if (!project) return [];
@@ -94,6 +97,12 @@ export class Stage2Service {
     const conditions = [eq(annotations.projectId, project.id)];
     if (status !== 'all') {
       conditions.push(eq(annotations.status, status));
+    }
+    if (since) {
+      const sinceDate = new Date(since);
+      if (!Number.isNaN(sinceDate.getTime())) {
+        conditions.push(gt(annotations.createdAt, sinceDate));
+      }
     }
 
     const rows = await this.db
@@ -117,6 +126,39 @@ export class Stage2Service {
     const found = await this.studio.getAssetById(assetId);
     if (!found) return null;
 
+    // Auto-link annotation to matching Storyboard shot via timecodeSec (or linked asset)
+    let linkedShotId: string | null = null;
+    let linkedShotCode: string | null = null;
+    if (typeof input.timecodeSec === 'number' && Number.isFinite(input.timecodeSec)) {
+      const matched = await this.findShotAtTimecode(found.asset.projectId, input.timecodeSec);
+      if (matched) {
+        linkedShotId = matched.id;
+        linkedShotCode = matched.shotCode;
+      }
+    }
+    if (!linkedShotId) {
+      try {
+        const directShots = await this.db
+          .select({
+            id: shots.id,
+            shotCode: shots.shotCode,
+            keyframeAssetId: shots.keyframeAssetId,
+            videoAssetId: shots.videoAssetId,
+          })
+          .from(shots)
+          .where(eq(shots.projectId, found.asset.projectId));
+        const direct = directShots.find(
+          (s) => s.keyframeAssetId === found.asset.id || s.videoAssetId === found.asset.id,
+        );
+        if (direct) {
+          linkedShotId = direct.id;
+          linkedShotCode = direct.shotCode;
+        }
+      } catch {
+        // Ignore if shots table absent
+      }
+    }
+
     const [created] = await this.db
       .insert(annotations)
       .values({
@@ -125,6 +167,8 @@ export class Stage2Service {
         author: input.author,
         frameNumber: input.frameNumber ?? null,
         timecodeSec: input.timecodeSec ?? null,
+        shotId: linkedShotId,
+        shotCode: linkedShotCode,
         shapeType: input.shapeType,
         x: input.x,
         y: input.y,
@@ -149,13 +193,64 @@ export class Stage2Service {
       projectSlug: found.asset.projectSlug,
       actor: input.author,
       action: 'annotation.created',
-      summary: `Annotation sur ${found.asset.handle} : ${input.comment.slice(0, 120)}`,
+      summary: `Annotation sur ${found.asset.handle}${linkedShotCode ? ` (plan @${linkedShotCode})` : ''} : ${input.comment.slice(0, 120)}`,
       entityType: 'asset',
       entityId: found.asset.id,
       entityRef: found.asset.handle,
     });
 
     return dto;
+  }
+
+  private async findShotAtTimecode(
+    projectId: string,
+    timecodeSec: number,
+  ): Promise<{ id: string; shotCode: string } | null> {
+    try {
+      const [sceneRows, shotRows] = await Promise.all([
+        this.db
+          .select({ id: scenes.id, sortOrder: scenes.sortOrder, sceneNumber: scenes.sceneNumber })
+          .from(scenes)
+          .where(eq(scenes.projectId, projectId))
+          .orderBy(asc(scenes.sortOrder), asc(scenes.sceneNumber)),
+        this.db
+          .select({
+            id: shots.id,
+            sceneId: shots.sceneId,
+            shotCode: shots.shotCode,
+            startSec: shots.startSec,
+            durationSec: shots.durationSec,
+            sortOrder: shots.sortOrder,
+          })
+          .from(shots)
+          .where(eq(shots.projectId, projectId))
+          .orderBy(asc(shots.sortOrder), asc(shots.shotCode)),
+      ]);
+
+      const sceneOrder = new Map<string, number>();
+      sceneRows.forEach((sc, idx) => sceneOrder.set(sc.id, idx));
+
+      const ordered = [...shotRows].sort((a, b) => {
+        const sa = sceneOrder.get(a.sceneId) ?? 0;
+        const sb = sceneOrder.get(b.sceneId) ?? 0;
+        if (sa !== sb) return sa - sb;
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        return a.shotCode.localeCompare(b.shotCode);
+      });
+
+      let cursor = 0;
+      for (const sh of ordered) {
+        const start = sh.startSec ?? cursor;
+        const end = start + Math.max(0.05, sh.durationSec);
+        if (timecodeSec >= start && timecodeSec < end) {
+          return { id: sh.id, shotCode: sh.shotCode };
+        }
+        cursor = end;
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   async updateAnnotation(
@@ -1078,6 +1173,8 @@ export class Stage2Service {
       author: row.author as Actor,
       frameNumber: row.frameNumber,
       timecodeSec: row.timecodeSec,
+      shotId: row.shotId ?? null,
+      shotCode: row.shotCode ?? null,
       shapeType: row.shapeType as AnnotationShapeType,
       x: row.x,
       y: row.y,
