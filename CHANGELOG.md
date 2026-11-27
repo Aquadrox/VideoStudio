@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-27
+
+### Added
+- **Modes d'affichage dans Médias (`MediaListViews`, `AssetCard`, `App.tsx`)** : sélecteur persistant (`localStorage`) pour basculer entre **Miniatures**, **Grandes miniatures**, **Liste compacte** et **Détails (tableau complet triable)**, tout en conservant la multi-sélection, le drag & drop groupé vers les dossiers et la lightbox au double-clic.
+- **Vue « Modifications & ajouts récents » (`media-view.ts`, `App.tsx`)** : bouton rapide **Récents** (avec badge compteur sur 24h et sélecteur de période `1h` / `24h` / `7j`) qui rassemble les médias récemment ajoutés ou modifiés sur tous les dossiers du projet, affiche des pastilles distinctes **Ajouté** / **Modifié** + horodatage relatif + lien cliquable vers le dossier, et ajoute un sélecteur de tri global (`Récents modifiés`, `Récents ajoutés`, `Nom A→Z`, `Note ★`, `Taille`).
+
 ## [0.5.1] - 2026-11-27
 
 ### Added

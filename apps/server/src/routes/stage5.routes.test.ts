@@ -12,7 +12,7 @@ describe('Stage 5 REST routes (/api/ops/* & /api/youtube/upload/*)', () => {
 
     const ops = {
       getSystemMetrics: vi.fn().mockResolvedValue({
-        version: '0.5.1',
+        version: '0.5.2',
         slot: 'blue',
         uptimeSec: 120,
         inFlightRequests: 1,
@@ -96,7 +96,7 @@ describe('Stage 5 REST routes (/api/ops/* & /api/youtube/upload/*)', () => {
 
     const metricsRes = await app.inject({ method: 'GET', url: '/api/ops/metrics' });
     expect(metricsRes.statusCode).toBe(200);
-    expect(metricsRes.json().metrics.version).toBe('0.5.1');
+    expect(metricsRes.json().metrics.version).toBe('0.5.2');
 
     const diskRes = await app.inject({ method: 'GET', url: '/api/ops/disk' });
     expect(diskRes.statusCode).toBe(200);

@@ -2,7 +2,13 @@ import type { DragEvent, MouseEvent } from 'react';
 import { Check, Copy, FileText, Film, Image as ImageIcon, Music, Star } from 'lucide-react';
 import type { AssetDto } from '@videostudio/shared';
 import { ASSET_DRAG_MIME, ASSET_LIST_DRAG_MIME } from '../utils/drag';
-import { formatDuration, QUALITY_TIER_SHORT, STATUS_LABELS } from '../utils/format';
+import {
+  formatDuration,
+  formatRelativeTime,
+  QUALITY_TIER_SHORT,
+  STATUS_LABELS,
+} from '../utils/format';
+import { getAssetChangeKind } from '../utils/media-view';
 
 interface AssetCardProps {
   asset: AssetDto;
@@ -11,6 +17,7 @@ interface AssetCardProps {
   selectionMode?: boolean;
   dragging?: boolean;
   dragAssetIds?: string[];
+  showRecentStamp?: boolean;
   onSelect: (
     asset: AssetDto,
     modifiers?: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean },
@@ -18,6 +25,7 @@ interface AssetCardProps {
   onToggleCheck?: (asset: AssetDto, opts: { shiftKey: boolean }) => void;
   onDoubleClick?: (asset: AssetDto) => void;
   onCopyRef: (text: string) => void;
+  onNavigateFolder?: (folderPath: string) => void;
   onDragStartAsset?: (asset: AssetDto) => void;
   onDragEndAsset?: () => void;
 }
@@ -29,14 +37,18 @@ export function AssetCard({
   selectionMode = false,
   dragging = false,
   dragAssetIds,
+  showRecentStamp = false,
   onSelect,
   onToggleCheck,
   onDoubleClick,
   onCopyRef,
+  onNavigateFolder,
   onDragStartAsset,
   onDragEndAsset,
 }: AssetCardProps) {
   const thumbUrl = asset.urls.thumbnail ?? asset.urls.proxy ?? asset.urls.original;
+  const changeKind = getAssetChangeKind(asset);
+  const activityIso = changeKind === 'modified' ? asset.updatedAt : asset.createdAt;
 
   const handleDragStart = (e: DragEvent<HTMLElement>) => {
     const idsToDrag = dragAssetIds && dragAssetIds.length > 0 ? dragAssetIds : [asset.id];
@@ -172,20 +184,30 @@ export function AssetCard({
         <div className="asset-card-title" title={asset.title}>
           {asset.title}
         </div>
-        {asset.folderPath && (
+        {showRecentStamp && (
           <div
-            style={{
-              fontSize: 10.5,
-              fontFamily: 'var(--font-mono)',
-              color: 'var(--text-muted)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
+            className="asset-card-recent-row"
+            title={`${changeKind === 'modified' ? 'Modifié' : 'Ajouté'} le ${new Date(activityIso).toLocaleString('fr-FR')}`}
+          >
+            <span className={`recent-kind-pill kind-${changeKind}`}>
+              {changeKind === 'modified' ? 'Modifié' : 'Ajouté'}
+            </span>
+            <span>{formatRelativeTime(activityIso)}</span>
+          </div>
+        )}
+        {asset.folderPath && (
+          <button
+            type="button"
+            className="folder-chip-link"
+            style={{ alignSelf: 'flex-start', maxWidth: '100%' }}
+            title={`Ouvrir /${asset.folderPath}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onNavigateFolder?.(asset.folderPath);
             }}
-            title={`/${asset.folderPath}`}
           >
             /{asset.folderPath}
-          </div>
+          </button>
         )}
 
         <div className="asset-card-footer">
