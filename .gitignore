@@ -20,12 +20,13 @@ client_secret*.json
 credentials*.json
 secrets/
 
-# Local runtime media, database, skills sync & backups
+# Local runtime media, database, skills sync, backups & blue/green slot state
 data/
 ingest/
 skills/
 pgdata/
 backups/
+.deploy/
 uploads/
 tmp/
 *.sqlite

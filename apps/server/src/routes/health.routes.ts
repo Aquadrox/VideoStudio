@@ -21,7 +21,8 @@ export function registerHealthRoutes(
 
     return reply.code(dbOk ? 200 : 503).send({
       status,
-      version: '0.3.2',
+      version: '0.3.3',
+      slot: process.env.DEPLOY_SLOT || 'standalone',
       services: {
         database: dbOk ? 'up' : 'down',
         ffmpeg: ffmpegOk ? 'available' : 'unavailable',

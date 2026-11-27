@@ -49,18 +49,23 @@ claude mcp add --transport http videostudio http://localhost:3100/mcp \
 
 *(Si tu as modifié `STUDIO_PORT` dans `.env`, adapte le port `3100` en conséquence.)*
 
-### 4. Mettre à jour VideoStudio sans jamais perdre tes assets ni ta base
+### 4. Mettre à jour VideoStudio sans interruption (Déploiement Blue/Green)
 
 ```bash
 ./scripts/update.sh
 ```
 
-Le script effectue automatiquement :
+VideoStudio utilise une stratégie **Blue/Green zéro-interruption** avec une passerelle Nginx persistante (`gateway`) et deux slots applicatifs (`blue` et `green`) :
 - `git pull --ff-only origin main`
-- sauvegarde PostgreSQL préalable dans `backups/`
+- sauvegarde PostgreSQL en ligne dans `backups/`
 - ajout des nouvelles variables optionnelles dans `.env` sans jamais modifier tes secrets existants
-- reconstruction uniquement des conteneurs applicatifs (`server` & `web`) en **préservant intégralement `./data`, `./skills` et le volume `postgres_data`**
-- vérification de `/api/health`.
+- construction et démarrage du **slot de secours** (`blue` ↔ `green`) **pendant que le slot actif continue de servir l'interface, l'API et le MCP Claude Code sans coupure**
+- vérification automatique de `/api/health` et `/healthz` sur le nouveau slot (rollback automatique en cas d'échec)
+- bascule atomique du trafic via `nginx -s reload`, drainage gracieux puis arrêt de l'ancien slot — **en préservant intégralement `./data`, `./skills` et `postgres_data`**
+- retour arrière instantané possible à tout moment sans rebuild via :
+  ```bash
+  ./scripts/rollback.sh
+  ```
 
 ### 5. Ingestion depuis ComfyUI (PC sur le LAN ou dossier monté zéro-copie)
 
