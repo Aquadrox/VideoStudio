@@ -1,6 +1,6 @@
 {
   "name": "videostudio",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "AI-assisted Video Production Studio with Claude Code MCP integration and real-time LAN UI",
   "packageManager": "pnpm@12.21.0",

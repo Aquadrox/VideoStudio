@@ -111,6 +111,10 @@ describe('MCP Streamable HTTP route', () => {
       expect(toolsText).toContain('update_project');
       expect(toolsText).toContain('list_media_folders');
       expect(toolsText).toContain('create_media_folder');
+      expect(toolsText).toContain('sync_agent_tasks');
+      expect(toolsText).toContain('update_agent_task');
+      expect(toolsText).toContain('list_agent_tasks');
+      expect(toolsText).toContain('clear_agent_tasks');
       // Stage 2
       expect(toolsText).toContain('get_pending_feedback');
       expect(toolsText).toContain('get_active_rules');

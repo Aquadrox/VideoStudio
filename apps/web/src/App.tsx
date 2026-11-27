@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import type {
   ActivityDto,
+  AgentTaskDto,
   AssetDto,
   AssetStatus,
   AssetType,
@@ -40,8 +41,10 @@ import { ActivityFeed } from './components/ActivityFeed';
 import { AssetCard } from './components/AssetCard';
 import { AssetInspector } from './components/AssetInspector';
 import { AudioPanel } from './components/AudioPanel';
+import { ClaudeLiveBar } from './components/ClaudeLiveBar';
 import { CompareView } from './components/CompareView';
 import { LibraryPanel } from './components/LibraryPanel';
+import { MediaLightbox } from './components/MediaLightbox';
 import { CreateProjectModal, McpSetupModal } from './components/Modals';
 import { PreprodPanel } from './components/PreprodPanel';
 import { ProjectGitPanel } from './components/ProjectGitPanel';
@@ -78,6 +81,7 @@ export function App() {
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [lightboxAssetId, setLightboxAssetId] = useState<string | null>(null);
   const [selectedLineage, setSelectedLineage] = useState<AssetLineage | null>(null);
   const [comparePair, setComparePair] = useState<{ leftId: string | null; rightId: string | null }>({
     leftId: null,
@@ -86,6 +90,7 @@ export function App() {
 
   const [activities, setActivities] = useState<ActivityDto[]>([]);
   const [jobs, setJobs] = useState<JobDto[]>([]);
+  const [agentTasks, setAgentTasks] = useState<AgentTaskDto[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
 
   const [annotationRefresh, setAnnotationRefresh] = useState(0);
@@ -148,21 +153,25 @@ export function App() {
     }
   }, []);
 
-  // Load project assets, folders & jobs whenever active project changes
+  // Load project assets, folders, jobs & live agent tasks whenever active project changes
   useEffect(() => {
     if (!activeProjectId) {
       setAssets([]);
       setFolders([]);
       setJobs([]);
+      setAgentTasks([]);
       setCurrentFolderPath('');
+      setLightboxAssetId(null);
       return;
     }
     setCurrentFolderPath('');
     setShowNewFolderInput(false);
     setNewFolderName('');
+    setLightboxAssetId(null);
     void api.listAssets(activeProjectId).then(setAssets).catch(() => undefined);
     void refreshFolders(activeProjectId);
     void api.listJobs(activeProjectId).then(setJobs).catch(() => undefined);
+    void api.listAgentTasks(activeProjectId).then(setAgentTasks).catch(() => setAgentTasks([]));
     void api.listActivities(activeProjectId).then(setActivities).catch(() => undefined);
     setSelectedAssetId(null);
     setSelectedLineage(null);
@@ -227,6 +236,7 @@ export function App() {
           );
           setAssets((prev) => prev.filter((a) => a.id !== event.payload.id));
           setSelectedAssetId((curr) => (curr === event.payload.id ? null : curr));
+          setLightboxAssetId((curr) => (curr === event.payload.id ? null : curr));
           break;
         case 'folders.changed':
           if (event.payload.projectId === activeProjectId) {
@@ -243,6 +253,11 @@ export function App() {
               event.payload,
               ...prev.filter((j) => j.id !== event.payload.id),
             ].slice(0, 20));
+          }
+          break;
+        case 'tasks.changed':
+          if (event.payload.projectId === activeProjectId) {
+            setAgentTasks(event.payload.tasks);
           }
           break;
         case 'annotation.changed':
@@ -276,6 +291,11 @@ export function App() {
   const selectedAsset = useMemo(
     () => assets.find((a) => a.id === selectedAssetId) ?? null,
     [assets, selectedAssetId],
+  );
+
+  const lightboxAsset = useMemo(
+    () => assets.find((a) => a.id === lightboxAssetId) ?? null,
+    [assets, lightboxAssetId],
   );
 
   const childFolders = useMemo(() => {
@@ -435,6 +455,7 @@ export function App() {
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    if (workspaceMode !== 'media') return;
     if (e.dataTransfer.files?.length) {
       void handleUploadFiles(e.dataTransfer.files);
     }
@@ -451,7 +472,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.3.1 · MCP · LAN</div>
+              <div className="brand-sub">v0.3.2 · MCP · LAN</div>
             </div>
           </div>
 
@@ -685,23 +706,34 @@ export function App() {
           </button>
         </nav>
 
-        {/* Live Claude Jobs Banner */}
-        {runningJobs.length > 0 && (
-          <div className="jobs-strip" role="status" aria-live="polite">
-            {runningJobs.map((job) => (
-              <div key={job.id} className="job-row">
-                <span className="actor-pill actor-claude">Claude Live</span>
-                <span style={{ fontWeight: 500 }}>{job.title}</span>
-                <div className="job-progress-bar">
-                  <div className="job-progress-fill" style={{ width: `${job.progress}%` }} />
-                </div>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
-                  {job.progress}%
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Expandable Claude Live Progress & Task List Banner */}
+        <ClaudeLiveBar
+          runningJobs={runningJobs}
+          tasks={agentTasks}
+          onClearTasks={async (scope) => {
+            if (!activeProjectId) return;
+            try {
+              const remaining = await api.clearAgentTasks(activeProjectId, scope);
+              setAgentTasks(remaining);
+              showToast(scope === 'all' ? 'Liste de tâches vidée' : 'Tâches terminées effacées');
+            } catch (err) {
+              showToast(err instanceof Error ? err.message : 'Erreur nettoyage tâches');
+            }
+          }}
+          onSelectAssetRef={(ref) => {
+            const clean = ref.trim().toLowerCase();
+            const match = assets.find(
+              (a) =>
+                a.handle.toLowerCase() === clean ||
+                a.refCode.toLowerCase() === clean.replace(/^@/, ''),
+            );
+            if (match) {
+              setSelectedAssetId(match.id);
+              setRightTab('inspector');
+              setWorkspaceMode('media');
+            }
+          }}
+        />
 
         {/* Active Workspace View */}
         {workspaceMode === 'media' && (
@@ -969,6 +1001,10 @@ export function App() {
                             setSelectedAssetId(item.id);
                             setRightTab('inspector');
                           }}
+                          onDoubleClick={(item) => {
+                            setSelectedAssetId(item.id);
+                            setLightboxAssetId(item.id);
+                          }}
                           onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
                         />
                       ))}
@@ -1040,6 +1076,10 @@ export function App() {
             project={activeProject}
             assets={assets}
             refreshSignal={stage3Refresh}
+            onAssetUploaded={(uploaded) => {
+              setAssets((prev) => [uploaded, ...prev.filter((a) => a.id !== uploaded.id)]);
+              if (activeProjectId) void refreshFolders(activeProjectId);
+            }}
             onCopyText={handleCopyText}
             onNotify={showToast}
           />
@@ -1092,6 +1132,7 @@ export function App() {
                 await api.deleteAsset(id);
                 setAssets((prev) => prev.filter((a) => a.id !== id));
                 setSelectedAssetId(null);
+                setLightboxAssetId((curr) => (curr === id ? null : curr));
                 showToast('Média supprimé');
               }}
               onSelectAsset={(target) => setSelectedAssetId(target.id)}
@@ -1120,6 +1161,19 @@ export function App() {
           )}
         </div>
       </aside>
+
+      {lightboxAsset && (
+        <MediaLightbox
+          asset={lightboxAsset}
+          assets={filteredAssets.length > 0 ? filteredAssets : assets}
+          onClose={() => setLightboxAssetId(null)}
+          onNavigate={(target) => {
+            setSelectedAssetId(target.id);
+            setLightboxAssetId(target.id);
+          }}
+          onCopyText={handleCopyText}
+        />
+      )}
 
       {showNewProject && (
         <CreateProjectModal

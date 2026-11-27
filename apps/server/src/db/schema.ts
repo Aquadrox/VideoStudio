@@ -120,6 +120,27 @@ export const jobs = pgTable(
   (table) => [index('jobs_project_status_idx').on(table.projectId, table.status)],
 );
 
+export const agentTasks = pgTable(
+  'agent_tasks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    externalKey: text('external_key'),
+    title: text('title').notNull(),
+    detail: text('detail').notNull().default(''),
+    status: text('status').notNull().default('pending'),
+    progress: integer('progress'),
+    groupName: text('group_name').notNull().default(''),
+    assetRef: text('asset_ref'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('agent_tasks_project_order_idx').on(table.projectId, table.sortOrder)],
+);
+
 // --- Stage 2 Tables ---
 
 export const annotations = pgTable(

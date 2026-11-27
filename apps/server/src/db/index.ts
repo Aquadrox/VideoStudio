@@ -108,6 +108,22 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS jobs_project_status_idx ON jobs (project_id, status);
 
+    CREATE TABLE IF NOT EXISTS agent_tasks (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      external_key text,
+      title text NOT NULL,
+      detail text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'pending',
+      progress integer,
+      group_name text NOT NULL DEFAULT '',
+      asset_ref text,
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS agent_tasks_project_order_idx ON agent_tasks (project_id, sort_order);
+
     -- Stage 2: Visual Annotations & Feedback Inbox
     CREATE TABLE IF NOT EXISTS annotations (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

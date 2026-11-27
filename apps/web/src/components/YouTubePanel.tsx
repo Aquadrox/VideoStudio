@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import {
   CheckSquare,
   Copy,
   Download,
+  GripVertical,
   Monitor,
+  Moon,
   Save,
   Smartphone,
   Sparkles,
   Sun,
-  Moon,
+  Trash2,
+  Upload,
   Youtube,
 } from 'lucide-react';
 import {
@@ -26,14 +29,22 @@ interface YouTubePanelProps {
   project: ProjectDto | null;
   assets: AssetDto[];
   refreshSignal: number;
+  onAssetUploaded?: (asset: AssetDto) => void;
   onCopyText: (text: string, label?: string) => void;
   onNotify: (msg: string) => void;
+}
+
+type ThumbnailSlots = [string | null, string | null, string | null];
+
+function toThumbnailSlots(ids: string[]): ThumbnailSlots {
+  return [ids[0] ?? null, ids[1] ?? null, ids[2] ?? null];
 }
 
 export function YouTubePanel({
   project,
   assets,
   refreshSignal,
+  onAssetUploaded,
   onCopyText,
   onNotify,
 }: YouTubePanelProps) {
@@ -44,9 +55,13 @@ export function YouTubePanel({
   const [hashtagsText, setHashtagsText] = useState('');
   const [pinnedComment, setPinnedComment] = useState('');
   const [aiDisclosure, setAiDisclosure] = useState(true);
-  const [thumbIds, setThumbIds] = useState<string[]>([]);
+  const [thumbSlots, setThumbSlots] = useState<ThumbnailSlots>([null, null, null]);
   const [chapters, setChapters] = useState<YouTubeChapter[]>([]);
   const [checklist, setChecklist] = useState<ChecklistItem[]>([]);
+
+  // Drag & drop state for YouTube A/B variants
+  const [dragOverSlot, setDragOverSlot] = useState<number | null>(null);
+  const [uploadingSlot, setUploadingSlot] = useState<number | null>(null);
 
   // Simulator controls
   const [simTheme, setSimTheme] = useState<'dark' | 'light'>('dark');
@@ -55,6 +70,10 @@ export function YouTubePanel({
 
   const imageAssets = useMemo(() => assets.filter((a) => a.type === 'image'), [assets]);
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
+  const activeThumbIds = useMemo(
+    () => thumbSlots.filter((id): id is string => Boolean(id)),
+    [thumbSlots],
+  );
 
   useEffect(() => {
     if (!project) return;
@@ -68,7 +87,7 @@ export function YouTubePanel({
         setHashtagsText(data.hashtags.join(' '));
         setPinnedComment(data.pinnedComment);
         setAiDisclosure(data.aiDisclosure);
-        setThumbIds(data.thumbnailAssetIds);
+        setThumbSlots(toThumbnailSlots(data.thumbnailAssetIds));
         setChapters(data.chapters);
         setChecklist(data.checklist);
       })
@@ -96,14 +115,111 @@ export function YouTubePanel({
     .join('\n');
 
   const toggleThumbVariant = (id: string) => {
-    setThumbIds((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= 3) {
-        onNotify('Maximum 3 miniatures pour le Test A/B YouTube');
+    setThumbSlots((prev) => {
+      const existingIdx = prev.indexOf(id);
+      if (existingIdx !== -1) {
+        const next: ThumbnailSlots = [...prev] as ThumbnailSlots;
+        next[existingIdx] = null;
+        return next;
+      }
+      const emptyIdx = prev.indexOf(null);
+      if (emptyIdx === -1) {
+        onNotify('Maximum 3 miniatures (glisse une image sur une variante ou supprime-en une)');
         return prev;
       }
-      return [...prev, id];
+      const next: ThumbnailSlots = [...prev] as ThumbnailSlots;
+      next[emptyIdx] = id;
+      return next;
     });
+  };
+
+  const assignThumbToSlot = (slotIdx: number, assetId: string) => {
+    setThumbSlots((prev) => {
+      const next: ThumbnailSlots = [...prev] as ThumbnailSlots;
+      // If asset is already in another slot, swap them cleanly
+      const oldIdx = next.indexOf(assetId);
+      if (oldIdx !== -1 && oldIdx !== slotIdx) {
+        next[oldIdx] = next[slotIdx] ?? null;
+      }
+      next[slotIdx] = assetId;
+      return next;
+    });
+  };
+
+  const removeThumbSlot = (slotIdx: number) => {
+    setThumbSlots((prev) => {
+      const next: ThumbnailSlots = [...prev] as ThumbnailSlots;
+      next[slotIdx] = null;
+      return next;
+    });
+  };
+
+  const swapThumbSlots = (fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    setThumbSlots((prev) => {
+      const next: ThumbnailSlots = [...prev] as ThumbnailSlots;
+      const tmp = next[fromIdx] ?? null;
+      next[fromIdx] = next[toIdx] ?? null;
+      next[toIdx] = tmp;
+      return next;
+    });
+  };
+
+  const handleSlotDragOver = (e: DragEvent, slotIdx: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragOverSlot !== slotIdx) setDragOverSlot(slotIdx);
+  };
+
+  const handleSlotDrop = async (e: DragEvent, slotIdx: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverSlot(null);
+
+    // 1. Reorder between A/B/C slots
+    const draggedSlotStr = e.dataTransfer.getData('application/x-videostudio-yt-slot');
+    if (draggedSlotStr !== '') {
+      const fromIdx = Number(draggedSlotStr);
+      if (Number.isInteger(fromIdx) && fromIdx >= 0 && fromIdx <= 2) {
+        swapThumbSlots(fromIdx, slotIdx);
+        return;
+      }
+    }
+
+    // 2. Dragged from the Image Picker Strip
+    const draggedAssetId = e.dataTransfer.getData('application/x-videostudio-asset-id');
+    if (draggedAssetId) {
+      assignThumbToSlot(slotIdx, draggedAssetId);
+      return;
+    }
+
+    // 3. Dropped image file directly from user's desktop
+    const files = Array.from(e.dataTransfer.files ?? []).filter((f) =>
+      f.type.startsWith('image/'),
+    );
+    if (files.length === 0) return;
+
+    setUploadingSlot(slotIdx);
+    try {
+      let targetSlot = slotIdx;
+      for (const file of files) {
+        if (targetSlot > 2) break;
+        const uploaded = await api.uploadAssetFile(project.id, file, {
+          folderPath: 'youtube',
+          qualityTier: 'hq_upscale',
+        });
+        onAssetUploaded?.(uploaded);
+        assignThumbToSlot(targetSlot, uploaded.id);
+        targetSlot += 1;
+      }
+      onNotify(
+        `Miniature importée dans Variante ${String.fromCharCode(65 + slotIdx)} (pense à Enregistrer)`,
+      );
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : "Erreur d'import miniature");
+    } finally {
+      setUploadingSlot(null);
+    }
   };
 
   const handleSave = async () => {
@@ -121,7 +237,7 @@ export function YouTubePanel({
         .filter(Boolean),
       pinnedComment,
       aiDisclosure,
-      thumbnailAssetIds: thumbIds,
+      thumbnailAssetIds: activeThumbIds,
       chapters,
       checklist,
     });
@@ -155,7 +271,7 @@ export function YouTubePanel({
             <Youtube size={17} color="#ef5d5d" /> Hub YouTube — {project.name}
           </strong>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-            Miniatures A/B (jusqu'à 3 variantes), simulateur de feed, description, chapitres & Export Pack.
+            Glisse-dépose des images (depuis la galerie ou ton bureau) dans les variantes A/B/C, réordonne-les ou supprime-les.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -181,7 +297,7 @@ export function YouTubePanel({
       <div className="panel-card">
         <div className="rule-row-top">
           <span className="section-label">
-            Simulateur de Feed YouTube (Miniatures & Titres A/B · {thumbIds.length}/3)
+            Simulateur de Feed YouTube (Miniatures & Titres A/B · {activeThumbIds.length}/3)
           </span>
           <div style={{ display: 'flex', gap: 6 }}>
             <button
@@ -208,16 +324,22 @@ export function YouTubePanel({
           </div>
         </div>
 
-        {/* Image Picker Strip */}
+        {/* Image Picker Strip (clickable + draggable onto A/B/C slots) */}
         <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
           {imageAssets.map((img) => {
-            const idx = thumbIds.indexOf(img.id);
+            const idx = thumbSlots.indexOf(img.id);
             const selected = idx !== -1;
             return (
               <button
                 key={img.id}
                 type="button"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('application/x-videostudio-asset-id', img.id);
+                  e.dataTransfer.effectAllowed = 'copyMove';
+                }}
                 onClick={() => toggleThumbVariant(img.id)}
+                title="Cliquer pour sélectionner ou glisser-déposer vers Variante A, B ou C"
                 style={{
                   position: 'relative',
                   width: 120,
@@ -226,7 +348,7 @@ export function YouTubePanel({
                   borderRadius: 8,
                   overflow: 'hidden',
                   border: selected ? '2px solid var(--accent-amber)' : '1px solid var(--border-default)',
-                  cursor: 'pointer',
+                  cursor: 'grab',
                   background: '#000',
                 }}
               >
@@ -248,34 +370,64 @@ export function YouTubePanel({
           })}
           {imageAssets.length === 0 && (
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              Importe ou génère des images dans l'onglet Médias pour sélectionner tes miniatures A/B.
+              Glisse-dépose directement des fichiers image sur les variantes A, B ou C ci-dessous, ou importe des images dans Médias.
             </div>
           )}
         </div>
 
-        {/* Feed Preview Frame */}
+        {/* Feed Preview Frame with 3 Interactive Drag-and-Drop / Deletable Variant Slots */}
         <div className={`yt-sim-frame ${simTheme}`}>
           <div className={`yt-sim-grid ${simDevice}`}>
             {[0, 1, 2].map((i) => {
-              const tAsset = thumbIds[i] ? assetById.get(thumbIds[i]!) : null;
+              const slotAssetId = thumbSlots[i];
+              const tAsset = slotAssetId ? assetById.get(slotAssetId) : null;
               const titleStr = titles[i] || titles[0] || project.name;
-              if (!tAsset && i > 0 && !titles[i]) return null;
+              const isOver = dragOverSlot === i;
+              const isUploading = uploadingSlot === i;
+              const letter = String.fromCharCode(65 + i);
+
               return (
-                <div key={i}>
+                <div
+                  key={i}
+                  className={`yt-variant-slot ${isOver ? 'drag-over' : ''}`}
+                  draggable={Boolean(tAsset)}
+                  onDragStart={(e) => {
+                    if (!tAsset) return;
+                    e.dataTransfer.setData('application/x-videostudio-yt-slot', String(i));
+                    e.dataTransfer.effectAllowed = 'move';
+                  }}
+                  onDragOver={(e) => handleSlotDragOver(e, i)}
+                  onDragLeave={() => setDragOverSlot((curr) => (curr === i ? null : curr))}
+                  onDrop={(e) => void handleSlotDrop(e, i)}
+                >
+                  <div className="yt-variant-bar">
+                    <span className="yt-variant-label">
+                      <GripVertical size={12} /> Variante {letter}
+                    </span>
+                    {tAsset && (
+                      <button
+                        type="button"
+                        className="yt-variant-remove"
+                        title={`Supprimer la miniature de la Variante ${letter}`}
+                        onClick={() => removeThumbSlot(i)}
+                      >
+                        <Trash2 size={12} /> Retirer
+                      </button>
+                    )}
+                  </div>
+
                   <div className="yt-thumb-box">
-                    {tAsset ? (
+                    {isUploading ? (
+                      <div className="yt-thumb-empty">
+                        <Upload size={18} />
+                        <span>Import en cours...</span>
+                      </div>
+                    ) : tAsset ? (
                       <img src={tAsset.urls.proxy ?? tAsset.urls.original} alt={titleStr} />
                     ) : (
-                      <div
-                        style={{
-                          height: '100%',
-                          display: 'grid',
-                          placeItems: 'center',
-                          fontSize: 12,
-                          opacity: 0.5,
-                        }}
-                      >
-                        Variante {String.fromCharCode(65 + i)}
+                      <div className="yt-thumb-empty">
+                        <Upload size={18} />
+                        <span>Glisse une image ici (Variante {letter})</span>
                       </div>
                     )}
                     <span className="yt-duration-badge">12:34</span>
@@ -297,19 +449,34 @@ export function YouTubePanel({
             const analysis = analyzeYoutubeTitle(titles[i] ?? '');
             return (
               <div key={i} className="field">
-                <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span>Titre {String.fromCharCode(65 + i)}</span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      color: analysis.exceedsMax
-                        ? 'var(--status-danger)'
-                        : analysis.truncatesOnMobile
-                          ? 'var(--accent-amber)'
-                          : 'var(--text-muted)',
-                    }}
-                  >
-                    {analysis.length}/100 {analysis.truncatesOnMobile ? '(tronqué mobile >60)' : ''}
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        color: analysis.exceedsMax
+                          ? 'var(--status-danger)'
+                          : analysis.truncatesOnMobile
+                            ? 'var(--accent-amber)'
+                            : 'var(--text-muted)',
+                      }}
+                    >
+                      {analysis.length}/100 {analysis.truncatesOnMobile ? '(tronqué mobile >60)' : ''}
+                    </span>
+                    {(titles[i] ?? '').length > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        style={{ padding: '2px 5px' }}
+                        title={`Effacer Titre ${String.fromCharCode(65 + i)}`}
+                        onClick={() =>
+                          setTitles((prev) => prev.map((val, idx) => (idx === i ? '' : val)))
+                        }
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
                   </span>
                 </label>
                 <input
