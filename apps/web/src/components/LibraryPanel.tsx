@@ -29,6 +29,7 @@ export function LibraryPanel({
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [varValues, setVarValues] = useState<Record<string, string>>({});
   const [injectRules, setInjectRules] = useState(true);
+  const [contextTagsDraft, setContextTagsDraft] = useState('');
   const [renderedOutput, setRenderedOutput] = useState<{
     positive: string;
     negative: string;
@@ -78,11 +79,16 @@ export function LibraryPanel({
     for (const v of selectedPrompt.variables) {
       defaults[v.name] = varValues[v.name] ?? v.defaultValue ?? '';
     }
+    const parsedTags = contextTagsDraft
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
     void api
       .renderPromptTemplate(selectedPrompt.id, {
         projectIdOrSlug: project?.id,
         variables: defaults,
         includeProjectRules: injectRules,
+        tags: parsedTags.length > 0 ? parsedTags : undefined,
       })
       .then((res) =>
         setRenderedOutput({
@@ -92,7 +98,7 @@ export function LibraryPanel({
         }),
       )
       .catch(() => undefined);
-  }, [selectedPrompt?.id, project?.id, injectRules, JSON.stringify(varValues)]);
+  }, [selectedPrompt?.id, project?.id, injectRules, contextTagsDraft, JSON.stringify(varValues)]);
 
   const handleCreatePrompt = async (e: FormEvent) => {
     e.preventDefault();
@@ -340,27 +346,40 @@ export function LibraryPanel({
                   )}
 
                   {project && (
-                    <label
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        fontSize: 12.5,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={injectRules}
-                        onChange={(e) => setInjectRules(e.target.checked)}
-                      />
-                      Injecter les règles actives du projet <strong>{project.name}</strong>
-                      {renderedOutput && injectRules && (
-                        <span className="pill-tag amber">
-                          {renderedOutput.appliedRulesCount} règle(s)
-                        </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <label
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: 12.5,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={injectRules}
+                          onChange={(e) => setInjectRules(e.target.checked)}
+                        />
+                        Injecter les règles actives du projet <strong>{project.name}</strong>
+                        {renderedOutput && injectRules && (
+                          <span className="pill-tag amber">
+                            {renderedOutput.appliedRulesCount} règle(s) injectée(s)
+                          </span>
+                        )}
+                      </label>
+                      {injectRules && (
+                        <div className="field">
+                          <label>Tags de contexte (optionnel — ex : elena, caspian, scene-01)</label>
+                          <input
+                            className="input"
+                            value={contextTagsDraft}
+                            onChange={(e) => setContextTagsDraft(e.target.value)}
+                            placeholder="Active uniquement les règles ciblées sur ces tags..."
+                          />
+                        </div>
                       )}
-                    </label>
+                    </div>
                   )}
 
                   {renderedOutput && (

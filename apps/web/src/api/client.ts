@@ -16,6 +16,7 @@ import type {
   CreateSceneInput,
   CreateShotInput,
   JobDto,
+  MediaFolderDto,
   ProjectDto,
   ProjectRepoStatusDto,
   ProjectRulesBundle,
@@ -30,6 +31,8 @@ import type {
   SkillVersionDto,
   UpdateAnnotationInput,
   UpdateAssetInput,
+  UpdateProjectInput,
+  UpdateRuleInput,
   UpdateScriptInput,
   UpdateShotInput,
   UpdateYouTubePackageInput,
@@ -94,20 +97,67 @@ export const api = {
     return res.project;
   },
 
+  async updateProject(idOrSlug: string, input: UpdateProjectInput): Promise<ProjectDto> {
+    const res = await apiFetch<{ project: ProjectDto }>(
+      `/api/projects/${encodeURIComponent(idOrSlug)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.project;
+  },
+
   async deleteProject(idOrSlug: string): Promise<void> {
     await apiFetch(`/api/projects/${encodeURIComponent(idOrSlug)}`, {
       method: 'DELETE',
     });
   },
 
+  async listMediaFolders(projectId: string): Promise<MediaFolderDto[]> {
+    const res = await apiFetch<{ folders: MediaFolderDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/folders`,
+    );
+    return res.folders;
+  },
+
+  async createMediaFolder(projectId: string, path: string): Promise<MediaFolderDto> {
+    const res = await apiFetch<{ folder: MediaFolderDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/folders`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      },
+    );
+    return res.folder;
+  },
+
+  async deleteMediaFolder(projectId: string, path: string): Promise<void> {
+    await apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/folders?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
+  },
+
   async listAssets(
     projectId: string,
-    params?: { type?: string; status?: string; qualityTier?: string; search?: string },
+    params?: {
+      type?: string;
+      status?: string;
+      qualityTier?: string;
+      folderPath?: string;
+      recursive?: boolean;
+      search?: string;
+    },
   ): Promise<AssetDto[]> {
     const qs = new URLSearchParams();
     if (params?.type) qs.set('type', params.type);
     if (params?.status) qs.set('status', params.status);
     if (params?.qualityTier) qs.set('qualityTier', params.qualityTier);
+    if (params?.folderPath !== undefined) qs.set('folderPath', params.folderPath);
+    if (params?.recursive) qs.set('recursive', 'true');
     if (params?.search) qs.set('search', params.search);
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     const res = await apiFetch<{ assets: AssetDto[] }>(
@@ -123,12 +173,13 @@ export const api = {
   async uploadAssetFile(
     projectId: string,
     file: File,
-    opts?: { qualityTier?: string; parentRef?: string },
+    opts?: { qualityTier?: string; parentRef?: string; folderPath?: string },
   ): Promise<AssetDto> {
     const form = new FormData();
     form.append('file', file);
     if (opts?.qualityTier) form.append('qualityTier', opts.qualityTier);
     if (opts?.parentRef) form.append('parentRef', opts.parentRef);
+    if (opts?.folderPath) form.append('folderPath', opts.folderPath);
     const res = await apiFetch<{ asset: AssetDto }>(
       `/api/projects/${encodeURIComponent(projectId)}/assets`,
       {
@@ -247,13 +298,26 @@ export const api = {
     return res.rule;
   },
 
+  async updateRule(ruleId: string, input: UpdateRuleInput): Promise<RuleDto> {
+    const res = await apiFetch<{ rule: RuleDto }>(
+      `/api/rules/${encodeURIComponent(ruleId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.rule;
+  },
+
   async deleteRule(ruleId: string): Promise<void> {
     await apiFetch(`/api/rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
   },
 
-  async getProjectRules(projectId: string): Promise<ProjectRulesBundle> {
+  async getProjectRules(projectId: string, tags?: string[]): Promise<ProjectRulesBundle> {
+    const qs = tags && tags.length > 0 ? `?tags=${encodeURIComponent(tags.join(','))}` : '';
     const res = await apiFetch<{ rulesBundle: ProjectRulesBundle }>(
-      `/api/projects/${encodeURIComponent(projectId)}/rules`,
+      `/api/projects/${encodeURIComponent(projectId)}/rules${qs}`,
     );
     return res.rulesBundle;
   },
@@ -328,7 +392,12 @@ export const api = {
 
   async renderPromptTemplate(
     idOrSlug: string,
-    body: { projectIdOrSlug?: string; variables?: Record<string, string>; includeProjectRules?: boolean },
+    body: {
+      projectIdOrSlug?: string;
+      variables?: Record<string, string>;
+      includeProjectRules?: boolean;
+      tags?: string[];
+    },
   ): Promise<RenderedPromptResult & { appliedRulesCount: number }> {
     const res = await apiFetch<{ rendered: RenderedPromptResult & { appliedRulesCount: number } }>(
       `/api/prompts/${encodeURIComponent(idOrSlug)}/render`,

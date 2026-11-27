@@ -116,8 +116,12 @@ export type ProjectDto = z.infer<typeof ProjectDtoSchema>;
 
 // --- Asset Schemas ---
 
+export const StorageModeSchema = z.enum(['copy', 'hardlink', 'reference']);
+export type StorageMode = z.infer<typeof StorageModeSchema>;
+
 export const UpdateAssetInputSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
+  folderPath: z.string().max(300).optional(),
   status: AssetStatusSchema.optional(),
   qualityTier: QualityTierSchema.optional(),
   rating: z.number().int().min(0).max(5).optional(),
@@ -132,11 +136,13 @@ export type UpdateAssetInput = z.infer<typeof UpdateAssetInputSchema>;
 export const IngestAssetJsonInputSchema = z
   .object({
     title: z.string().trim().min(1).max(200).optional(),
+    folderPath: z.string().max(300).default(''),
     filename: z.string().trim().min(1).max(255).optional(),
     type: AssetTypeSchema.optional(),
     sourceUrl: z.string().url().optional(),
     base64Data: z.string().min(1).optional(),
     localFilePath: z.string().min(1).optional(),
+    storageMode: StorageModeSchema.default('copy'),
     mimeType: z.string().optional(),
     qualityTier: QualityTierSchema.default('test'),
     status: AssetStatusSchema.default('new'),
@@ -155,6 +161,14 @@ export const IngestAssetJsonInputSchema = z
   });
 export type IngestAssetJsonInput = z.infer<typeof IngestAssetJsonInputSchema>;
 
+export const MediaFolderDtoSchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  parentPath: z.string(),
+  assetCount: z.number().int(),
+});
+export type MediaFolderDto = z.infer<typeof MediaFolderDtoSchema>;
+
 export const AssetDtoSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
@@ -162,6 +176,7 @@ export const AssetDtoSchema = z.object({
   refCode: z.string(),
   handle: z.string(),
   uri: z.string(),
+  folderPath: z.string(),
   title: z.string(),
   type: AssetTypeSchema,
   status: AssetStatusSchema,
@@ -258,6 +273,10 @@ export const RealtimeEventSchema = z.discriminatedUnion('type', [
       projectId: z.string().uuid(),
       domain: z.enum(['script', 'bible', 'storyboard', 'audio', 'youtube', 'git']),
     }),
+  }),
+  z.object({
+    type: z.literal('folders.changed'),
+    payload: z.object({ projectId: z.string().uuid() }),
   }),
 ]);
 export type RealtimeEvent = z.infer<typeof RealtimeEventSchema>;

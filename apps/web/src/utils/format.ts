@@ -1,4 +1,13 @@
-import type { AssetStatus, ProjectType, QualityTier } from '@videostudio/shared';
+import type { AssetStatus, ProjectStatus, ProjectType, QualityTier } from '@videostudio/shared';
+
+export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
+  pre_production: 'Pré-production',
+  production: 'Production',
+  editing: 'Montage',
+  youtube_ready: 'Prêt YouTube',
+  published: 'Publié',
+  archived: 'Archivé',
+};
 
 export const STATUS_LABELS: Record<AssetStatus, string> = {
   new: 'Nouveau',

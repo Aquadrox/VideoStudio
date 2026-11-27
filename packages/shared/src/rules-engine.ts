@@ -9,6 +9,7 @@ export interface ResolveRulesInput {
   attachedRulebooks: RulebookDto[];
   overrides: ProjectRuleOverrideDto[];
   projectCustomRules: RuleDto[];
+  contextTags?: string[];
 }
 
 export interface ResolvedRulesOutput {
@@ -18,11 +19,56 @@ export interface ResolvedRulesOutput {
   mergedNegativeFragments: string;
 }
 
+function hasAnyOverride(ov: ProjectRuleOverrideDto | undefined): boolean {
+  if (!ov) return false;
+  return Boolean(
+    ov.enabledOverride !== null ||
+      ov.severityOverride !== null ||
+      ov.valueOverride !== null ||
+      ov.instructionOverride !== null ||
+      ov.positiveFragmentOverride !== null ||
+      ov.negativeFragmentOverride !== null ||
+      ov.autoInjectOverride !== null ||
+      ov.appliesToTagsOverride !== null,
+  );
+}
+
+/**
+ * Selects positive/negative fragments from resolved rules honoring:
+ * - `enabled === true`
+ * - `autoInject === true` (informative-only rules with `autoInject: false` are never injected)
+ * - `appliesToTags` (empty = applies globally; non-empty = only injected when matching a contextTag)
+ */
+export function selectInjectableRuleFragments(
+  resolvedRules: ResolvedProjectRule[],
+  contextTags?: string[],
+): { positive: string; negative: string; injectedRulesCount: number } {
+  const normalizedContextTags = new Set(
+    (contextTags ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean),
+  );
+
+  const injectable = resolvedRules.filter((rule) => {
+    if (!rule.enabled || !rule.autoInject) return false;
+    if (rule.appliesToTags.length === 0) return true;
+    if (normalizedContextTags.size === 0) return false;
+    return rule.appliesToTags.some((tag) => normalizedContextTags.has(tag.trim().toLowerCase()));
+  });
+
+  const posFragments = uniqueNonEmpty(injectable.map((r) => r.positiveFragment));
+  const negFragments = uniqueNonEmpty(injectable.map((r) => r.negativeFragment));
+
+  return {
+    positive: posFragments.join(', '),
+    negative: negFragments.join(', '),
+    injectedRulesCount: injectable.length,
+  };
+}
+
 /**
  * Deterministically resolves the effective ruleset for a project by combining:
  * 1. Global rules from attached rulebooks
- * 2. Per-project overrides (e.g. overriding "5 doigts" -> "4 doigts" on a cartoon project)
- * 3. Project-specific custom rules
+ * 2. Project-specific custom rules
+ * 3. Per-project overrides (applied to BOTH global rules and project custom rules!)
  */
 export function resolveProjectRules(input: ResolveRulesInput): ResolvedRulesOutput {
   const overrideMap = new Map<string, ProjectRuleOverrideDto>();
@@ -38,15 +84,7 @@ export function resolveProjectRules(input: ResolveRulesInput): ResolvedRulesOutp
     );
     for (const rule of sortedRules) {
       const ov = overrideMap.get(rule.id);
-      const isOverridden = Boolean(
-        ov &&
-          (ov.enabledOverride !== null ||
-            ov.severityOverride !== null ||
-            ov.valueOverride !== null ||
-            ov.instructionOverride !== null ||
-            ov.positiveFragmentOverride !== null ||
-            ov.negativeFragmentOverride !== null),
-      );
+      const isOverridden = hasAnyOverride(ov);
 
       resolved.push({
         ruleId: rule.id,
@@ -58,6 +96,8 @@ export function resolveProjectRules(input: ResolveRulesInput): ResolvedRulesOutp
         instruction: ov?.instructionOverride ?? rule.instruction,
         positiveFragment: ov?.positiveFragmentOverride ?? rule.positiveFragment,
         negativeFragment: ov?.negativeFragmentOverride ?? rule.negativeFragment,
+        autoInject: ov?.autoInjectOverride ?? rule.autoInject,
+        appliesToTags: ov?.appliesToTagsOverride ?? rule.appliesToTags,
         enabled: ov?.enabledOverride ?? rule.enabled,
         source: isOverridden ? 'override' : 'rulebook',
         rulebookName: book.name,
@@ -70,32 +110,36 @@ export function resolveProjectRules(input: ResolveRulesInput): ResolvedRulesOutp
     (a, b) => a.sortOrder - b.sortOrder || a.code.localeCompare(b.code),
   );
   for (const custom of sortedCustom) {
+    const ov = overrideMap.get(custom.id);
+    const isOverridden = hasAnyOverride(ov);
+
     resolved.push({
       ruleId: custom.id,
       code: custom.code,
       title: custom.title,
       category: custom.category,
-      severity: custom.severity,
-      value: custom.defaultValue,
-      instruction: custom.instruction,
-      positiveFragment: custom.positiveFragment,
-      negativeFragment: custom.negativeFragment,
-      enabled: custom.enabled,
-      source: 'project_custom',
+      severity: ov?.severityOverride ?? custom.severity,
+      value: ov?.valueOverride ?? custom.defaultValue,
+      instruction: ov?.instructionOverride ?? custom.instruction,
+      positiveFragment: ov?.positiveFragmentOverride ?? custom.positiveFragment,
+      negativeFragment: ov?.negativeFragmentOverride ?? custom.negativeFragment,
+      autoInject: ov?.autoInjectOverride ?? custom.autoInject,
+      appliesToTags: ov?.appliesToTagsOverride ?? custom.appliesToTags,
+      enabled: ov?.enabledOverride ?? custom.enabled,
+      source: isOverridden ? 'override' : 'project_custom',
       rulebookName: null,
-      isOverridden: false,
+      isOverridden,
     });
   }
 
   const activeRules = resolved.filter((r) => r.enabled);
-  const posFragments = uniqueNonEmpty(activeRules.map((r) => r.positiveFragment));
-  const negFragments = uniqueNonEmpty(activeRules.map((r) => r.negativeFragment));
+  const fragments = selectInjectableRuleFragments(resolved, input.contextTags);
 
   return {
     resolvedRules: resolved,
     activeRulesCount: activeRules.length,
-    mergedPositiveFragments: posFragments.join(', '),
-    mergedNegativeFragments: negFragments.join(', '),
+    mergedPositiveFragments: fragments.positive,
+    mergedNegativeFragments: fragments.negative,
   };
 }
 

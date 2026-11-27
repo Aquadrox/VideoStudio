@@ -374,6 +374,24 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE UNIQUE INDEX IF NOT EXISTS project_repos_project_uidx ON project_repos (project_id);
+
+    -- v0.3.1 Additive Non-Destructive Migrations (Media Folders & Rule Auto-Inject/Tags)
+    ALTER TABLE assets ADD COLUMN IF NOT EXISTS folder_path text NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS assets_project_folder_idx ON assets (project_id, folder_path);
+
+    CREATE TABLE IF NOT EXISTS media_folders (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      path text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS media_folders_project_path_uidx ON media_folders (project_id, path);
+
+    ALTER TABLE rules ADD COLUMN IF NOT EXISTS auto_inject boolean NOT NULL DEFAULT true;
+    ALTER TABLE rules ADD COLUMN IF NOT EXISTS applies_to_tags jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+    ALTER TABLE project_rule_overrides ADD COLUMN IF NOT EXISTS auto_inject_override boolean;
+    ALTER TABLE project_rule_overrides ADD COLUMN IF NOT EXISTS applies_to_tags_override jsonb;
   `);
 
   // Seed one default reusable Rulebook if none exist yet

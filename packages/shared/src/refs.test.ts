@@ -3,6 +3,8 @@ import {
   buildAssetHandle,
   buildStudioUri,
   formatAssetRefCode,
+  getParentFolderPath,
+  normalizeFolderPath,
   parseStudioRef,
   slugifyProjectName,
 } from './refs.js';
@@ -52,5 +54,17 @@ describe('studio ref helpers', () => {
     });
 
     expect(parseStudioRef('not a valid ref!!!')).toBeNull();
+  });
+
+  it('normalizes media folder paths and rejects traversal attempts', () => {
+    expect(normalizeFolderPath('')).toBe('');
+    expect(normalizeFolderPath('/Personnages//Elena/')).toBe('Personnages/Elena');
+    expect(normalizeFolderPath('Tests\\480p\\Scene01')).toBe('Tests/480p/Scene01');
+    expect(getParentFolderPath('Personnages/Elena/Tenues')).toBe('Personnages/Elena');
+    expect(getParentFolderPath('Personnages')).toBe('');
+
+    expect(() => normalizeFolderPath('../secret')).toThrow(/traversal/);
+    expect(() => normalizeFolderPath('a/./b')).toThrow(/traversal/);
+    expect(() => normalizeFolderPath('bad\0name')).toThrow(/null byte/);
   });
 });

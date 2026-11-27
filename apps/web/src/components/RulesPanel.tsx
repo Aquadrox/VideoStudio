@@ -44,11 +44,13 @@ export function RulesPanel({
   const [bundle, setBundle] = useState<ProjectRulesBundle | null>(null);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
 
-  // Override editor fields
+  // Override / edit fields
   const [ovValue, setOvValue] = useState('');
   const [ovInstruction, setOvInstruction] = useState('');
   const [ovPosFrag, setOvPosFrag] = useState('');
   const [ovNegFrag, setOvNegFrag] = useState('');
+  const [ovAutoInject, setOvAutoInject] = useState(true);
+  const [ovAppliesToTags, setOvAppliesToTags] = useState('');
 
   // Quick create forms
   const [showNewPack, setShowNewPack] = useState(false);
@@ -65,6 +67,14 @@ export function RulesPanel({
   const [ruleInstruction, setRuleInstruction] = useState('');
   const [rulePosFrag, setRulePosFrag] = useState('');
   const [ruleNegFrag, setRuleNegFrag] = useState('');
+  const [ruleAutoInject, setRuleAutoInject] = useState(true);
+  const [ruleAppliesToTags, setRuleAppliesToTags] = useState('');
+
+  const parseTagList = (raw: string): string[] =>
+    raw
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
 
   const loadData = async () => {
     const books = await api.listRulebooks();
@@ -98,15 +108,35 @@ export function RulesPanel({
     setOvInstruction(rule.instruction);
     setOvPosFrag(rule.positiveFragment);
     setOvNegFrag(rule.negativeFragment);
+    setOvAutoInject(rule.autoInject);
+    setOvAppliesToTags(rule.appliesToTags.join(', '));
   };
 
-  const saveOverride = async (ruleId: string) => {
+  const saveRuleOrOverride = async (rule: ResolvedProjectRule) => {
     if (!project) return;
-    const updated = await api.upsertProjectRuleOverride(project.id, ruleId, {
+    const tags = parseTagList(ovAppliesToTags);
+    if (rule.source === 'project_custom' && !rule.isOverridden) {
+      await api.updateRule(rule.ruleId, {
+        defaultValue: ovValue,
+        instruction: ovInstruction,
+        positiveFragment: ovPosFrag,
+        negativeFragment: ovNegFrag,
+        autoInject: ovAutoInject,
+        appliesToTags: tags,
+      });
+      await loadData();
+      setEditingRuleId(null);
+      onNotify('Règle projet mise à jour');
+      return;
+    }
+
+    const updated = await api.upsertProjectRuleOverride(project.id, rule.ruleId, {
       valueOverride: ovValue,
       instructionOverride: ovInstruction,
       positiveFragmentOverride: ovPosFrag,
       negativeFragmentOverride: ovNegFrag,
+      autoInjectOverride: ovAutoInject,
+      appliesToTagsOverride: tags,
     });
     setBundle(updated);
     setEditingRuleId(null);
@@ -126,7 +156,7 @@ export function RulesPanel({
     const updated = await api.clearProjectRuleOverride(project.id, ruleId);
     setBundle(updated);
     setEditingRuleId(null);
-    onNotify('Surcharge réinitialisée (valeur du pack global restaurée)');
+    onNotify('Surcharge réinitialisée');
   };
 
   const handleCreatePack = async (e: FormEvent) => {
@@ -156,6 +186,8 @@ export function RulesPanel({
       instruction: ruleInstruction.trim(),
       positiveFragment: rulePosFrag.trim(),
       negativeFragment: ruleNegFrag.trim(),
+      autoInject: ruleAutoInject,
+      appliesToTags: parseTagList(ruleAppliesToTags),
       enabled: true,
       sortOrder: 10,
     };
@@ -172,6 +204,8 @@ export function RulesPanel({
     setRuleInstruction('');
     setRulePosFrag('');
     setRuleNegFrag('');
+    setRuleAutoInject(true);
+    setRuleAppliesToTags('');
     setShowNewRule(false);
     await loadData();
     onNotify('Règle ajoutée');
@@ -261,8 +295,8 @@ export function RulesPanel({
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
                 Exposé à Claude Code via <code>get_active_rules</code> et{' '}
-                <code>studio://projects/{project?.slug ?? '...'}/rules</code>. Chaque règle globale
-                peut être surchargée ici (ex. 5 doigts → 4 doigts).
+                <code>studio://projects/{project?.slug ?? '...'}/rules</code>. Décoche l'auto-injection
+                pour une règle purement informative, ou filtre par tags (ex. <code>elena</code>).
               </div>
             </div>
 
@@ -394,6 +428,34 @@ export function RulesPanel({
                 </div>
               </div>
 
+              <div className="field-grid">
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 12.5,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={ruleAutoInject}
+                    onChange={(e) => setRuleAutoInject(e.target.checked)}
+                  />
+                  Auto-injecter les fragments dans les prompts
+                </label>
+                <div className="field">
+                  <label>Tags cibles (optionnel, ex : elena, scene-01)</label>
+                  <input
+                    className="input"
+                    value={ruleAppliesToTags}
+                    onChange={(e) => setRuleAppliesToTags(e.target.value)}
+                    placeholder="Vide = tous les prompts du projet"
+                  />
+                </div>
+              </div>
+
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowNewRule(false)}>
                   Annuler
@@ -437,6 +499,16 @@ export function RulesPanel({
                         >
                           {SEVERITY_LABELS[rule.severity]}
                         </span>
+                        {!rule.autoInject && (
+                          <span className="pill-tag" title="Règle informative : ses fragments ne sont jamais injectés automatiquement">
+                            Informatif uniquement
+                          </span>
+                        )}
+                        {rule.autoInject && rule.appliesToTags.length > 0 && (
+                          <span className="pill-tag blue">
+                            Tags : {rule.appliesToTags.join(', ')}
+                          </span>
+                        )}
                         {rule.isOverridden && <span className="pill-tag amber">Surchargé projet</span>}
                         {rule.source === 'project_custom' && (
                           <span className="pill-tag blue">Spécifique projet</span>
@@ -444,27 +516,24 @@ export function RulesPanel({
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {rule.source !== 'project_custom' ? (
-                          <>
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => openOverrideEditor(rule)}
-                            >
-                              Surcharger
-                            </button>
-                            {rule.isOverridden && (
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                title="Réinitialiser à la valeur du pack global"
-                                onClick={() => void resetOverride(rule.ruleId)}
-                              >
-                                <RotateCcw size={13} />
-                              </button>
-                            )}
-                          </>
-                        ) : (
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => openOverrideEditor(rule)}
+                        >
+                          {rule.source === 'project_custom' ? 'Modifier' : 'Surcharger'}
+                        </button>
+                        {rule.isOverridden && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            title="Réinitialiser la surcharge"
+                            onClick={() => void resetOverride(rule.ruleId)}
+                          >
+                            <RotateCcw size={13} />
+                          </button>
+                        )}
+                        {rule.rulebookName === null && (
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
@@ -492,6 +561,7 @@ export function RulesPanel({
                           flexWrap: 'wrap',
                           fontSize: 11.5,
                           fontFamily: 'var(--font-mono)',
+                          opacity: rule.autoInject ? 1 : 0.65,
                         }}
                       >
                         {rule.positiveFragment && (
@@ -527,7 +597,7 @@ export function RulesPanel({
                           />
                         </div>
                         <div className="field">
-                          <label>Instruction surchargée pour Claude</label>
+                          <label>Instruction pour Claude</label>
                           <textarea
                             className="textarea"
                             value={ovInstruction}
@@ -536,7 +606,7 @@ export function RulesPanel({
                         </div>
                         <div className="field-grid">
                           <div className="field">
-                            <label>Fragment prompt + surchargé</label>
+                            <label>Fragment prompt +</label>
                             <input
                               className="input"
                               value={ovPosFrag}
@@ -544,11 +614,38 @@ export function RulesPanel({
                             />
                           </div>
                           <div className="field">
-                            <label>Fragment prompt − surchargé</label>
+                            <label>Fragment prompt −</label>
                             <input
                               className="input"
                               value={ovNegFrag}
                               onChange={(e) => setOvNegFrag(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="field-grid">
+                          <label
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              fontSize: 12.5,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={ovAutoInject}
+                              onChange={(e) => setOvAutoInject(e.target.checked)}
+                            />
+                            Auto-injecter les fragments dans les prompts
+                          </label>
+                          <div className="field">
+                            <label>Tags cibles (séparés par virgules — vide = global)</label>
+                            <input
+                              className="input"
+                              value={ovAppliesToTags}
+                              onChange={(e) => setOvAppliesToTags(e.target.value)}
+                              placeholder="ex: elena, winter"
                             />
                           </div>
                         </div>
@@ -563,9 +660,9 @@ export function RulesPanel({
                           <button
                             type="button"
                             className="btn btn-primary btn-sm"
-                            onClick={() => void saveOverride(rule.ruleId)}
+                            onClick={() => void saveRuleOrOverride(rule)}
                           >
-                            Appliquer à ce projet
+                            Enregistrer
                           </button>
                         </div>
                       </div>
@@ -587,7 +684,7 @@ export function RulesPanel({
                   }}
                 >
                   <div className="section-label">
-                    <span>Fragments compilés injectables automatiquement</span>
+                    <span>Fragments compilés injectables automatiquement (règles globales)</span>
                   </div>
                   {bundle.mergedPositiveFragments && (
                     <div>

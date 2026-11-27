@@ -108,9 +108,14 @@ describe('MCP Streamable HTTP route', () => {
       // Stage 1
       expect(toolsText).toContain('register_asset');
       expect(toolsText).toContain('resolve_reference');
+      expect(toolsText).toContain('update_project');
+      expect(toolsText).toContain('list_media_folders');
+      expect(toolsText).toContain('create_media_folder');
       // Stage 2
       expect(toolsText).toContain('get_pending_feedback');
       expect(toolsText).toContain('get_active_rules');
+      expect(toolsText).toContain('update_rule');
+      expect(toolsText).toContain('delete_rule');
       expect(toolsText).toContain('save_skill');
       // Stage 3
       expect(toolsText).toContain('update_script');

@@ -41,7 +41,7 @@ services:
       ALLOWED_FETCH_HOSTS: ${ALLOWED_FETCH_HOSTS:-}
     volumes:
       - ./data:/data
-      - ./ingest:/ingest:ro
+      - ${INGEST_HOST_DIR:-./ingest}:/ingest:ro
       - ./skills:/skills
     networks:
       - videostudio-internal

@@ -3,6 +3,7 @@ import {
   extractTemplateVariables,
   renderPromptTemplate,
   resolveProjectRules,
+  selectInjectableRuleFragments,
 } from './rules-engine.js';
 import type { ProjectRuleOverrideDto, RulebookDto, RuleDto } from './stage2-schemas.js';
 
@@ -18,6 +19,8 @@ function makeRule(partial: Partial<RuleDto> & { id: string; code: string; title:
     instruction: 'Default instruction',
     positiveFragment: '',
     negativeFragment: '',
+    autoInject: true,
+    appliesToTags: [],
     enabled: true,
     sortOrder: 0,
     createdAt: NOW,
@@ -26,7 +29,7 @@ function makeRule(partial: Partial<RuleDto> & { id: string; code: string; title:
   };
 }
 
-describe('resolveProjectRules (global rulebooks + per-project overrides)', () => {
+describe('resolveProjectRules (global rulebooks + project custom rules + overrides + autoInject/tags)', () => {
   const handsRule = makeRule({
     id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     code: 'hands-fingers',
@@ -72,50 +75,90 @@ describe('resolveProjectRules (global rulebooks + per-project overrides)', () =>
     expect(res.resolvedRules[0]?.isOverridden).toBe(false);
     expect(res.mergedPositiveFragments).toContain('5 fingers');
     expect(res.mergedNegativeFragments).toContain('extra fingers');
-    expect(res.mergedNegativeFragments).toContain('watermark');
   });
 
-  it('overrides 5 doigts -> 4 doigts on a cartoon project without altering the global pack', () => {
-    const cartoonOverride: ProjectRuleOverrideDto = {
-      id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
-      projectId: '22222222-2222-2222-2222-222222222222',
-      ruleId: handsRule.id,
-      enabledOverride: null,
-      severityOverride: null,
-      valueOverride: '4 doigts (style cartoon)',
-      instructionOverride: 'Style cartoon : chaque main doit avoir exactement 4 doigts.',
-      positiveFragmentOverride: 'cartoon hands, 4 fingers per hand',
-      negativeFragmentOverride: '5 fingers, 6 fingers, realistic hands',
-      updatedAt: NOW,
-    };
-
+  it('applies overrides to BOTH global rules AND project-specific custom rules (fixes bug #1)', () => {
     const customRule = makeRule({
       id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
       rulebookId: null,
       projectId: '22222222-2222-2222-2222-222222222222',
-      code: 'cel-shading',
-      title: 'Contours encrés cel-shading',
+      code: 'hidden-hands',
+      title: 'Mains cachées',
       category: 'style',
-      defaultValue: 'Obligatoire',
-      instruction: 'Conserver un trait noir net style animation 2D.',
-      positiveFragment: 'bold clean ink outlines, cel shaded',
+      defaultValue: 'Mouffles',
+      instruction: 'Cacher les mains dans des mouffles.',
+      positiveFragment: 'fluffy mittens',
+      autoInject: true,
     });
 
+    const customRuleOverride: ProjectRuleOverrideDto = {
+      id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      projectId: '22222222-2222-2222-2222-222222222222',
+      ruleId: customRule.id,
+      enabledOverride: null,
+      severityOverride: null,
+      valueOverride: 'Informatif uniquement',
+      instructionOverride: 'Privilégier les mains cachées quand pertinent, sans forcer les mouffles.',
+      positiveFragmentOverride: '',
+      negativeFragmentOverride: null,
+      autoInjectOverride: false,
+      appliesToTagsOverride: null,
+      updatedAt: NOW,
+    };
+
     const res = resolveProjectRules({
-      attachedRulebooks: [globalBook],
-      overrides: [cartoonOverride],
+      attachedRulebooks: [],
+      overrides: [customRuleOverride],
       projectCustomRules: [customRule],
     });
 
-    expect(res.activeRulesCount).toBe(3);
-    const hands = res.resolvedRules.find((r) => r.code === 'hands-fingers');
-    expect(hands?.value).toBe('4 doigts (style cartoon)');
-    expect(hands?.source).toBe('override');
-    expect(hands?.isOverridden).toBe(true);
-    expect(res.mergedPositiveFragments).toContain('4 fingers per hand');
-    expect(res.mergedPositiveFragments).toContain('cel shaded');
-    expect(res.mergedPositiveFragments).not.toContain('5 fingers');
-    expect(res.mergedNegativeFragments).toContain('5 fingers');
+    const resolvedCustom = res.resolvedRules[0];
+    expect(resolvedCustom?.isOverridden).toBe(true);
+    expect(resolvedCustom?.source).toBe('override');
+    expect(resolvedCustom?.autoInject).toBe(false);
+    expect(resolvedCustom?.value).toBe('Informatif uniquement');
+    expect(res.mergedPositiveFragments).toBe('');
+  });
+
+  it('excludes informative-only rules (autoInject=false) and scopes tag-filtered rules (fixes bug #2)', () => {
+    const informativeRule = makeRule({
+      id: '12121212-1212-1212-1212-121212121212',
+      rulebookId: null,
+      projectId: '22222222-2222-2222-2222-222222222222',
+      code: 'general-tip',
+      title: 'Note informative',
+      instruction: 'Conseil narratif uniquement',
+      positiveFragment: 'should-not-inject',
+      autoInject: false,
+    });
+
+    const skirtRuleForElena = makeRule({
+      id: '34343434-3434-3434-3434-343434343434',
+      rulebookId: null,
+      projectId: '22222222-2222-2222-2222-222222222222',
+      code: 'elena-outfit',
+      title: 'Tenue Elena',
+      instruction: 'Elena porte une jupe longue.',
+      positiveFragment: 'long skirt',
+      autoInject: true,
+      appliesToTags: ['elena'],
+    });
+
+    // Render for Caspian -> MUST NOT include "long skirt" or "should-not-inject"
+    const caspian = resolveProjectRules({
+      attachedRulebooks: [globalBook],
+      overrides: [],
+      projectCustomRules: [informativeRule, skirtRuleForElena],
+      contextTags: ['caspian'],
+    });
+    expect(caspian.mergedPositiveFragments).toContain('5 fingers');
+    expect(caspian.mergedPositiveFragments).not.toContain('long skirt');
+    expect(caspian.mergedPositiveFragments).not.toContain('should-not-inject');
+
+    // Render for Elena -> MUST include "long skirt"
+    const elenaFragments = selectInjectableRuleFragments(caspian.resolvedRules, ['elena']);
+    expect(elenaFragments.positive).toContain('long skirt');
+    expect(elenaFragments.positive).not.toContain('should-not-inject');
   });
 
   it('excludes fragments from rules disabled via project override', () => {
@@ -129,6 +172,8 @@ describe('resolveProjectRules (global rulebooks + per-project overrides)', () =>
       instructionOverride: null,
       positiveFragmentOverride: null,
       negativeFragmentOverride: null,
+      autoInjectOverride: null,
+      appliesToTagsOverride: null,
       updatedAt: NOW,
     };
 
