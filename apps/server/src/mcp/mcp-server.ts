@@ -3,20 +3,27 @@ import { z } from 'zod';
 import {
   AssetStatusSchema,
   AssetTypeSchema,
+  ComfyWorkflowCategorySchema,
   JobStatusSchema,
   ProjectTypeSchema,
+  PromptCategorySchema,
   QualityTierSchema,
+  RuleCategorySchema,
+  RuleSeveritySchema,
+  SkillScopeSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
+import type { Stage2Service } from '../services/stage2.service.js';
 import type { StudioService } from '../services/studio.service.js';
 
 export function createVideoStudioMcpServer(
   studio: StudioService,
   media: MediaService,
+  stage2: Stage2Service,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.1.0',
+    version: '0.2.0',
   });
 
   // --- MCP Resources ---
@@ -477,6 +484,375 @@ export function createVideoStudioMcpServer(
       return {
         content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }],
       };
+    },
+  );
+
+  // ==========================================================================
+  // Stage 2 MCP Resources (Rules, Feedback, Prompts, Workflows, Skills)
+  // ==========================================================================
+
+  server.resource(
+    'project-rules',
+    new ResourceTemplate('studio://projects/{slug}/rules', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const bundle = await stage2.getResolvedProjectRules(slug);
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(bundle ?? { error: `Project not found: ${slug}` }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource(
+    'project-feedback',
+    new ResourceTemplate('studio://projects/{slug}/feedback', { list: undefined }),
+    async (uri, variables) => {
+      const slug = String(variables.slug ?? '');
+      const feedback = await stage2.listProjectFeedback(slug, 'open');
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(feedback, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.resource('prompt-templates', 'studio://prompts', async (uri) => {
+    const items = await stage2.listPromptTemplates();
+    return {
+      contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(items, null, 2) }],
+    };
+  });
+
+  server.resource('comfy-workflows', 'studio://workflows', async (uri) => {
+    const items = await stage2.listComfyWorkflows();
+    return {
+      contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(items, null, 2) }],
+    };
+  });
+
+  server.resource('claude-skills', 'studio://skills', async (uri) => {
+    const items = await stage2.listSkills();
+    return {
+      contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(items, null, 2) }],
+    };
+  });
+
+  // ==========================================================================
+  // Stage 2 MCP Tools (Feedback Inbox, Rulebooks, Prompts, Workflows, Skills)
+  // ==========================================================================
+
+  server.tool(
+    'get_pending_feedback',
+    'Get all open visual annotations (with normalized x/y/w/h coordinates and exact video frame/timecode) and assets marked needs_revision for a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+    },
+    async ({ project }) => {
+      const [openAnnotations, needsRevisionAssets] = await Promise.all([
+        stage2.listProjectFeedback(project, 'open'),
+        studio.listAssets(project, { status: 'needs_revision', limit: 100 }),
+      ]);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                openAnnotationsCount: openAnnotations.length,
+                openAnnotations,
+                needsRevisionAssets,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    'resolve_feedback',
+    'Mark a visual annotation/feedback item as resolved once Claude has addressed it.',
+    {
+      annotationId: z.string().uuid().describe('Annotation UUID from get_pending_feedback'),
+    },
+    async ({ annotationId }) => {
+      const updated = await stage2.updateAnnotation(
+        annotationId,
+        { status: 'resolved', resolvedBy: 'claude' },
+        'claude',
+      );
+      if (!updated) {
+        return { isError: true, content: [{ type: 'text', text: `Annotation not found: ${annotationId}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'get_active_rules',
+    'Get the fully resolved ruleset for a project (combining global rulebooks, per-project overrides like 5 fingers vs 4 fingers, and custom project rules) plus compiled positive/negative prompt fragments. ALWAYS call this before generating media for a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+    },
+    async ({ project }) => {
+      const bundle = await stage2.getResolvedProjectRules(project);
+      if (!bundle) {
+        return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(bundle, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'list_rulebooks',
+    'List all global reusable rulebooks and their default rules.',
+    {},
+    async () => {
+      const books = await stage2.listRulebooks();
+      return { content: [{ type: 'text', text: JSON.stringify(books, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'set_project_rule_override',
+    'Override a global rule specifically for one project (e.g. changing hands-fingers from 5 fingers to 4 fingers for a cartoon project, or disabling a rule).',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      ruleId: z.string().uuid().describe('Rule UUID from get_active_rules or list_rulebooks'),
+      enabledOverride: z.boolean().nullable().optional(),
+      severityOverride: RuleSeveritySchema.nullable().optional(),
+      valueOverride: z.string().nullable().optional(),
+      instructionOverride: z.string().nullable().optional(),
+      positiveFragmentOverride: z.string().nullable().optional(),
+      negativeFragmentOverride: z.string().nullable().optional(),
+    },
+    async (args) => {
+      const bundle = await stage2.upsertProjectRuleOverride(
+        args.project,
+        args.ruleId,
+        {
+          enabledOverride: args.enabledOverride,
+          severityOverride: args.severityOverride,
+          valueOverride: args.valueOverride,
+          instructionOverride: args.instructionOverride,
+          positiveFragmentOverride: args.positiveFragmentOverride,
+          negativeFragmentOverride: args.negativeFragmentOverride,
+        },
+        'claude',
+      );
+      if (!bundle) {
+        return { isError: true, content: [{ type: 'text', text: 'Project or rule not found' }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(bundle, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'add_project_custom_rule',
+    'Add a project-specific custom rule that applies only to this project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      code: z.string().regex(/^[a-z0-9-_]+$/).describe('Short machine code (e.g. noir-palette)'),
+      title: z.string().min(1),
+      category: RuleCategorySchema.default('style'),
+      severity: RuleSeveritySchema.default('mandatory'),
+      defaultValue: z.string().default(''),
+      instruction: z.string().min(1),
+      positiveFragment: z.string().default(''),
+      negativeFragment: z.string().default(''),
+    },
+    async (args) => {
+      const created = await stage2.addProjectCustomRule(
+        args.project,
+        {
+          code: args.code,
+          title: args.title,
+          category: args.category,
+          severity: args.severity,
+          defaultValue: args.defaultValue,
+          instruction: args.instruction,
+          positiveFragment: args.positiveFragment,
+          negativeFragment: args.negativeFragment,
+          enabled: true,
+          sortOrder: 50,
+        },
+        'claude',
+      );
+      if (!created) {
+        return { isError: true, content: [{ type: 'text', text: `Project not found: ${args.project}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'list_prompt_templates',
+    'List reusable prompt templates stored in VideoStudio.',
+    {
+      category: PromptCategorySchema.optional(),
+    },
+    async ({ category }) => {
+      const list = await stage2.listPromptTemplates(category);
+      return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'save_prompt_template',
+    'Save a new reusable prompt template with {{variable}} placeholders.',
+    {
+      name: z.string().min(1),
+      slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
+      category: PromptCategorySchema.default('image'),
+      targetModel: z.string().default(''),
+      positiveTemplate: z.string().min(1),
+      negativeTemplate: z.string().default(''),
+      tags: z.array(z.string()).default([]),
+      notes: z.string().default(''),
+    },
+    async (args) => {
+      const created = await stage2.createPromptTemplate(
+        {
+          name: args.name,
+          slug: args.slug,
+          category: args.category,
+          targetModel: args.targetModel,
+          positiveTemplate: args.positiveTemplate,
+          negativeTemplate: args.negativeTemplate,
+          variables: [],
+          tags: args.tags,
+          notes: args.notes,
+        },
+        'claude',
+      );
+      return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'render_prompt_with_rules',
+    'Render a reusable prompt template by filling {{variables}} and automatically injecting the active positive/negative prompt fragments from a project ruleset.',
+    {
+      template: z.string().min(1).describe('Prompt template slug or UUID'),
+      project: z.string().optional().describe('Optional project slug/UUID to inject active project rules'),
+      variables: z.record(z.string()).optional().describe('Key-value map for {{variables}}'),
+      includeProjectRules: z.boolean().default(true),
+    },
+    async (args) => {
+      const rendered = await stage2.renderPromptWithProjectRules({
+        templateIdOrSlug: args.template,
+        projectIdOrSlug: args.project,
+        variables: args.variables,
+        includeProjectRules: args.includeProjectRules,
+      });
+      if (!rendered) {
+        return { isError: true, content: [{ type: 'text', text: `Prompt template not found: ${args.template}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(rendered, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'list_comfy_workflows',
+    'List saved reusable ComfyUI workflows (.json templates) stored in VideoStudio.',
+    {
+      category: ComfyWorkflowCategorySchema.optional(),
+    },
+    async ({ category }) => {
+      const list = await stage2.listComfyWorkflows(category);
+      return { content: [{ type: 'text', text: JSON.stringify(list, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'save_comfy_workflow',
+    'Save a reusable ComfyUI workflow JSON graph to the studio library.',
+    {
+      name: z.string().min(1),
+      slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
+      description: z.string().default(''),
+      category: ComfyWorkflowCategorySchema.default('image_gen'),
+      workflowJson: z.record(z.unknown()),
+      inputNotes: z.string().default(''),
+      tags: z.array(z.string()).default([]),
+    },
+    async (args) => {
+      const saved = await stage2.createComfyWorkflow(args, 'claude');
+      return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'list_skills',
+    'List Claude Code skills stored in the VideoStudio Skills Hub (global or project-scoped).',
+    {
+      project: z.string().optional().describe('Optional project slug to include project-scoped skills'),
+    },
+    async ({ project }) => {
+      const items = await stage2.listSkills(project);
+      return { content: [{ type: 'text', text: JSON.stringify(items, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'read_skill',
+    'Read the full SKILL.md instructions and version history of a skill by slug or UUID.',
+    {
+      skill: z.string().min(1).describe('Skill slug or UUID'),
+    },
+    async ({ skill }) => {
+      const detail = await stage2.getSkillWithVersions(skill);
+      if (!detail) {
+        return { isError: true, content: [{ type: 'text', text: `Skill not found: ${skill}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(detail, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'save_skill',
+    'Create or update a versioned Claude Code skill (SKILL.md) in VideoStudio and sync it to disk on the local server.',
+    {
+      slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
+      name: z.string().min(1),
+      description: z.string().min(1),
+      scope: SkillScopeSchema.default('global'),
+      project: z.string().optional().describe('Project slug/UUID when scope is "project"'),
+      content: z.string().min(1).describe('Markdown body of SKILL.md'),
+      changeSummary: z.string().default('Mis à jour par Claude Code'),
+      syncEnabled: z.boolean().default(true),
+    },
+    async (args) => {
+      let projectId: string | null = null;
+      if (args.scope === 'project' && args.project) {
+        const proj = await studio.getProjectByIdOrSlug(args.project);
+        projectId = proj?.id ?? null;
+      }
+      const saved = await stage2.upsertSkill({
+        slug: args.slug,
+        name: args.name,
+        description: args.description,
+        scope: args.scope,
+        projectId,
+        content: args.content,
+        changeSummary: args.changeSummary,
+        syncEnabled: args.syncEnabled,
+        author: 'claude',
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
     },
   );
 

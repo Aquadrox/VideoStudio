@@ -33,10 +33,11 @@ DATA_DIR=/data
 MAX_UPLOAD_MB=2048
 ALLOWED_FETCH_HOSTS=
 INGEST_ALLOWED_DIR=/ingest
+SKILLS_SYNC_DIR=/skills
 EOF
 
 chmod 600 "$ENV_FILE"
-mkdir -p data ingest
+mkdir -p data ingest skills
 
 echo "✅ Created $ENV_FILE (permissions 600) with generated secrets."
 echo "👉 Start VideoStudio with: docker compose up -d --build"

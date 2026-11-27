@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import {
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Columns2,
   Copy,
   Download,
   GitBranch,
+  MapPin,
   Save,
   Star,
   Trash2,
 } from 'lucide-react';
-import type { AssetDto, AssetStatus, QualityTier } from '@videostudio/shared';
-import type { AssetLineage } from '../api/client';
+import type { AnnotationDto, AssetDto, AssetStatus, QualityTier } from '@videostudio/shared';
+import { api, type AssetLineage } from '../api/client';
+import { normalizeMediaCoordinates, timecodeToFrame } from '../utils/annotations';
 import {
   formatBytes,
   formatDuration,
@@ -21,6 +25,7 @@ import {
 interface AssetInspectorProps {
   asset: AssetDto | null;
   lineage: AssetLineage | null;
+  annotationRefreshSignal: number;
   onUpdate: (
     assetId: string,
     patch: {
@@ -33,30 +38,62 @@ interface AssetInspectorProps {
   ) => Promise<void>;
   onDelete: (assetId: string) => Promise<void>;
   onSelectAsset: (asset: AssetDto) => void;
+  onOpenCompare: (asset: AssetDto, compareWith?: AssetDto) => void;
   onCopyText: (text: string, label?: string) => void;
+  onNotify: (msg: string) => void;
 }
 
 export function AssetInspector({
   asset,
   lineage,
+  annotationRefreshSignal,
   onUpdate,
   onDelete,
   onSelectAsset,
+  onOpenCompare,
   onCopyText,
+  onNotify,
 }: AssetInspectorProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const mediaLayerRef = useRef<HTMLDivElement | null>(null);
+
   const [useOriginal, setUseOriginal] = useState(false);
   const [notesDraft, setNotesDraft] = useState('');
   const [tagsDraft, setTagsDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
   const [showRawWorkflow, setShowRawWorkflow] = useState(false);
 
+  // Visual Annotations state
+  const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
+  const [annotateMode, setAnnotateMode] = useState(false);
+  const [pendingPin, setPendingPin] = useState<{
+    x: number;
+    y: number;
+    timecodeSec: number | null;
+    frameNumber: number | null;
+  } | null>(null);
+  const [pinComment, setPinComment] = useState('');
+
   useEffect(() => {
     setNotesDraft(asset?.notes ?? '');
     setTagsDraft(asset?.tags.join(', ') ?? '');
     setUseOriginal(false);
     setShowRawWorkflow(false);
+    setAnnotateMode(false);
+    setPendingPin(null);
+    setPinComment('');
   }, [asset?.id]);
+
+  useEffect(() => {
+    if (!asset?.id) {
+      setAnnotations([]);
+      return;
+    }
+    void api
+      .listAssetAnnotations(asset.id)
+      .then(setAnnotations)
+      .catch(() => setAnnotations([]));
+  }, [asset?.id, annotationRefreshSignal]);
 
   if (!asset) {
     return (
@@ -64,7 +101,7 @@ export function AssetInspector({
         <h2>Inspecteur Média</h2>
         <p>
           Sélectionne une image, une vidéo ou un audio dans la grille pour consulter ses
-          métadonnées ComfyUI, sa lignée de versions et copier sa référence Claude.
+          métadonnées ComfyUI, poser des annotations visuelles pour Claude et copier sa référence.
         </p>
       </div>
     );
@@ -82,6 +119,43 @@ export function AssetInspector({
     video.currentTime = next;
   };
 
+  const handleMediaClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!annotateMode || !mediaLayerRef.current) return;
+    if (asset.type !== 'image' && asset.type !== 'video') return;
+
+    const rect = mediaLayerRef.current.getBoundingClientRect();
+    const coords = normalizeMediaCoordinates(e.clientX, e.clientY, rect);
+
+    let timecodeSec: number | null = null;
+    let frameNumber: number | null = null;
+    if (asset.type === 'video' && videoRef.current) {
+      videoRef.current.pause();
+      timecodeSec = Math.round(videoRef.current.currentTime * 1000) / 1000;
+      frameNumber = timecodeToFrame(timecodeSec, asset.fps);
+    }
+
+    setPendingPin({ ...coords, timecodeSec, frameNumber });
+  };
+
+  const submitAnnotation = async () => {
+    if (!pendingPin || !pinComment.trim()) return;
+    const created = await api.createAnnotation(asset.id, {
+      x: pendingPin.x,
+      y: pendingPin.y,
+      shapeType: 'pin',
+      timecodeSec: pendingPin.timecodeSec,
+      frameNumber: pendingPin.frameNumber,
+      color: '#e5a038',
+      comment: pinComment.trim(),
+      author: 'user',
+    });
+    setAnnotations((prev) => [...prev, created]);
+    setPendingPin(null);
+    setPinComment('');
+    setAnnotateMode(false);
+    onNotify('Annotation ajoutée dans la file Feedback de Claude');
+  };
+
   const handleSaveNotesAndTags = async () => {
     setSavingNotes(true);
     try {
@@ -95,38 +169,98 @@ export function AssetInspector({
     }
   };
 
+  const parentForCompare = lineage?.ancestors[lineage.ancestors.length - 1];
+  const openAnnotationsCount = annotations.filter((a) => a.status === 'open').length;
+
   return (
     <>
-      {/* Media Preview Stage */}
+      {/* Media Preview Stage + Visual Annotation Overlay */}
       <div className="preview-stage">
         <div className="preview-media-box">
-          {asset.type === 'image' && <img src={mediaSrc} alt={asset.title} />}
-          {asset.type === 'video' && (
-            <video
-              ref={videoRef}
-              key={mediaSrc}
-              src={mediaSrc}
-              controls
-              playsInline
-              preload="metadata"
-            />
-          )}
-          {asset.type === 'audio' && (
-            <audio
-              src={asset.urls.original}
-              controls
-              style={{ width: '92%', margin: '24px 0' }}
-            />
-          )}
-          {asset.type === 'document' && (
-            <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 12.5 }}>
-              {asset.originalFilename}
-            </div>
-          )}
+          <div
+            ref={mediaLayerRef}
+            className={`preview-annotate-layer ${annotateMode ? 'annotating' : ''}`}
+            onClick={handleMediaClick}
+          >
+            {asset.type === 'image' && <img src={mediaSrc} alt={asset.title} />}
+            {asset.type === 'video' && (
+              <video
+                ref={videoRef}
+                key={mediaSrc}
+                src={mediaSrc}
+                controls={!annotateMode}
+                playsInline
+                preload="metadata"
+              />
+            )}
+            {asset.type === 'audio' && (
+              <audio
+                src={asset.urls.original}
+                controls
+                style={{ width: 310, margin: '24px 0' }}
+              />
+            )}
+            {asset.type === 'document' && (
+              <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 12.5 }}>
+                {asset.originalFilename}
+              </div>
+            )}
+
+            {/* Existing visual pins */}
+            {(asset.type === 'image' || asset.type === 'video') &&
+              annotations.map((ann, idx) => (
+                <button
+                  key={ann.id}
+                  type="button"
+                  className={`annotation-pin ${ann.status === 'resolved' ? 'resolved' : ''}`}
+                  style={{
+                    left: `${ann.x * 100}%`,
+                    top: `${ann.y * 100}%`,
+                    background: ann.color,
+                  }}
+                  title={`#${idx + 1}: ${ann.comment}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (ann.timecodeSec !== null && videoRef.current) {
+                      videoRef.current.pause();
+                      videoRef.current.currentTime = ann.timecodeSec;
+                    }
+                  }}
+                >
+                  {idx + 1}
+                </button>
+              ))}
+
+            {pendingPin && (
+              <div
+                className="annotation-pin"
+                style={{
+                  left: `${pendingPin.x * 100}%`,
+                  top: `${pendingPin.y * 100}%`,
+                  background: '#38bdf8',
+                }}
+              >
+                +
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="preview-controls">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+            {(asset.type === 'image' || asset.type === 'video') && (
+              <button
+                type="button"
+                className={`btn btn-sm ${annotateMode ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => {
+                  setAnnotateMode((v) => !v);
+                  setPendingPin(null);
+                }}
+                title="Cliquer sur l'image ou la frame vidéo pour laisser un retour à Claude"
+              >
+                <MapPin size={12} /> {annotateMode ? 'Clique sur le visuel...' : 'Annoter'}
+              </button>
+            )}
             {asset.type === 'video' && (
               <>
                 <button
@@ -135,7 +269,7 @@ export function AssetInspector({
                   onClick={() => stepVideoFrame(-1)}
                   title="Frame précédente"
                 >
-                  <ChevronLeft size={13} /> -1f
+                  <ChevronLeft size={12} /> -1f
                 </button>
                 <button
                   type="button"
@@ -143,7 +277,7 @@ export function AssetInspector({
                   onClick={() => stepVideoFrame(1)}
                   title="Frame suivante"
                 >
-                  +1f <ChevronRight size={13} />
+                  +1f <ChevronRight size={12} />
                 </button>
               </>
             )}
@@ -153,7 +287,7 @@ export function AssetInspector({
                 className="btn btn-ghost btn-sm"
                 onClick={() => setUseOriginal((v) => !v)}
               >
-                {useOriginal ? 'Original' : 'Proxy LAN'}
+                {useOriginal ? 'Original' : 'Proxy'}
               </button>
             )}
           </div>
@@ -164,12 +298,103 @@ export function AssetInspector({
             className="btn btn-ghost btn-sm"
             style={{ textDecoration: 'none' }}
           >
-            <Download size={13} /> Télécharger
+            <Download size={12} />
           </a>
         </div>
       </div>
 
-      {/* Reference Copy Section for Claude Code */}
+      {/* Pending Annotation Composer */}
+      {pendingPin && (
+        <div className="annotation-card" style={{ borderColor: 'var(--status-live)' }}>
+          <div className="section-label">
+            <span>
+              Nouvelle annotation ({Math.round(pendingPin.x * 100)}%, {Math.round(pendingPin.y * 100)}%)
+              {pendingPin.frameNumber !== null ? ` · frame #${pendingPin.frameNumber}` : ''}
+            </span>
+          </div>
+          <textarea
+            className="textarea"
+            autoFocus
+            value={pinComment}
+            onChange={(e) => setPinComment(e.target.value)}
+            placeholder="Ex : Main gauche à 6 doigts, corrige en 5 doigts selon la règle du projet"
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setPendingPin(null)}
+            >
+              Annuler
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => void submitAnnotation()}
+            >
+              Envoyer à Claude
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Annotations / Feedback List */}
+      {annotations.length > 0 && (
+        <div className="inspector-section">
+          <div className="section-label">
+            <span>Annotations & Feedback ({openAnnotationsCount} ouvert(s))</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {annotations.map((ann, idx) => (
+              <div
+                key={ann.id}
+                className={`annotation-card ${ann.status === 'resolved' ? 'resolved' : ''}`}
+              >
+                <div className="rule-row-top">
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
+                    <strong>#{idx + 1}</strong> · ({Math.round(ann.x * 100)}%,{' '}
+                    {Math.round(ann.y * 100)}%)
+                    {ann.frameNumber !== null && ` · f${ann.frameNumber}`}
+                  </span>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      title={ann.status === 'open' ? 'Marquer résolu' : 'Rouvrir'}
+                      onClick={async () => {
+                        const updated = await api.updateAnnotation(ann.id, {
+                          status: ann.status === 'open' ? 'resolved' : 'open',
+                        });
+                        setAnnotations((prev) =>
+                          prev.map((a) => (a.id === updated.id ? updated : a)),
+                        );
+                      }}
+                    >
+                      <CheckCircle2
+                        size={13}
+                        color={ann.status === 'resolved' ? 'var(--status-approved)' : undefined}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        await api.deleteAnnotation(ann.id);
+                        setAnnotations((prev) => prev.filter((a) => a.id !== ann.id));
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12.5 }}>{ann.comment}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Reference Copy & Compare Actions */}
       <div className="inspector-section">
         <div className="section-label">
           <span>Références Claude Code</span>
@@ -190,8 +415,17 @@ export function AssetInspector({
             onClick={() => onCopyText(asset.uri, 'URI MCP')}
             title={asset.uri}
           >
-            <Copy size={11} /> Copier URI studio://
+            <Copy size={11} /> URI studio://
           </button>
+          {(asset.type === 'image' || asset.type === 'video') && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => onOpenCompare(asset, parentForCompare)}
+            >
+              <Columns2 size={12} /> Comparer A/B
+            </button>
+          )}
         </div>
       </div>
 

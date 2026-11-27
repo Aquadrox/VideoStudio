@@ -11,6 +11,7 @@ const EnvSchema = z.object({
   CORS_ORIGIN: z.string().default('*'),
   DATA_DIR: z.string().default('./data'),
   INGEST_ALLOWED_DIR: z.string().default('./ingest'),
+  SKILLS_SYNC_DIR: z.string().default('./skills'),
   MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(20480).default(2048),
   ALLOWED_FETCH_HOSTS: z.string().default(''),
 });
@@ -24,6 +25,7 @@ export interface AppConfig {
   corsOrigin: string;
   dataDir: string;
   ingestAllowedDir: string;
+  skillsSyncDir: string;
   maxUploadBytes: number;
   allowedFetchHosts: string[];
 }
@@ -51,6 +53,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     corsOrigin: data.CORS_ORIGIN,
     dataDir: path.resolve(data.DATA_DIR),
     ingestAllowedDir: path.resolve(data.INGEST_ALLOWED_DIR),
+    skillsSyncDir: path.resolve(data.SKILLS_SYNC_DIR),
     maxUploadBytes: data.MAX_UPLOAD_MB * 1024 * 1024,
     allowedFetchHosts,
   };

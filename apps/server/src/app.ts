@@ -11,8 +11,11 @@ import { registerHealthRoutes } from './routes/health.routes.js';
 import { registerMcpRoutes } from './routes/mcp.routes.js';
 import { registerMediaRoutes } from './routes/media.routes.js';
 import { registerProjectRoutes } from './routes/projects.routes.js';
+import { registerStage2Routes } from './routes/stage2.routes.js';
 import { MediaService } from './services/media.service.js';
 import { RealtimeHub } from './services/realtime.service.js';
+import { SkillsSyncService } from './services/skills-sync.service.js';
+import { Stage2Service } from './services/stage2.service.js';
 import { StudioService } from './services/studio.service.js';
 
 export interface BuildAppDeps {
@@ -24,6 +27,7 @@ export interface BuildAppDeps {
 export async function buildApp(deps: BuildAppDeps): Promise<{
   app: FastifyInstance;
   studio: StudioService;
+  stage2: Stage2Service;
   realtime: RealtimeHub;
 }> {
   const app = Fastify({
@@ -52,6 +56,8 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
 
   const realtime = new RealtimeHub();
   const studio = new StudioService(deps.db, media, realtime);
+  const skillsSync = new SkillsSyncService(deps.config);
+  const stage2 = new Stage2Service(deps.db, studio, realtime, skillsSync);
 
   // Realtime WebSocket endpoint
   app.get<{ Querystring: { projectId?: string } }>(
@@ -68,13 +74,14 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
     },
   );
 
-  // REST + Media + MCP Routes
+  // REST + Media + Stage 2 + MCP Routes
   registerHealthRoutes(app, { pool: deps.pool, media, realtime });
   registerProjectRoutes(app, studio);
   registerAssetRoutes(app, studio, media);
   registerMediaRoutes(app, studio, media);
   registerActivityAndRefRoutes(app, studio);
-  registerMcpRoutes(app, { config: deps.config, studio, media });
+  registerStage2Routes(app, stage2);
+  registerMcpRoutes(app, { config: deps.config, studio, media, stage2 });
 
-  return { app, studio, realtime };
+  return { app, studio, stage2, realtime };
 }

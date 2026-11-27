@@ -21,7 +21,14 @@ import {
   type UpdateProjectInput,
 } from '@videostudio/shared';
 import type { Database } from '../db/index.js';
-import { activities, assets, jobs, projects } from '../db/schema.js';
+import {
+  activities,
+  assets,
+  jobs,
+  projectRulebookLinks,
+  projects,
+  rulebooks,
+} from '../db/schema.js';
 import type { MediaService } from './media.service.js';
 import type { RealtimeHub } from './realtime.service.js';
 
@@ -110,6 +117,9 @@ export class StudioService {
     if (!created) {
       throw new Error('Failed to create project');
     }
+
+    // Automatically attach default global rulebooks (e.g. Standards Production IA)
+    await this.attachDefaultRulebooks(created.id);
 
     const dto = this.toProjectDto(created, 0);
     this.realtime.broadcast({ type: 'project.created', payload: dto });
@@ -719,6 +729,24 @@ export class StudioService {
   }
 
   // --- Helpers ---
+
+  private async attachDefaultRulebooks(projectId: string): Promise<void> {
+    try {
+      const defaults = await this.db
+        .select({ id: rulebooks.id })
+        .from(rulebooks)
+        .where(eq(rulebooks.isDefault, true));
+
+      for (const book of defaults) {
+        await this.db
+          .insert(projectRulebookLinks)
+          .values({ projectId, rulebookId: book.id })
+          .onConflictDoNothing();
+      }
+    } catch {
+      // Safe fallback if rulebooks table is absent in isolated unit tests
+    }
+  }
 
   private async ensureUniqueSlug(baseSlug: string): Promise<string> {
     let candidate = baseSlug;

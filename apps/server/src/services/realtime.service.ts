@@ -71,12 +71,15 @@ export class RealtimeHub {
       case 'asset.updated':
       case 'asset.deleted':
       case 'job.updated':
+      case 'annotation.changed':
         return event.payload.projectId;
       case 'activity.logged':
+      case 'rules.changed':
         return event.payload.projectId;
       case 'project.created':
       case 'project.updated':
       case 'project.deleted':
+      case 'library.changed':
         return null;
     }
   }

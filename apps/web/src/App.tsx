@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import {
   Activity,
+  BookOpen,
   Clapperboard,
+  Columns2,
   Copy,
   FolderPlus,
   Layers,
   Search,
+  ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Terminal,
   Upload,
 } from 'lucide-react';
@@ -25,19 +29,36 @@ import { api, type AssetLineage, type HealthResponse } from './api/client';
 import { ActivityFeed } from './components/ActivityFeed';
 import { AssetCard } from './components/AssetCard';
 import { AssetInspector } from './components/AssetInspector';
+import { CompareView } from './components/CompareView';
+import { LibraryPanel } from './components/LibraryPanel';
 import { CreateProjectModal, McpSetupModal } from './components/Modals';
+import { RulesPanel } from './components/RulesPanel';
+import { SkillsPanel } from './components/SkillsPanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
 import { copyToClipboard, QUALITY_TIER_LABELS, STATUS_LABELS } from './utils/format';
+
+type WorkspaceMode = 'media' | 'compare' | 'rules' | 'library' | 'skills';
 
 export function App() {
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('media');
   const [assets, setAssets] = useState<AssetDto[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedLineage, setSelectedLineage] = useState<AssetLineage | null>(null);
+  const [comparePair, setComparePair] = useState<{ leftId: string | null; rightId: string | null }>({
+    leftId: null,
+    rightId: null,
+  });
+
   const [activities, setActivities] = useState<ActivityDto[]>([]);
   const [jobs, setJobs] = useState<JobDto[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+
+  const [annotationRefresh, setAnnotationRefresh] = useState(0);
+  const [rulesRefresh, setRulesRefresh] = useState(0);
+  const [libraryRefresh, setLibraryRefresh] = useState(0);
+  const [skillsRefresh, setSkillsRefresh] = useState(0);
 
   const [rightTab, setRightTab] = useState<'inspector' | 'activity'>('inspector');
   const [typeFilter, setTypeFilter] = useState<AssetType | 'all'>('all');
@@ -63,7 +84,7 @@ export function App() {
   const handleCopyText = useCallback(
     (text: string, label = 'Référence') => {
       void copyToClipboard(text).then((ok) => {
-        showToast(ok ? `${label} copiée : ${text}` : 'Impossible de copier');
+        showToast(ok ? `${label} copiée` : 'Impossible de copier');
       });
     },
     [showToast],
@@ -169,6 +190,19 @@ export function App() {
             ].slice(0, 20));
           }
           break;
+        case 'annotation.changed':
+          setAnnotationRefresh((n) => n + 1);
+          break;
+        case 'rules.changed':
+          setRulesRefresh((n) => n + 1);
+          break;
+        case 'library.changed':
+          if (event.payload.kind === 'skill') {
+            setSkillsRefresh((n) => n + 1);
+          } else {
+            setLibraryRefresh((n) => n + 1);
+          }
+          break;
       }
     },
     [activeProjectId, showToast],
@@ -243,7 +277,7 @@ export function App() {
 
   const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
-    if (activeProjectId) setIsDragging(true);
+    if (activeProjectId && workspaceMode === 'media') setIsDragging(true);
   };
 
   const handleDrop = (e: DragEvent) => {
@@ -265,7 +299,7 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">MCP · ComfyUI · LAN</div>
+              <div className="brand-sub">v0.2 · MCP · LAN</div>
             </div>
           </div>
 
@@ -337,7 +371,7 @@ export function App() {
         </div>
       </aside>
 
-      {/* Center Workspace: Media Gallery & Live Jobs */}
+      {/* Center Workspace */}
       <main
         className="workspace"
         onDragOver={handleDragOver}
@@ -414,6 +448,45 @@ export function App() {
           )}
         </header>
 
+        {/* Studio Mode Tabs */}
+        <nav className="mode-tabs" aria-label="Modules du studio">
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'media' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('media')}
+          >
+            <Layers size={14} /> Médias <span className="mode-badge">{assets.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'compare' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('compare')}
+          >
+            <Columns2 size={14} /> Comparateur A/B
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'rules' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('rules')}
+          >
+            <ShieldCheck size={14} /> Règles
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'library' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('library')}
+          >
+            <Sparkles size={14} /> Prompts & ComfyUI
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'skills' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('skills')}
+          >
+            <BookOpen size={14} /> Skills Claude
+          </button>
+        </nav>
+
         {/* Live Claude Jobs Banner */}
         {runningJobs.length > 0 && (
           <div className="jobs-strip" role="status" aria-live="polite">
@@ -432,120 +505,158 @@ export function App() {
           </div>
         )}
 
-        {/* Filter Toolbar */}
-        {activeProject && (
-          <div className="toolbar">
-            <div className="search-box">
-              <Search size={14} />
-              <input
-                className="search-input"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Rechercher titre, @ref, prompt, tag..."
-              />
-            </div>
+        {/* Active Workspace View */}
+        {workspaceMode === 'media' && (
+          <>
+            {activeProject && (
+              <div className="toolbar">
+                <div className="search-box">
+                  <Search size={14} />
+                  <input
+                    className="search-input"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Rechercher titre, @ref, prompt, tag..."
+                  />
+                </div>
 
-            <div className="filter-group">
-              {(['all', 'image', 'video', 'audio'] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className={`chip ${typeFilter === t ? 'active' : ''}`}
-                  onClick={() => setTypeFilter(t)}
-                >
-                  {t === 'all'
-                    ? 'Tous'
-                    : t === 'image'
-                      ? 'Images'
-                      : t === 'video'
-                        ? 'Vidéos'
-                        : 'Audio'}
-                </button>
-              ))}
+                <div className="filter-group">
+                  {(['all', 'image', 'video', 'audio'] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`chip ${typeFilter === t ? 'active' : ''}`}
+                      onClick={() => setTypeFilter(t)}
+                    >
+                      {t === 'all'
+                        ? 'Tous'
+                        : t === 'image'
+                          ? 'Images'
+                          : t === 'video'
+                            ? 'Vidéos'
+                            : 'Audio'}
+                    </button>
+                  ))}
 
-              <select
-                aria-label="Filtrer par niveau qualité"
-                className="select-compact"
-                value={tierFilter}
-                onChange={(e) => setTierFilter(e.target.value as QualityTier | 'all')}
-              >
-                <option value="all">Qualité : Toutes</option>
-                {(Object.keys(QUALITY_TIER_LABELS) as QualityTier[]).map((tier) => (
-                  <option key={tier} value={tier}>
-                    {QUALITY_TIER_LABELS[tier]}
-                  </option>
-                ))}
-              </select>
+                  <select
+                    aria-label="Filtrer par niveau qualité"
+                    className="select-compact"
+                    value={tierFilter}
+                    onChange={(e) => setTierFilter(e.target.value as QualityTier | 'all')}
+                  >
+                    <option value="all">Qualité : Toutes</option>
+                    {(Object.keys(QUALITY_TIER_LABELS) as QualityTier[]).map((tier) => (
+                      <option key={tier} value={tier}>
+                        {QUALITY_TIER_LABELS[tier]}
+                      </option>
+                    ))}
+                  </select>
 
-              <select
-                aria-label="Filtrer par statut"
-                className="select-compact"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as AssetStatus | 'all')}
-              >
-                <option value="all">Statut : Tous</option>
-                {(Object.keys(STATUS_LABELS) as AssetStatus[]).map((st) => (
-                  <option key={st} value={st}>
-                    {STATUS_LABELS[st]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+                  <select
+                    aria-label="Filtrer par statut"
+                    className="select-compact"
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value as AssetStatus | 'all')}
+                  >
+                    <option value="all">Statut : Tous</option>
+                    {(Object.keys(STATUS_LABELS) as AssetStatus[]).map((st) => (
+                      <option key={st} value={st}>
+                        {STATUS_LABELS[st]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <section className="gallery-scroll">
+              {!activeProject ? (
+                <div className="empty-state">
+                  <Layers size={36} color="var(--accent-amber)" />
+                  <h2>Prêt à produire avec Claude Code</h2>
+                  <p>
+                    Crée ton premier projet vidéo pour centraliser tes générations ComfyUI (images,
+                    tests basse rés., rendus HQ, musiques) et suivre le travail de Claude en direct.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => setShowNewProject(true)}
+                  >
+                    <FolderPlus size={15} /> Créer un projet
+                  </button>
+                </div>
+              ) : filteredAssets.length === 0 ? (
+                <div className="empty-state">
+                  <Upload size={34} color="var(--text-muted)" />
+                  <h2>Aucun média dans cette vue</h2>
+                  <p>
+                    Glisse-dépose des fichiers ici ou demande à Claude Code d'enregistrer une
+                    génération ComfyUI via <code>register_asset</code> sur{' '}
+                    <code>@proj-{activeProject.slug}</code>.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload size={14} /> Importer un fichier
+                  </button>
+                </div>
+              ) : (
+                <div className="gallery-grid">
+                  {filteredAssets.map((asset) => (
+                    <AssetCard
+                      key={asset.id}
+                      asset={asset}
+                      selected={asset.id === selectedAssetId}
+                      onSelect={(item) => {
+                        setSelectedAssetId(item.id);
+                        setRightTab('inspector');
+                      }}
+                      onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
         )}
 
-        {/* Gallery Grid */}
-        <section className="gallery-scroll">
-          {!activeProject ? (
-            <div className="empty-state">
-              <Layers size={36} color="var(--accent-amber)" />
-              <h2>Prêt à produire avec Claude Code</h2>
-              <p>
-                Crée ton premier projet vidéo pour centraliser tes générations ComfyUI (images,
-                tests basse rés., rendus HQ, musiques) et suivre le travail de Claude en direct.
-              </p>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => setShowNewProject(true)}
-              >
-                <FolderPlus size={15} /> Créer un projet
-              </button>
-            </div>
-          ) : filteredAssets.length === 0 ? (
-            <div className="empty-state">
-              <Upload size={34} color="var(--text-muted)" />
-              <h2>Aucun média dans cette vue</h2>
-              <p>
-                Glisse-dépose des fichiers ici ou demande à Claude Code d'enregistrer une
-                génération ComfyUI via <code>register_asset</code> sur{' '}
-                <code>@proj-{activeProject.slug}</code>.
-              </p>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Upload size={14} /> Importer un fichier
-              </button>
-            </div>
-          ) : (
-            <div className="gallery-grid">
-              {filteredAssets.map((asset) => (
-                <AssetCard
-                  key={asset.id}
-                  asset={asset}
-                  selected={asset.id === selectedAssetId}
-                  onSelect={(item) => {
-                    setSelectedAssetId(item.id);
-                    setRightTab('inspector');
-                  }}
-                  onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
-                />
-              ))}
-            </div>
-          )}
-        </section>
+        {workspaceMode === 'compare' && (
+          <CompareView
+            assets={assets}
+            initialLeftId={comparePair.leftId}
+            initialRightId={comparePair.rightId}
+          />
+        )}
+
+        {workspaceMode === 'rules' && (
+          <RulesPanel
+            project={activeProject}
+            refreshSignal={rulesRefresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
+        {workspaceMode === 'library' && (
+          <LibraryPanel
+            project={activeProject}
+            refreshSignal={libraryRefresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
+        {workspaceMode === 'skills' && (
+          <SkillsPanel
+            project={activeProject}
+            refreshSignal={skillsRefresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
       </main>
 
       {/* Right Panel: Asset Inspector & Claude Live Feed */}
@@ -572,6 +683,7 @@ export function App() {
             <AssetInspector
               asset={selectedAsset}
               lineage={selectedLineage}
+              annotationRefreshSignal={annotationRefresh}
               onUpdate={async (id, patch) => {
                 const updated = await api.updateAsset(id, patch);
                 setAssets((prev) => prev.map((a) => (a.id === id ? updated : a)));
@@ -584,7 +696,15 @@ export function App() {
                 showToast('Média supprimé');
               }}
               onSelectAsset={(target) => setSelectedAssetId(target.id)}
+              onOpenCompare={(target, compareWith) => {
+                setComparePair({
+                  leftId: compareWith?.id ?? assets.find((a) => a.id !== target.id)?.id ?? target.id,
+                  rightId: target.id,
+                });
+                setWorkspaceMode('compare');
+              }}
               onCopyText={handleCopyText}
+              onNotify={showToast}
             />
           ) : (
             <ActivityFeed
@@ -593,6 +713,7 @@ export function App() {
                 const exists = assets.some((a) => a.id === entityId);
                 if (exists) {
                   setSelectedAssetId(entityId);
+                  setWorkspaceMode('media');
                   setRightTab('inspector');
                 }
               }}

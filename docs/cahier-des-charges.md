@@ -18,7 +18,7 @@
 
 ## 2. Vision & Modules Fonctionnels (Stades 1 à 5)
 
-1. **Multi-Projets & Espace de Travail** : isolation par projet, ratio, FPS, résolution cible, statut.
+1. **Multi-Projets, Dépôt Git & GitHub par Projet** : isolation par projet, ratio, FPS, résolution cible, statut ; **chaque projet vidéo dispose de son propre dépôt Git local et peut être lié à son propre dépôt GitHub** (versionning propre des scénarios, storyboards, surcharges de règles, prompts, skills projet, métadonnées YouTube et manifestes, avec `.gitignore` dédié excluant les médias lourds bruts ou gestion sélective).
 2. **Suivi Temps Réel (Live Studio)** : WebSocket diffusant en direct chaque création, mise à jour et progression de job lancée par Claude Code via MCP.
 3. **Système de Référencement Universel (`@ref` & `studio://`)** : identifiants copiables en 1 clic (`@img-001`, `@vid-004-v2`, `@proj-slug`) résolus instantanément par Claude via MCP.
 4. **Pré-production** *(Stade 3)* : scénarios versionnés avec diff, Bible de continuité (personnages, lieux, styles), découpage scènes/plans et Storyboard visuel.
@@ -34,8 +34,8 @@
 
 ## 3. Feuille de Route & Livrables
 
-- **Stade 1 (Implémenté)** : Socle monorepo + Docker Compose isolé + sécurité dépôt public (Gitleaks CI, `init-env.sh`, `CLAUDE.md`) + DAM Média (Sharp/FFmpeg/ComfyUI metadata) + Serveur MCP v1 (Streamable HTTP) + Web UI temps réel (Projets, Galerie, Live Jobs, Inspecteur, Flux Live, `@ref`).
-- **Stade 2** : Comparateur A/B (images & vidéos synchronisées), annotations visuelles sur frames + Inbox Feedback MCP, **Listes de Règles (Rulebooks)** avec surcharge par projet, Bibliothèque de Prompts & Workflows ComfyUI, Hub Skills Claude Code.
-- **Stade 3** : Scénarios versionnés, Bible de continuité, Storyboard drag & drop, Studio Audio (WaveSurfer, paroles, `.srt`/`.lrc`), Hub YouTube complet (Miniatures A/B, simulateur, métadonnées, chapitres, Export Pack).
-- **Stade 4** : Animatique, Timeline multi-pistes (bascule Draft ↔ HQ), rendu serveur FFmpeg, export OpenTimelineIO / FCPXML / EDL, connecteur YouTube Data API v3 optionnel.
-- **Stade 5** : Raccourcis pro (`Cmd+K`, J/K/L), gestion d'espace disque & purge sélective, sauvegardes automatisées et monitoring.
+- **Stade 1 (`v0.1.0` — Implémenté)** : Socle monorepo + Docker Compose isolé + sécurité dépôt public (Gitleaks CI, `init-env.sh`, `CLAUDE.md`) + DAM Média (Sharp/FFmpeg/ComfyUI metadata) + Serveur MCP v1 (Streamable HTTP) + Web UI temps réel (Projets, Galerie, Live Jobs, Inspecteur, Flux Live, `@ref`).
+- **Stade 2 (`v0.2.0` — Implémenté)** : Comparateur A/B (images & vidéos synchronisées), annotations visuelles sur frames + Inbox Feedback MCP, **Listes de Règles (Rulebooks)** avec surcharge par projet, Bibliothèque de Prompts & Workflows ComfyUI, Hub Skills Claude Code avec sync disque.
+- **Stade 3 (`v0.3.0`)** : **Dépôt Git local & intégration GitHub par projet**, Scénarios versionnés, Bible de continuité, Storyboard drag & drop, Studio Audio (WaveSurfer, paroles, `.srt`/`.lrc`), Hub YouTube complet (Miniatures A/B, simulateur, métadonnées, chapitres, Export Pack).
+- **Stade 4 (`v0.4.0`)** : Animatique, Timeline multi-pistes (bascule Draft ↔ HQ), rendu serveur FFmpeg, export OpenTimelineIO / FCPXML / EDL, connecteur YouTube Data API v3 optionnel.
+- **Stade 5 (`v0.5.0`)** : Raccourcis pro (`Cmd+K`, J/K/L), gestion d'espace disque & purge sélective, sauvegardes automatisées et monitoring.

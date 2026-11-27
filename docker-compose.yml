@@ -36,11 +36,13 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
       DATA_DIR: /data
       INGEST_ALLOWED_DIR: /ingest
+      SKILLS_SYNC_DIR: /skills
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
       ALLOWED_FETCH_HOSTS: ${ALLOWED_FETCH_HOSTS:-}
     volumes:
       - ./data:/data
       - ./ingest:/ingest:ro
+      - ./skills:/skills
     networks:
       - videostudio-internal
     healthcheck:
