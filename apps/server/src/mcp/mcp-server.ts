@@ -26,13 +26,26 @@ import {
   TimelineQualityModeSchema,
   UpsertStoryboardInputSchema,
   UpsertTimelineInputSchema,
+  WebhookEventTypeSchema,
   YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
+import type { OpsService } from '../services/ops.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
 import type { Stage4Service } from '../services/stage4.service.js';
 import type { StudioService } from '../services/studio.service.js';
+import type { WatchFolderService } from '../services/watch-folder.service.js';
+import type { WebhookService } from '../services/webhook.service.js';
+import type { YouTubeUploadService } from '../services/youtube-upload.service.js';
+
+export interface Stage5McpDeps {
+  ops: OpsService;
+  watchFolders: WatchFolderService;
+  webhooks: WebhookService;
+  youtubeUpload: YouTubeUploadService;
+  getInFlightRequests?: () => number;
+}
 
 export function createVideoStudioMcpServer(
   studio: StudioService,
@@ -40,10 +53,11 @@ export function createVideoStudioMcpServer(
   stage2: Stage2Service,
   stage3: Stage3Service,
   stage4: Stage4Service,
+  stage5?: Stage5McpDeps,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.4.0',
+    version: '0.5.0',
   });
 
   // --- MCP Resources ---
@@ -2102,6 +2116,172 @@ export function createVideoStudioMcpServer(
       return { content: [{ type: 'text', text: JSON.stringify(exported, null, 2) }] };
     },
   );
+
+  // ==========================================================================
+  // Stage 5 MCP Tools (Ops Monitoring, Disk Cleanup, Backups, Watch Folders,
+  // Outgoing Webhooks & Optional YouTube Draft Upload)
+  // ==========================================================================
+
+  if (stage5) {
+    server.tool(
+      'get_system_health_and_disk',
+      'Get live VideoStudio server health metrics (CPU, RAM, uptime, DB, FFmpeg, active Blue/Green slot) and per-project disk usage summary.',
+      {},
+      async () => {
+        const [metrics, disk] = await Promise.all([
+          stage5.ops.getSystemMetrics(stage5.getInFlightRequests?.() ?? 0),
+          stage5.ops.getDiskUsageSummary(),
+        ]);
+        return { content: [{ type: 'text', text: JSON.stringify({ metrics, disk }, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'preview_disk_cleanup',
+      'Dry-run preview of selective disk cleanup for old rejected/archived test assets. NEVER touches approved, winner, final_master, or zero-copy ingest references.',
+      {
+        projectId: z.string().uuid().optional(),
+        olderThanDays: z.number().int().min(0).max(3650).default(7),
+        statuses: z.array(AssetStatusSchema).default(['needs_revision', 'archived']),
+        qualityTiers: z.array(QualityTierSchema).default(['test', 'draft_lowres']),
+        includeTempFiles: z.boolean().default(true),
+      },
+      async (args) => {
+        const result = await stage5.ops.previewCleanup(args);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'run_disk_cleanup',
+      'Execute selective disk cleanup of old rejected/archived test assets and temporary files. Strictly protects approved, winner, final_master, and zero-copy ingest references.',
+      {
+        projectId: z.string().uuid().optional(),
+        olderThanDays: z.number().int().min(0).max(3650).default(7),
+        statuses: z.array(AssetStatusSchema).default(['needs_revision', 'archived']),
+        qualityTiers: z.array(QualityTierSchema).default(['test', 'draft_lowres']),
+        includeTempFiles: z.boolean().default(true),
+      },
+      async (args) => {
+        const result = await stage5.ops.runCleanup(args);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'create_backup',
+      'Create a compressed backup archive (PostgreSQL dump + full JSON metadata + skills) in BACKUP_DIR.',
+      {
+        notes: z.string().max(500).default(''),
+      },
+      async ({ notes }) => {
+        const backup = await stage5.ops.createBackup(notes);
+        return { content: [{ type: 'text', text: JSON.stringify(backup, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'list_watch_folders',
+      'List configured ComfyUI -> VideoStudio auto-ingest watch folders.',
+      {
+        project: z.string().optional().describe('Optional project slug or UUID filter'),
+      },
+      async ({ project }) => {
+        const folders = await stage5.watchFolders.listWatchFolders(project);
+        return { content: [{ type: 'text', text: JSON.stringify(folders, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'create_watch_folder',
+      'Register an auto-ingest watch folder pointing to an allowed read-only ComfyUI output directory.',
+      {
+        project: z.string().min(1).describe('Project slug or UUID'),
+        relativeDir: z.string().min(1).max(400),
+        folderPath: z.string().max(200).default(''),
+        glob: z.string().max(120).default('*'),
+        storageMode: StorageModeSchema.default('reference'),
+        qualityTier: QualityTierSchema.default('test'),
+        tags: z.array(z.string()).default([]),
+        enabled: z.boolean().default(true),
+        pollIntervalSec: z.number().int().min(5).max(3600).default(15),
+      },
+      async ({ project, ...rest }) => {
+        try {
+          const created = await stage5.watchFolders.createWatchFolder({
+            projectId: project,
+            ...rest,
+          });
+          return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'list_webhooks',
+      'List configured outgoing webhooks (secrets are never returned).',
+      {
+        projectId: z.string().uuid().optional(),
+      },
+      async ({ projectId }) => {
+        const items = await stage5.webhooks.listWebhooks(projectId);
+        return { content: [{ type: 'text', text: JSON.stringify(items, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'create_webhook',
+      'Create an outgoing HTTP POST webhook (optional HMAC-SHA256 signing secret) for studio events.',
+      {
+        projectId: z.string().uuid().nullable().optional(),
+        name: z.string().min(1).max(120),
+        url: z.string().url().max(600),
+        events: z.array(WebhookEventTypeSchema).min(1),
+        secret: z.string().max(256).optional(),
+        enabled: z.boolean().default(true),
+      },
+      async (args) => {
+        try {
+          const created = await stage5.webhooks.createWebhook(args);
+          return { content: [{ type: 'text', text: JSON.stringify(created, null, 2) }] };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'upload_youtube_draft',
+      'Upload a project video as a private or unlisted YouTube draft via YouTube Data API v3 using the project YouTube package metadata and optional A/B thumbnail.',
+      {
+        project: z.string().min(1).describe('Project slug or UUID'),
+        videoAssetId: z.string().uuid().optional(),
+        videoAssetRef: z.string().optional().describe('Optional @ref handle (e.g. @vid-001)'),
+        titleIndex: z.number().int().min(0).max(2).default(0),
+        thumbnailIndex: z.number().int().min(0).max(2).nullable().default(0),
+        privacyStatus: z.enum(['private', 'unlisted']).default('private'),
+      },
+      async ({ project, ...rest }) => {
+        try {
+          const uploaded = await stage5.youtubeUpload.uploadDraftVideo(project, rest);
+          return { content: [{ type: 'text', text: JSON.stringify(uploaded, null, 2) }] };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+          };
+        }
+      },
+    );
+  }
 
   return server;
 }

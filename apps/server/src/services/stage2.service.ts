@@ -55,16 +55,23 @@ import {
 import type { RealtimeHub } from './realtime.service.js';
 import type { SkillsSyncService } from './skills-sync.service.js';
 import type { StudioService } from './studio.service.js';
+import type { WebhookService } from './webhook.service.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class Stage2Service {
+  private webhookService?: WebhookService;
+
   constructor(
     private readonly db: Database,
     private readonly studio: StudioService,
     private readonly realtime: RealtimeHub,
     private readonly skillsSync: SkillsSyncService,
   ) {}
+
+  setWebhookService(webhookService: WebhookService): void {
+    this.webhookService = webhookService;
+  }
 
   // ==========================================================================
   // 1. Visual Annotations & Feedback Inbox
@@ -197,6 +204,16 @@ export class Stage2Service {
       entityType: 'asset',
       entityId: found.asset.id,
       entityRef: found.asset.handle,
+    });
+
+    this.webhookService?.emit('annotation.created', found.asset.projectId, {
+      annotationId: dto.id,
+      assetId: found.asset.id,
+      assetHandle: found.asset.handle,
+      shotCode: linkedShotCode,
+      author: input.author,
+      comment: input.comment,
+      timecodeSec: input.timecodeSec ?? null,
     });
 
     return dto;

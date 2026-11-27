@@ -21,6 +21,7 @@ describe('Blue/Green zero-downtime deployment configuration', () => {
     expect(composeContent).toContain('postgres_data:/var/lib/postgresql/data');
     expect(composeContent).toContain('./data:/data');
     expect(composeContent).toContain('./skills:/skills');
+    expect(composeContent).toContain('./backups:/backups');
     expect(composeContent).toContain('${INGEST_HOST_DIR:-./ingest}:/ingest:ro');
 
     // Security invariant: PostgreSQL port 5432 must NEVER be published on the host
@@ -39,8 +40,13 @@ describe('Blue/Green zero-downtime deployment configuration', () => {
     expect(gatewayConf).toContain('location /mcp');
   });
 
-  it('passes strict shell syntax checks on update.sh, rollback.sh, init-env.sh, and gateway-entrypoint.sh', async () => {
-    const bashScripts = ['scripts/update.sh', 'scripts/rollback.sh', 'scripts/init-env.sh'];
+  it('passes strict shell syntax checks on update.sh, rollback.sh, init-env.sh, backup.sh, and gateway-entrypoint.sh', async () => {
+    const bashScripts = [
+      'scripts/update.sh',
+      'scripts/rollback.sh',
+      'scripts/init-env.sh',
+      'scripts/backup.sh',
+    ];
     for (const rel of bashScripts) {
       await expect(
         execFileAsync('bash', ['-n', path.join(REPO_ROOT, rel)]),

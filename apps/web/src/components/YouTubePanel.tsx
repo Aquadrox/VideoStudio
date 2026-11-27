@@ -3,6 +3,7 @@ import {
   CheckSquare,
   Copy,
   Download,
+  ExternalLink,
   GripVertical,
   Monitor,
   Moon,
@@ -12,6 +13,7 @@ import {
   Sun,
   Trash2,
   Upload,
+  UploadCloud,
   Youtube,
 } from 'lucide-react';
 import {
@@ -21,6 +23,8 @@ import {
   type ProjectDto,
   type YouTubeChapter,
   type YouTubePackageDto,
+  type YouTubeUploadResultDto,
+  type YouTubeUploadStatusDto,
 } from '@videostudio/shared';
 import { api } from '../api/client';
 import { analyzeYoutubeTitle, buildChaptersFromStoryboard } from '../utils/youtube';
@@ -68,12 +72,35 @@ export function YouTubePanel({
   const [simDevice, setSimDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [exportInfo, setExportInfo] = useState<{ exportDir: string; files: string[] } | null>(null);
 
+  // Optional YouTube Data API v3 Draft Upload
+  const [ytApiStatus, setYtApiStatus] = useState<YouTubeUploadStatusDto | null>(null);
+  const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+  const [uploadTitleIndex, setUploadTitleIndex] = useState<number>(0);
+  const [uploadThumbIndex, setUploadThumbIndex] = useState<number>(0);
+  const [uploadPrivacy, setUploadPrivacy] = useState<'private' | 'unlisted'>('private');
+  const [uploadingDraft, setUploadingDraft] = useState(false);
+  const [lastUpload, setLastUpload] = useState<YouTubeUploadResultDto | null>(null);
+
   const imageAssets = useMemo(() => assets.filter((a) => a.type === 'image'), [assets]);
+  const videoAssets = useMemo(() => assets.filter((a) => a.type === 'video'), [assets]);
   const assetById = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
   const activeThumbIds = useMemo(
     () => thumbSlots.filter((id): id is string => Boolean(id)),
     [thumbSlots],
   );
+
+  useEffect(() => {
+    void api.getYouTubeUploadStatus().then(setYtApiStatus).catch(() => setYtApiStatus(null));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedVideoId && videoAssets.length > 0) {
+      const preferred =
+        videoAssets.find((v) => v.qualityTier === 'final_master' || v.status === 'winner') ??
+        videoAssets[0];
+      if (preferred) setSelectedVideoId(preferred.id);
+    }
+  }, [videoAssets, selectedVideoId]);
 
   useEffect(() => {
     if (!project) return;
@@ -597,6 +624,126 @@ export function YouTubePanel({
             </label>
           ))}
         </div>
+      </div>
+
+      {/* Optional YouTube Data API v3 Draft Upload */}
+      <div className="panel-card">
+        <div className="section-label">
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <UploadCloud size={14} color="var(--accent-amber)" /> Upload Brouillon YouTube (API v3 — Privé / Non répertorié)
+          </span>
+          <span
+            className={`pill ${ytApiStatus?.configured ? 'status-approved' : ''}`}
+          >
+            {ytApiStatus?.configured ? 'OAuth2 configuré' : 'Non configuré (.env)'}
+          </span>
+        </div>
+
+        {!ytApiStatus?.configured ? (
+          <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Pour activer l'upload direct en brouillon privé vers YouTube Studio, renseigne{' '}
+            <code>YOUTUBE_CLIENT_ID</code>, <code>YOUTUBE_CLIENT_SECRET</code> et{' '}
+            <code>YOUTUBE_REFRESH_TOKEN</code> dans ton fichier <code>.env</code> local puis redémarre la stack.
+          </div>
+        ) : (
+          <>
+            <div className="ops-form-grid">
+              <select
+                className="select-compact"
+                value={selectedVideoId}
+                onChange={(e) => setSelectedVideoId(e.target.value)}
+              >
+                <option value="">Choisir la vidéo à envoyer...</option>
+                {videoAssets.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.handle} — {v.title} ({v.qualityTier})
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className="select-compact"
+                value={uploadTitleIndex}
+                onChange={(e) => setUploadTitleIndex(Number(e.target.value))}
+              >
+                {[0, 1, 2].map((idx) => (
+                  <option key={idx} value={idx}>
+                    Titre {String.fromCharCode(65 + idx)} : {titles[idx]?.trim() || '(vide)'}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className="select-compact"
+                value={uploadThumbIndex}
+                onChange={(e) => setUploadThumbIndex(Number(e.target.value))}
+              >
+                <option value={-1}>Sans miniature</option>
+                {[0, 1, 2].map((idx) => (
+                  <option key={idx} value={idx} disabled={!thumbSlots[idx]}>
+                    Miniature {String.fromCharCode(65 + idx)}{thumbSlots[idx] ? '' : ' (vide)'}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className="select-compact"
+                value={uploadPrivacy}
+                onChange={(e) => setUploadPrivacy(e.target.value as 'private' | 'unlisted')}
+              >
+                <option value="private">Privé (brouillon recommandé)</option>
+                <option value="unlisted">Non répertorié (lien de revue)</option>
+              </select>
+
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={uploadingDraft || !selectedVideoId}
+                onClick={async () => {
+                  if (!selectedVideoId) return;
+                  setUploadingDraft(true);
+                  try {
+                    await handleSave();
+                    const res = await api.uploadYouTubeDraft(project.id, {
+                      videoAssetId: selectedVideoId,
+                      titleIndex: uploadTitleIndex,
+                      thumbnailIndex: uploadThumbIndex < 0 ? null : uploadThumbIndex,
+                      privacyStatus: uploadPrivacy,
+                    });
+                    setLastUpload(res);
+                    onNotify(`Brouillon YouTube envoyé (${res.videoId})`);
+                  } catch (err) {
+                    onNotify(err instanceof Error ? err.message : 'Échec upload YouTube');
+                  } finally {
+                    setUploadingDraft(false);
+                  }
+                }}
+              >
+                <UploadCloud size={13} />{' '}
+                {uploadingDraft ? 'Upload vers YouTube...' : 'Envoyer le brouillon'}
+              </button>
+            </div>
+
+            {lastUpload && (
+              <div className="ops-preview-summary" style={{ marginTop: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <span>
+                    Brouillon envoyé : <strong>{lastUpload.title}</strong> ({lastUpload.privacyStatus}
+                    {lastUpload.thumbnailUploaded ? ' · miniature appliquée' : ''})
+                  </span>
+                  <a
+                    href={lastUpload.studioUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn btn-secondary btn-sm"
+                  >
+                    <ExternalLink size={12} /> Ouvrir YouTube Studio
+                  </a>
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

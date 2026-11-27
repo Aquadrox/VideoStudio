@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-27
+
+### Added
+- **Stage 5 — Pro Polish, Exploitation, Automated Backups, Watch Folders, Outgoing Webhooks & Optional YouTube Draft Upload (`OpsPanel`, `CommandPalette`, `OpsService`, `WatchFolderService`, `WebhookService`, `YouTubeUploadService`, Closes #7)**:
+  - **Pro Keyboard Shortcuts & Command Palette (`Cmd/Ctrl+K`, `?`)**: Added fuzzy Command Palette to jump across projects, all 11 studio modules, `@ref` assets, and quick actions (new project, instant backup, MCP setup, shortcuts help), plus `?` shortcuts cheat-sheet modal, quick triage (`A` approve, `R` needs revision, `1`–`5` rating), and pro video transport (`J`/`K`/`L` shuttle & `←`/`→` frame-by-frame stepping).
+  - **Server Health & Resource Monitoring (`GET /api/ops/metrics`)**: Added **Exploitation** tab showing active Blue/Green slot, version, uptime, `inFlightRequests`, WebSocket clients, PostgreSQL & FFmpeg availability, CPU load/cores, host RAM & Node RSS, filesystem free/total space, and YouTube API configuration status.
+  - **Disk Space Management & Non-Destructive Selective Cleanup (`GET /api/ops/disk`, `POST /api/ops/cleanup/preview|run`)**: Added per-project & per-folder (`originals`/`proxies`/`thumbnails`/`.tmp`/`backups`) usage breakdown with Dry-Run preview and safe selective purge of old rejected/archived test assets — strictly blocking `approved`, `winner`, `final_master`, and zero-copy `ingest://` / `ingest-root://` references.
+  - **Automated Backups (`GET/POST/DELETE /api/ops/backups`, `scripts/backup.sh`)**: Added in-app backup creation (`pg_dump` + full JSON metadata snapshot with redacted webhook secrets + synced `skills/` archive in `BACKUP_DIR`), download/delete endpoints, and a Debian cron-ready `scripts/backup.sh` with `--retain-days` retention.
+  - **Watch Folders (`watch_folders`, `/api/ops/watch-folders/*`)**: Added optional ComfyUI → VideoStudio auto-ingest watch folders restricted to `INGEST_ALLOWED_DIR` / `INGEST_EXTRA_DIRS`, with settle-delay protection, background polling, and manual **Scanner** trigger.
+  - **Outgoing Webhooks (`webhooks`, `/api/ops/webhooks/*`)**: Added project-scoped & global HTTP POST webhooks with SSRF host validation (`assertSafeFetchUrl`), optional HMAC-SHA256 signing (`X-VideoStudio-Signature: sha256=...`), masked secrets (`hasSecret`), connectivity test button, and automatic emission on `annotation.created`, `asset.created`, `asset.status_changed`, `job.completed`, `job.failed`, `timeline.rendered`, and `backup.completed`.
+  - **Optional YouTube Data API v3 Draft Uploader (`GET /api/youtube/upload/status`, `POST /api/projects/:id/youtube/upload-draft`)**: Added zero-dependency OAuth2 refresh-token resumable video upload defaulting to `private` (or `unlisted`) drafts with A/B title & thumbnail pickers, auto-formatted chapters, hashtags, and `containsSyntheticMedia` AI disclosure (configured strictly via local `.env`).
+  - **Stage 5 MCP Tools**: Added `get_system_health_and_disk`, `preview_disk_cleanup`, `run_disk_cleanup`, `create_backup`, `list_watch_folders`, `create_watch_folder`, `list_webhooks`, `create_webhook`, and `upload_youtube_draft`.
+
 ## [0.4.0] - 2026-11-27
 
 ### Added

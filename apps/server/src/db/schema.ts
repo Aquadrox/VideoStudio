@@ -600,3 +600,64 @@ export const timelineRenders = pgTable(
   },
   (table) => [index('timeline_renders_project_idx').on(table.projectId, table.createdAt)],
 );
+
+// --- Stage 5 Tables (Watch Folders, Outgoing Webhooks, Automated Backups) ---
+
+export const watchFolders = pgTable(
+  'watch_folders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    relativeDir: text('relative_dir').notNull(),
+    folderPath: text('folder_path').notNull().default(''),
+    glob: text('glob').notNull().default('*'),
+    storageMode: text('storage_mode').notNull().default('reference'),
+    qualityTier: text('quality_tier').notNull().default('test'),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    enabled: boolean('enabled').notNull().default(true),
+    pollIntervalSec: integer('poll_interval_sec').notNull().default(15),
+    lastScanAt: timestamp('last_scan_at', { withTimezone: true }),
+    ingestedCount: integer('ingested_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('watch_folders_project_idx').on(table.projectId)],
+);
+
+export const webhooks = pgTable(
+  'webhooks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    url: text('url').notNull(),
+    events: jsonb('events').$type<string[]>().notNull().default([]),
+    secret: text('secret'),
+    enabled: boolean('enabled').notNull().default(true),
+    lastStatusCode: integer('last_status_code'),
+    lastTriggeredAt: timestamp('last_triggered_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('webhooks_project_idx').on(table.projectId)],
+);
+
+export const backups = pgTable(
+  'backups',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    filename: text('filename').notNull(),
+    filePath: text('file_path').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+    includesDb: boolean('includes_db').notNull().default(true),
+    includesSkills: boolean('includes_skills').notNull().default(true),
+    includesMetadata: boolean('includes_metadata').notNull().default(true),
+    status: text('status').notNull().default('completed'),
+    notes: text('notes').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('backups_created_idx').on(table.createdAt)],
+);

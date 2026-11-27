@@ -36,10 +36,13 @@ import type { MediaService } from './media.service.js';
 import type { RealtimeHub } from './realtime.service.js';
 import type { Stage3Service } from './stage3.service.js';
 import type { StudioService } from './studio.service.js';
+import type { WebhookService } from './webhook.service.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class Stage4Service {
+  private webhookService?: WebhookService;
+
   constructor(
     private readonly config: AppConfig,
     private readonly db: Database,
@@ -48,6 +51,10 @@ export class Stage4Service {
     private readonly media: MediaService,
     private readonly realtime: RealtimeHub,
   ) {}
+
+  setWebhookService(webhookService: WebhookService): void {
+    this.webhookService = webhookService;
+  }
 
   async getTimeline(projectIdOrSlug: string): Promise<TimelineDto | null> {
     const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
@@ -796,6 +803,15 @@ export class Stage4Service {
         message: `Rendu terminé : ${registeredAsset.handle}`,
         etaSeconds: 0,
         resultAssetId: registeredAsset.id,
+      });
+
+      this.webhookService?.emit('timeline.rendered', params.projectId, {
+        renderId: params.renderId,
+        outputAssetId: registeredAsset.id,
+        outputAssetHandle: registeredAsset.handle,
+        qualityMode: params.qualityMode,
+        resolution: params.resolution,
+        fps: params.fps,
       });
 
       this.realtime.broadcast({

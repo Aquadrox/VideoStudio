@@ -6,4 +6,6 @@ export * from './rules-engine.js';
 export * from './stage3-utils.js';
 export * from './stage4-schemas.js';
 export * from './nle-export.js';
+export * from './stage5-schemas.js';
+export * from './stage5-utils.js';
 export * from './task-utils.js';

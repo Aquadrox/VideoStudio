@@ -30,9 +30,11 @@ describe('MediaService storage modes (reference, hardlink, copy)', () => {
       ingestAllowedDir: ingestDir,
       ingestExtraDirs: [],
       skillsSyncDir: path.join(tmpRoot, 'skills'),
+      backupDir: path.join(tmpRoot, 'backups'),
       maxUploadBytes: 50 * 1024 * 1024,
       allowedFetchHosts: [],
       comfyuiBaseUrl: null,
+      youtubeOAuth: null,
     };
     media = new MediaService(config);
   });

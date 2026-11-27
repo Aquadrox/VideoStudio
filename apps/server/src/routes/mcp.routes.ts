@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { AppConfig } from '../config.js';
-import { createVideoStudioMcpServer } from '../mcp/mcp-server.js';
+import { createVideoStudioMcpServer, type Stage5McpDeps } from '../mcp/mcp-server.js';
 import type { MediaService } from '../services/media.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
@@ -22,6 +22,7 @@ export function registerMcpRoutes(
     stage2: Stage2Service;
     stage3: Stage3Service;
     stage4: Stage4Service;
+    stage5?: Stage5McpDeps;
   },
 ): void {
   const handleMcpRequest = async (
@@ -44,6 +45,7 @@ export function registerMcpRoutes(
       deps.stage2,
       deps.stage3,
       deps.stage4,
+      deps.stage5,
     );
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

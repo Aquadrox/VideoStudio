@@ -490,6 +490,55 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS timeline_renders_project_idx ON timeline_renders (project_id, created_at DESC);
+
+    -- Stage 5: Watch Folders, Outgoing Webhooks & Automated Backups
+    CREATE TABLE IF NOT EXISTS watch_folders (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      relative_dir text NOT NULL,
+      folder_path text NOT NULL DEFAULT '',
+      glob text NOT NULL DEFAULT '*',
+      storage_mode text NOT NULL DEFAULT 'reference',
+      quality_tier text NOT NULL DEFAULT 'test',
+      tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+      enabled boolean NOT NULL DEFAULT true,
+      poll_interval_sec integer NOT NULL DEFAULT 15,
+      last_scan_at timestamptz,
+      ingested_count integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS watch_folders_project_idx ON watch_folders (project_id);
+
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      url text NOT NULL,
+      events jsonb NOT NULL DEFAULT '[]'::jsonb,
+      secret text,
+      enabled boolean NOT NULL DEFAULT true,
+      last_status_code integer,
+      last_triggered_at timestamptz,
+      last_error text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS webhooks_project_idx ON webhooks (project_id);
+
+    CREATE TABLE IF NOT EXISTS backups (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      filename text NOT NULL,
+      file_path text NOT NULL,
+      size_bytes bigint NOT NULL DEFAULT 0,
+      includes_db boolean NOT NULL DEFAULT true,
+      includes_skills boolean NOT NULL DEFAULT true,
+      includes_metadata boolean NOT NULL DEFAULT true,
+      status text NOT NULL DEFAULT 'completed',
+      notes text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS backups_created_idx ON backups (created_at DESC);
   `);
 
   // Seed one default reusable Rulebook if none exist yet
