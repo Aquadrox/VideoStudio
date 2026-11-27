@@ -4,6 +4,7 @@ import type { AppConfig } from '../config.js';
 import { createVideoStudioMcpServer } from '../mcp/mcp-server.js';
 import type { MediaService } from '../services/media.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
+import type { Stage3Service } from '../services/stage3.service.js';
 import type { StudioService } from '../services/studio.service.js';
 import { verifyBearerToken } from '../utils/security.js';
 
@@ -18,6 +19,7 @@ export function registerMcpRoutes(
     studio: StudioService;
     media: MediaService;
     stage2: Stage2Service;
+    stage3: Stage3Service;
   },
 ): void {
   const handleMcpRequest = async (
@@ -34,7 +36,7 @@ export function registerMcpRoutes(
     }
 
     // Stateless per-request transport: resilient across container restarts & concurrent Claude Code sessions
-    const mcpServer = createVideoStudioMcpServer(deps.studio, deps.media, deps.stage2);
+    const mcpServer = createVideoStudioMcpServer(deps.studio, deps.media, deps.stage2, deps.stage3);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

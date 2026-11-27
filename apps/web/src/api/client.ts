@@ -2,26 +2,42 @@ import type {
   ActivityDto,
   AnnotationDto,
   AssetDto,
+  AudioTrackDto,
+  BibleEntityDto,
   ComfyWorkflowDto,
+  CommitProjectRepoInput,
+  ConfigureProjectRepoInput,
   CreateAnnotationInput,
   CreateComfyWorkflowInput,
   CreateProjectInput,
   CreatePromptTemplateInput,
   CreateRulebookInput,
   CreateRuleInput,
+  CreateSceneInput,
+  CreateShotInput,
   JobDto,
   ProjectDto,
+  ProjectRepoStatusDto,
   ProjectRulesBundle,
+  ProjectScriptDto,
   PromptTemplateDto,
   RenderedPromptResult,
   RulebookDto,
   RuleDto,
+  SceneDto,
+  ShotDto,
   SkillDto,
   SkillVersionDto,
   UpdateAnnotationInput,
   UpdateAssetInput,
+  UpdateScriptInput,
+  UpdateShotInput,
+  UpdateYouTubePackageInput,
+  UpsertAudioTrackInput,
+  UpsertBibleEntityInput,
   UpsertProjectRuleOverrideInput,
   UpsertSkillInput,
+  YouTubePackageDto,
 } from '@videostudio/shared';
 
 export interface HealthResponse {
@@ -366,5 +382,212 @@ export const api = {
 
   async deleteSkill(idOrSlug: string): Promise<void> {
     await apiFetch(`/api/skills/${encodeURIComponent(idOrSlug)}`, { method: 'DELETE' });
+  },
+
+  // --- Stage 3: Pre-production (Script, Bible, Storyboard) ---
+
+  async getProjectScript(projectId: string): Promise<ProjectScriptDto> {
+    const res = await apiFetch<{ script: ProjectScriptDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/script`,
+    );
+    return res.script;
+  },
+
+  async updateProjectScript(
+    projectId: string,
+    input: UpdateScriptInput,
+  ): Promise<ProjectScriptDto> {
+    const res = await apiFetch<{ script: ProjectScriptDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/script`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.script;
+  },
+
+  async listBibleEntities(projectId: string): Promise<BibleEntityDto[]> {
+    const res = await apiFetch<{ entities: BibleEntityDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/bible`,
+    );
+    return res.entities;
+  },
+
+  async upsertBibleEntity(
+    projectId: string,
+    input: UpsertBibleEntityInput,
+  ): Promise<BibleEntityDto> {
+    const res = await apiFetch<{ entity: BibleEntityDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/bible`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.entity;
+  },
+
+  async deleteBibleEntity(entityId: string): Promise<void> {
+    await apiFetch(`/api/bible/${encodeURIComponent(entityId)}`, { method: 'DELETE' });
+  },
+
+  async getStoryboard(projectId: string): Promise<SceneDto[]> {
+    const res = await apiFetch<{ scenes: SceneDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/storyboard`,
+    );
+    return res.scenes;
+  },
+
+  async createScene(projectId: string, input: CreateSceneInput): Promise<SceneDto> {
+    const res = await apiFetch<{ scene: SceneDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/scenes`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.scene;
+  },
+
+  async deleteScene(sceneId: string): Promise<void> {
+    await apiFetch(`/api/scenes/${encodeURIComponent(sceneId)}`, { method: 'DELETE' });
+  },
+
+  async createShot(projectId: string, input: CreateShotInput): Promise<ShotDto> {
+    const res = await apiFetch<{ shot: ShotDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/shots`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.shot;
+  },
+
+  async updateShot(shotId: string, input: UpdateShotInput): Promise<ShotDto> {
+    const res = await apiFetch<{ shot: ShotDto }>(
+      `/api/shots/${encodeURIComponent(shotId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.shot;
+  },
+
+  async deleteShot(shotId: string): Promise<void> {
+    await apiFetch(`/api/shots/${encodeURIComponent(shotId)}`, { method: 'DELETE' });
+  },
+
+  // --- Stage 3: Audio, Music & Lyrics ---
+
+  async listAudioTracks(projectId: string): Promise<AudioTrackDto[]> {
+    const res = await apiFetch<{ tracks: AudioTrackDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/audio`,
+    );
+    return res.tracks;
+  },
+
+  async upsertAudioTrack(
+    projectId: string,
+    input: UpsertAudioTrackInput,
+  ): Promise<AudioTrackDto> {
+    const res = await apiFetch<{ track: AudioTrackDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/audio`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.track;
+  },
+
+  async deleteAudioTrack(trackId: string): Promise<void> {
+    await apiFetch(`/api/audio/${encodeURIComponent(trackId)}`, { method: 'DELETE' });
+  },
+
+  // --- Stage 3: YouTube Packaging Hub ---
+
+  async getYouTubePackage(projectId: string): Promise<YouTubePackageDto> {
+    const res = await apiFetch<{ youtube: YouTubePackageDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/youtube`,
+    );
+    return res.youtube;
+  },
+
+  async updateYouTubePackage(
+    projectId: string,
+    input: UpdateYouTubePackageInput,
+  ): Promise<YouTubePackageDto> {
+    const res = await apiFetch<{ youtube: YouTubePackageDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/youtube`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.youtube;
+  },
+
+  async exportYouTubePack(
+    projectId: string,
+  ): Promise<{ exportDir: string; files: string[]; warnings: string[] }> {
+    const res = await apiFetch<{
+      exportPack: { exportDir: string; files: string[]; warnings: string[] };
+    }>(`/api/projects/${encodeURIComponent(projectId)}/youtube/export-pack`, {
+      method: 'POST',
+    });
+    return res.exportPack;
+  },
+
+  // --- Stage 3 / Issue #4: Per-Project Local Git & GitHub ---
+
+  async getProjectGitStatus(projectId: string): Promise<ProjectRepoStatusDto> {
+    const res = await apiFetch<{ git: ProjectRepoStatusDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/git`,
+    );
+    return res.git;
+  },
+
+  async initOrConfigureProjectGit(
+    projectId: string,
+    input: ConfigureProjectRepoInput,
+  ): Promise<ProjectRepoStatusDto> {
+    const res = await apiFetch<{ git: ProjectRepoStatusDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/git/init`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.git;
+  },
+
+  async commitProjectGit(
+    projectId: string,
+    input: CommitProjectRepoInput,
+  ): Promise<{ status: ProjectRepoStatusDto; committed: boolean; sha: string | null }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/git/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async pushProjectGit(
+    projectId: string,
+  ): Promise<{ ok: boolean; output: string; status: ProjectRepoStatusDto }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/git/push`, {
+      method: 'POST',
+    });
   },
 };

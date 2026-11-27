@@ -12,7 +12,13 @@ import {
   uuid,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import type { ComfyMetadata, PromptVariable } from '@videostudio/shared';
+import type {
+  AudioMarker,
+  ChecklistItem,
+  ComfyMetadata,
+  PromptVariable,
+  YouTubeChapter,
+} from '@videostudio/shared';
 
 export const projects = pgTable(
   'projects',
@@ -291,4 +297,176 @@ export const skillVersions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index('skill_versions_skill_idx').on(table.skillId, table.version)],
+);
+
+// --- Stage 3 Tables (Pre-production, Audio/Lyrics, YouTube Hub, Project Git Repos) ---
+
+export const projectScripts = pgTable(
+  'project_scripts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    title: text('title').notNull().default('Scénario principal'),
+    content: text('content').notNull().default(''),
+    version: integer('version').notNull().default(1),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('project_scripts_project_uidx').on(table.projectId)],
+);
+
+export const scriptVersions = pgTable(
+  'script_versions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    scriptId: uuid('script_id')
+      .notNull()
+      .references(() => projectScripts.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    content: text('content').notNull(),
+    changeSummary: text('change_summary').notNull().default(''),
+    author: text('author').notNull().default('user'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('script_versions_script_idx').on(table.scriptId, table.version)],
+);
+
+export const bibleEntities = pgTable(
+  'bible_entities',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    entityType: text('entity_type').notNull().default('character'),
+    refCode: text('ref_code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    visualPrompt: text('visual_prompt').notNull().default(''),
+    loraName: text('lora_name').notNull().default(''),
+    referenceAssetIds: jsonb('reference_asset_ids').$type<string[]>().notNull().default([]),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('bible_entities_project_ref_uidx').on(table.projectId, table.refCode)],
+);
+
+export const scenes = pgTable(
+  'scenes',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sceneNumber: integer('scene_number').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull().default(''),
+    locationRef: text('location_ref').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('scenes_project_sort_idx').on(table.projectId, table.sortOrder)],
+);
+
+export const shots = pgTable(
+  'shots',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    sceneId: uuid('scene_id')
+      .notNull()
+      .references(() => scenes.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    shotCode: text('shot_code').notNull(),
+    title: text('title').notNull(),
+    visualDescription: text('visual_description').notNull().default(''),
+    cameraMovement: text('camera_movement').notNull().default(''),
+    dialogue: text('dialogue').notNull().default(''),
+    prompt: text('prompt').notNull().default(''),
+    durationSec: doublePrecision('duration_sec').notNull().default(4),
+    status: text('status').notNull().default('planned'),
+    keyframeAssetId: uuid('keyframe_asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    videoAssetId: uuid('video_asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    bibleEntityRefs: jsonb('bible_entity_refs').$type<string[]>().notNull().default([]),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('shots_project_code_uidx').on(table.projectId, table.shotCode),
+    index('shots_scene_sort_idx').on(table.sceneId, table.sortOrder),
+  ],
+);
+
+export const audioTracks = pgTable(
+  'audio_tracks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    refCode: text('ref_code').notNull(),
+    title: text('title').notNull(),
+    category: text('category').notNull().default('music'),
+    bpm: doublePrecision('bpm'),
+    musicalKey: text('musical_key').notNull().default(''),
+    promptUsed: text('prompt_used').notNull().default(''),
+    lyrics: text('lyrics').notNull().default(''),
+    lrcContent: text('lrc_content').notNull().default(''),
+    srtContent: text('srt_content').notNull().default(''),
+    markers: jsonb('markers').$type<AudioMarker[]>().notNull().default([]),
+    notes: text('notes').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('audio_tracks_project_ref_uidx').on(table.projectId, table.refCode)],
+);
+
+export const youtubePackages = pgTable(
+  'youtube_packages',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    titles: jsonb('titles').$type<string[]>().notNull().default([]),
+    description: text('description').notNull().default(''),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    hashtags: jsonb('hashtags').$type<string[]>().notNull().default([]),
+    category: text('category').notNull().default('Entertainment'),
+    language: text('language').notNull().default('fr'),
+    playlist: text('playlist').notNull().default(''),
+    pinnedComment: text('pinned_comment').notNull().default(''),
+    aiDisclosure: boolean('ai_disclosure').notNull().default(true),
+    thumbnailAssetIds: jsonb('thumbnail_asset_ids').$type<string[]>().notNull().default([]),
+    chapters: jsonb('chapters').$type<YouTubeChapter[]>().notNull().default([]),
+    srtSubtitles: text('srt_subtitles').notNull().default(''),
+    checklist: jsonb('checklist').$type<ChecklistItem[]>().notNull().default([]),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('youtube_packages_project_uidx').on(table.projectId)],
+);
+
+export const projectRepos = pgTable(
+  'project_repos',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    localPath: text('local_path').notNull(),
+    defaultBranch: text('default_branch').notNull().default('main'),
+    githubRemoteUrl: text('github_remote_url'),
+    autoCommit: boolean('auto_commit').notNull().default(false),
+    lastCommitSha: text('last_commit_sha'),
+    lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('project_repos_project_uidx').on(table.projectId)],
 );

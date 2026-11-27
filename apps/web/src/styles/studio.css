@@ -1389,3 +1389,148 @@ textarea {
   background: var(--status-live-soft);
   color: var(--status-live);
 }
+
+/* ============================================================================
+   Stage 3 UI Extensions: Script Diff, Storyboard Cards, Audio Waveform, YouTube Simulator
+   ============================================================================ */
+
+.diff-viewer {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.diff-line {
+  padding: 1px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-line.added {
+  background: rgba(46, 189, 133, 0.14);
+  color: #6ee7b7;
+}
+
+.diff-line.removed {
+  background: rgba(239, 93, 93, 0.14);
+  color: #fca5a5;
+}
+
+.shot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.waveform-bar-track {
+  position: relative;
+  height: 58px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+}
+
+.waveform-bar {
+  flex: 1;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 80ms linear;
+}
+
+.waveform-bar.played {
+  background: var(--accent-amber);
+}
+
+.waveform-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--status-live);
+  pointer-events: none;
+}
+
+/* YouTube Feed Simulator */
+.yt-sim-frame {
+  border-radius: var(--radius-md);
+  padding: 16px;
+  border: 1px solid var(--border-default);
+}
+
+.yt-sim-frame.dark {
+  background: #0f0f0f;
+  color: #f1f1f1;
+}
+
+.yt-sim-frame.light {
+  background: #ffffff;
+  color: #0f0f0f;
+}
+
+.yt-sim-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.yt-sim-grid.mobile {
+  grid-template-columns: 1fr;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.yt-thumb-box {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1a1a1a;
+}
+
+.yt-thumb-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.yt-duration-badge {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  background: rgba(0, 0, 0, 0.84);
+  color: #ffffff;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.yt-sim-title {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.yt-sim-meta {
+  margin-top: 3px;
+  font-size: 12px;
+  opacity: 0.68;
+}

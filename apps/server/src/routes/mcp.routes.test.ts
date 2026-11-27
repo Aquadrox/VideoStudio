@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import type { MediaService } from '../services/media.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
+import type { Stage3Service } from '../services/stage3.service.js';
 import type { StudioService } from '../services/studio.service.js';
 import { registerMcpRoutes } from './mcp.routes.js';
 
@@ -30,6 +31,7 @@ describe('MCP Streamable HTTP route', () => {
       studio: {} as StudioService,
       media: {} as MediaService,
       stage2: {} as Stage2Service,
+      stage3: {} as Stage3Service,
     });
 
     const missingAuth = await app.inject({
@@ -50,13 +52,14 @@ describe('MCP Streamable HTTP route', () => {
     await app.close();
   });
 
-  it('responds to authenticated MCP initialize and tools/list requests including Stage 2 tools', async () => {
+  it('responds to authenticated MCP initialize and tools/list requests including Stage 2 & Stage 3 tools', async () => {
     const app = Fastify({ logger: false });
     registerMcpRoutes(app, {
       config: createTestConfig(),
       studio: {} as StudioService,
       media: {} as MediaService,
       stage2: {} as Stage2Service,
+      stage3: {} as Stage3Service,
     });
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -102,18 +105,22 @@ describe('MCP Streamable HTTP route', () => {
 
       expect(toolsRes.status).toBe(200);
       const toolsText = await toolsRes.text();
-      // Stage 1 tools
+      // Stage 1
       expect(toolsText).toContain('register_asset');
       expect(toolsText).toContain('resolve_reference');
-      expect(toolsText).toContain('start_job');
-      // Stage 2 tools
+      // Stage 2
       expect(toolsText).toContain('get_pending_feedback');
-      expect(toolsText).toContain('resolve_feedback');
       expect(toolsText).toContain('get_active_rules');
-      expect(toolsText).toContain('set_project_rule_override');
-      expect(toolsText).toContain('render_prompt_with_rules');
-      expect(toolsText).toContain('save_comfy_workflow');
       expect(toolsText).toContain('save_skill');
+      // Stage 3
+      expect(toolsText).toContain('update_script');
+      expect(toolsText).toContain('upsert_bible_entity');
+      expect(toolsText).toContain('create_shot');
+      expect(toolsText).toContain('upsert_audio_track');
+      expect(toolsText).toContain('update_youtube_package');
+      expect(toolsText).toContain('prepare_youtube_pack');
+      expect(toolsText).toContain('init_project_git_repo');
+      expect(toolsText).toContain('sync_and_commit_project_repo');
     } finally {
       await app.close();
     }
