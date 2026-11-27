@@ -20,8 +20,10 @@ client_secret*.json
 credentials*.json
 secrets/
 
-# Local runtime media, database & backups
+# Local runtime media, database, skills sync & backups
 data/
+ingest/
+skills/
 pgdata/
 backups/
 uploads/

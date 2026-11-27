@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { AppConfig } from '../config.js';
 import { createVideoStudioMcpServer } from '../mcp/mcp-server.js';
 import type { MediaService } from '../services/media.service.js';
+import type { Stage2Service } from '../services/stage2.service.js';
 import type { StudioService } from '../services/studio.service.js';
 import { verifyBearerToken } from '../utils/security.js';
 
@@ -12,7 +13,12 @@ import { verifyBearerToken } from '../utils/security.js';
  */
 export function registerMcpRoutes(
   app: FastifyInstance,
-  deps: { config: AppConfig; studio: StudioService; media: MediaService },
+  deps: {
+    config: AppConfig;
+    studio: StudioService;
+    media: MediaService;
+    stage2: Stage2Service;
+  },
 ): void {
   const handleMcpRequest = async (
     request: import('fastify').FastifyRequest,
@@ -28,7 +34,7 @@ export function registerMcpRoutes(
     }
 
     // Stateless per-request transport: resilient across container restarts & concurrent Claude Code sessions
-    const mcpServer = createVideoStudioMcpServer(deps.studio, deps.media);
+    const mcpServer = createVideoStudioMcpServer(deps.studio, deps.media, deps.stage2);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

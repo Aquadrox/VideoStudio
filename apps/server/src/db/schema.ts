@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   doublePrecision,
   index,
   integer,
@@ -11,7 +12,7 @@ import {
   uuid,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import type { ComfyMetadata } from '@videostudio/shared';
+import type { ComfyMetadata, PromptVariable } from '@videostudio/shared';
 
 export const projects = pgTable(
   'projects',
@@ -110,4 +111,184 @@ export const jobs = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index('jobs_project_status_idx').on(table.projectId, table.status)],
+);
+
+// --- Stage 2 Tables ---
+
+export const annotations = pgTable(
+  'annotations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => assets.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    author: text('author').notNull().default('user'),
+    frameNumber: integer('frame_number'),
+    timecodeSec: doublePrecision('timecode_sec'),
+    shapeType: text('shape_type').notNull().default('pin'),
+    x: doublePrecision('x').notNull(),
+    y: doublePrecision('y').notNull(),
+    w: doublePrecision('w'),
+    h: doublePrecision('h'),
+    color: text('color').notNull().default('#e5a038'),
+    comment: text('comment').notNull(),
+    status: text('status').notNull().default('open'),
+    resolvedBy: text('resolved_by'),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('annotations_asset_idx').on(table.assetId, table.createdAt),
+    index('annotations_project_status_idx').on(table.projectId, table.status),
+  ],
+);
+
+export const rulebooks = pgTable(
+  'rulebooks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('rulebooks_slug_uidx').on(table.slug)],
+);
+
+export const rules = pgTable(
+  'rules',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    rulebookId: uuid('rulebook_id').references(() => rulebooks.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    code: text('code').notNull(),
+    title: text('title').notNull(),
+    category: text('category').notNull().default('style'),
+    severity: text('severity').notNull().default('mandatory'),
+    defaultValue: text('default_value').notNull().default(''),
+    instruction: text('instruction').notNull(),
+    positiveFragment: text('positive_fragment').notNull().default(''),
+    negativeFragment: text('negative_fragment').notNull().default(''),
+    enabled: boolean('enabled').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('rules_rulebook_idx').on(table.rulebookId),
+    index('rules_project_idx').on(table.projectId),
+  ],
+);
+
+export const projectRulebookLinks = pgTable(
+  'project_rulebook_links',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    rulebookId: uuid('rulebook_id')
+      .notNull()
+      .references(() => rulebooks.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('project_rulebook_link_uidx').on(table.projectId, table.rulebookId)],
+);
+
+export const projectRuleOverrides = pgTable(
+  'project_rule_overrides',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ruleId: uuid('rule_id')
+      .notNull()
+      .references(() => rules.id, { onDelete: 'cascade' }),
+    enabledOverride: boolean('enabled_override'),
+    severityOverride: text('severity_override'),
+    valueOverride: text('value_override'),
+    instructionOverride: text('instruction_override'),
+    positiveFragmentOverride: text('positive_fragment_override'),
+    negativeFragmentOverride: text('negative_fragment_override'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('project_rule_override_uidx').on(table.projectId, table.ruleId)],
+);
+
+export const promptTemplates = pgTable(
+  'prompt_templates',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    category: text('category').notNull().default('image'),
+    targetModel: text('target_model').notNull().default(''),
+    positiveTemplate: text('positive_template').notNull(),
+    negativeTemplate: text('negative_template').notNull().default(''),
+    variables: jsonb('variables').$type<PromptVariable[]>().notNull().default([]),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    notes: text('notes').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('prompt_templates_slug_uidx').on(table.slug)],
+);
+
+export const comfyWorkflows = pgTable(
+  'comfy_workflows',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    category: text('category').notNull().default('image_gen'),
+    version: integer('version').notNull().default(1),
+    workflowJson: jsonb('workflow_json').$type<Record<string, unknown>>().notNull(),
+    inputNotes: text('input_notes').notNull().default(''),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('comfy_workflows_slug_uidx').on(table.slug)],
+);
+
+export const skills = pgTable(
+  'skills',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull(),
+    scope: text('scope').notNull().default('global'),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    content: text('content').notNull(),
+    version: integer('version').notNull().default(1),
+    syncEnabled: boolean('sync_enabled').notNull().default(true),
+    syncedPath: text('synced_path'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('skills_slug_uidx').on(table.slug)],
+);
+
+export const skillVersions = pgTable(
+  'skill_versions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    skillId: uuid('skill_id')
+      .notNull()
+      .references(() => skills.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    content: text('content').notNull(),
+    changeSummary: text('change_summary').notNull().default(''),
+    author: text('author').notNull().default('user'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('skill_versions_skill_idx').on(table.skillId, table.version)],
 );

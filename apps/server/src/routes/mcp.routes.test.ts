@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import type { MediaService } from '../services/media.service.js';
+import type { Stage2Service } from '../services/stage2.service.js';
 import type { StudioService } from '../services/studio.service.js';
 import { registerMcpRoutes } from './mcp.routes.js';
 
@@ -15,6 +16,7 @@ function createTestConfig(): AppConfig {
     corsOrigin: '*',
     dataDir: '/tmp/videostudio-test-data',
     ingestAllowedDir: '/tmp/videostudio-test-ingest',
+    skillsSyncDir: '/tmp/videostudio-test-skills',
     maxUploadBytes: 10 * 1024 * 1024,
     allowedFetchHosts: [],
   };
@@ -27,6 +29,7 @@ describe('MCP Streamable HTTP route', () => {
       config: createTestConfig(),
       studio: {} as StudioService,
       media: {} as MediaService,
+      stage2: {} as Stage2Service,
     });
 
     const missingAuth = await app.inject({
@@ -47,12 +50,13 @@ describe('MCP Streamable HTTP route', () => {
     await app.close();
   });
 
-  it('responds to authenticated MCP initialize and tools/list requests over HTTP', async () => {
+  it('responds to authenticated MCP initialize and tools/list requests including Stage 2 tools', async () => {
     const app = Fastify({ logger: false });
     registerMcpRoutes(app, {
       config: createTestConfig(),
       studio: {} as StudioService,
       media: {} as MediaService,
+      stage2: {} as Stage2Service,
     });
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -98,9 +102,18 @@ describe('MCP Streamable HTTP route', () => {
 
       expect(toolsRes.status).toBe(200);
       const toolsText = await toolsRes.text();
+      // Stage 1 tools
       expect(toolsText).toContain('register_asset');
       expect(toolsText).toContain('resolve_reference');
       expect(toolsText).toContain('start_job');
+      // Stage 2 tools
+      expect(toolsText).toContain('get_pending_feedback');
+      expect(toolsText).toContain('resolve_feedback');
+      expect(toolsText).toContain('get_active_rules');
+      expect(toolsText).toContain('set_project_rule_override');
+      expect(toolsText).toContain('render_prompt_with_rules');
+      expect(toolsText).toContain('save_comfy_workflow');
+      expect(toolsText).toContain('save_skill');
     } finally {
       await app.close();
     }

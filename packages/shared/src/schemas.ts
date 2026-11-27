@@ -240,5 +240,17 @@ export const RealtimeEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('activity.logged'), payload: ActivityDtoSchema }),
   z.object({ type: z.literal('job.updated'), payload: JobDtoSchema }),
+  z.object({
+    type: z.literal('annotation.changed'),
+    payload: z.object({ assetId: z.string().uuid(), projectId: z.string().uuid() }),
+  }),
+  z.object({
+    type: z.literal('rules.changed'),
+    payload: z.object({ projectId: z.string().uuid().nullable() }),
+  }),
+  z.object({
+    type: z.literal('library.changed'),
+    payload: z.object({ kind: z.enum(['prompt', 'workflow', 'skill']) }),
+  }),
 ]);
 export type RealtimeEvent = z.infer<typeof RealtimeEventSchema>;

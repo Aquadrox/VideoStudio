@@ -40,7 +40,7 @@ RUN pnpm install --frozen-lockfile --prod --filter @videostudio/shared --filter 
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
 COPY --from=builder /app/apps/server/dist apps/server/dist
 
-RUN mkdir -p /data /ingest && chown -R node:node /app /data /ingest
+RUN mkdir -p /data /ingest /skills && chown -R node:node /app /data /ingest /skills
 USER node
 
 EXPOSE 3001
