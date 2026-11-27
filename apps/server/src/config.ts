@@ -13,9 +13,13 @@ const EnvSchema = z.object({
   INGEST_ALLOWED_DIR: z.string().default('./ingest'),
   INGEST_EXTRA_DIRS: z.string().default(''),
   SKILLS_SYNC_DIR: z.string().default('./skills'),
+  BACKUP_DIR: z.string().default('./backups'),
   MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(20480).default(2048),
   ALLOWED_FETCH_HOSTS: z.string().default(''),
   COMFYUI_BASE_URL: z.string().default(''),
+  YOUTUBE_CLIENT_ID: z.string().default(''),
+  YOUTUBE_CLIENT_SECRET: z.string().default(''),
+  YOUTUBE_REFRESH_TOKEN: z.string().default(''),
 });
 
 export interface AppConfig {
@@ -29,9 +33,15 @@ export interface AppConfig {
   ingestAllowedDir: string;
   ingestExtraDirs: string[];
   skillsSyncDir: string;
+  backupDir: string;
   maxUploadBytes: number;
   allowedFetchHosts: string[];
   comfyuiBaseUrl: string | null;
+  youtubeOAuth: {
+    clientId: string;
+    clientSecret: string;
+    refreshToken: string;
+  } | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -55,6 +65,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const comfyuiBaseUrl = data.COMFYUI_BASE_URL.trim().replace(/\/+$/, '') || null;
 
+  const ytClientId = data.YOUTUBE_CLIENT_ID.trim();
+  const ytClientSecret = data.YOUTUBE_CLIENT_SECRET.trim();
+  const ytRefreshToken = data.YOUTUBE_REFRESH_TOKEN.trim();
+  const youtubeOAuth =
+    ytClientId && ytClientSecret && ytRefreshToken
+      ? { clientId: ytClientId, clientSecret: ytClientSecret, refreshToken: ytRefreshToken }
+      : null;
+
   return {
     nodeEnv: data.NODE_ENV,
     host: data.HOST,
@@ -66,8 +84,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ingestAllowedDir: path.resolve(data.INGEST_ALLOWED_DIR),
     ingestExtraDirs,
     skillsSyncDir: path.resolve(data.SKILLS_SYNC_DIR),
+    backupDir: path.resolve(data.BACKUP_DIR),
     maxUploadBytes: data.MAX_UPLOAD_MB * 1024 * 1024,
     allowedFetchHosts,
     comfyuiBaseUrl,
+    youtubeOAuth,
   };
 }

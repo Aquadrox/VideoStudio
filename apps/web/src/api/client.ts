@@ -4,7 +4,10 @@ import type {
   AnnotationDto,
   AssetDto,
   AudioTrackDto,
+  BackupEntryDto,
   BibleEntityDto,
+  CleanupFilterInput,
+  CleanupResultDto,
   ComfyWorkflowDto,
   CommitProjectRepoInput,
   ConfigureProjectRepoInput,
@@ -16,6 +19,9 @@ import type {
   CreateRuleInput,
   CreateSceneInput,
   CreateShotInput,
+  CreateWatchFolderInput,
+  CreateWebhookInput,
+  DiskUsageSummaryDto,
   JobDto,
   MediaFolderDto,
   NleExportFormat,
@@ -33,6 +39,7 @@ import type {
   SkillDto,
   SkillVersionDto,
   StartTimelineRenderInput,
+  SystemMetricsDto,
   TimelineDto,
   TimelineQualityMode,
   TimelineRenderDto,
@@ -42,13 +49,20 @@ import type {
   UpdateRuleInput,
   UpdateScriptInput,
   UpdateShotInput,
+  UpdateWatchFolderInput,
+  UpdateWebhookInput,
   UpdateYouTubePackageInput,
+  UploadYouTubeDraftInput,
   UpsertAudioTrackInput,
   UpsertBibleEntityInput,
   UpsertProjectRuleOverrideInput,
   UpsertSkillInput,
   UpsertTimelineInput,
+  WatchFolderDto,
+  WebhookDto,
   YouTubePackageDto,
+  YouTubeUploadResultDto,
+  YouTubeUploadStatusDto,
 } from '@videostudio/shared';
 
 export interface HealthResponse {
@@ -763,5 +777,160 @@ export const api = {
 
   getTimelineExportUrl(projectId: string, format: NleExportFormat): string {
     return `/api/projects/${encodeURIComponent(projectId)}/timeline/export?format=${format}&download=1`;
+  },
+
+  // --- Stage 5: Exploitation, Disk Cleanup, Backups, Watch Folders, Webhooks & YouTube API ---
+
+  async getSystemMetrics(): Promise<SystemMetricsDto> {
+    const res = await apiFetch<{ metrics: SystemMetricsDto }>('/api/ops/metrics');
+    return res.metrics;
+  },
+
+  async getDiskUsage(): Promise<DiskUsageSummaryDto> {
+    const res = await apiFetch<{ disk: DiskUsageSummaryDto }>('/api/ops/disk');
+    return res.disk;
+  },
+
+  async previewCleanup(input: Partial<CleanupFilterInput> = {}): Promise<CleanupResultDto> {
+    const res = await apiFetch<{ result: CleanupResultDto }>('/api/ops/cleanup/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.result;
+  },
+
+  async runCleanup(input: Partial<CleanupFilterInput> = {}): Promise<CleanupResultDto> {
+    const res = await apiFetch<{ result: CleanupResultDto }>('/api/ops/cleanup/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.result;
+  },
+
+  async listBackups(): Promise<BackupEntryDto[]> {
+    const res = await apiFetch<{ backups: BackupEntryDto[] }>('/api/ops/backups');
+    return res.backups;
+  },
+
+  async createBackup(notes = ''): Promise<BackupEntryDto> {
+    const res = await apiFetch<{ backup: BackupEntryDto }>('/api/ops/backups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes }),
+    });
+    return res.backup;
+  },
+
+  async deleteBackup(id: string): Promise<void> {
+    await apiFetch(`/api/ops/backups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async listWatchFolders(projectId?: string): Promise<WatchFolderDto[]> {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    const res = await apiFetch<{ watchFolders: WatchFolderDto[] }>(`/api/ops/watch-folders${qs}`);
+    return res.watchFolders;
+  },
+
+  async createWatchFolder(input: CreateWatchFolderInput): Promise<WatchFolderDto> {
+    const res = await apiFetch<{ watchFolder: WatchFolderDto }>('/api/ops/watch-folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.watchFolder;
+  },
+
+  async updateWatchFolder(id: string, input: UpdateWatchFolderInput): Promise<WatchFolderDto> {
+    const res = await apiFetch<{ watchFolder: WatchFolderDto }>(
+      `/api/ops/watch-folders/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.watchFolder;
+  },
+
+  async deleteWatchFolder(id: string): Promise<void> {
+    await apiFetch(`/api/ops/watch-folders/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async scanWatchFolder(id: string): Promise<{
+    folder: WatchFolderDto;
+    ingestedCount: number;
+    skippedCount: number;
+    errors: Array<{ filename: string; error: string }>;
+  }> {
+    const res = await apiFetch<{
+      result: {
+        folder: WatchFolderDto;
+        ingestedCount: number;
+        skippedCount: number;
+        errors: Array<{ filename: string; error: string }>;
+      };
+    }>(`/api/ops/watch-folders/${encodeURIComponent(id)}/scan`, { method: 'POST' });
+    return res.result;
+  },
+
+  async listWebhooks(projectId?: string): Promise<WebhookDto[]> {
+    const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    const res = await apiFetch<{ webhooks: WebhookDto[] }>(`/api/ops/webhooks${qs}`);
+    return res.webhooks;
+  },
+
+  async createWebhook(input: CreateWebhookInput): Promise<WebhookDto> {
+    const res = await apiFetch<{ webhook: WebhookDto }>('/api/ops/webhooks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.webhook;
+  },
+
+  async updateWebhook(id: string, input: UpdateWebhookInput): Promise<WebhookDto> {
+    const res = await apiFetch<{ webhook: WebhookDto }>(
+      `/api/ops/webhooks/${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.webhook;
+  },
+
+  async deleteWebhook(id: string): Promise<void> {
+    await apiFetch(`/api/ops/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async testWebhook(id: string): Promise<{
+    ok: boolean;
+    statusCode: number | null;
+    error: string | null;
+    webhook: WebhookDto;
+  }> {
+    return apiFetch(`/api/ops/webhooks/${encodeURIComponent(id)}/test`, { method: 'POST' });
+  },
+
+  async getYouTubeUploadStatus(): Promise<YouTubeUploadStatusDto> {
+    return apiFetch<YouTubeUploadStatusDto>('/api/youtube/upload/status');
+  },
+
+  async uploadYouTubeDraft(
+    projectId: string,
+    input: Partial<UploadYouTubeDraftInput> = {},
+  ): Promise<YouTubeUploadResultDto> {
+    const res = await apiFetch<{ upload: YouTubeUploadResultDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/youtube/upload-draft`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.upload;
   },
 };

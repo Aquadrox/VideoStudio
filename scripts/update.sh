@@ -142,6 +142,7 @@ ensure_env_default "INGEST_ALLOWED_DIR" "/ingest"
 ensure_env_default "INGEST_EXTRA_DIRS" ""
 ensure_env_default "ALLOWED_FETCH_HOSTS" ""
 ensure_env_default "COMFYUI_BASE_URL" ""
+ensure_env_default "BACKUP_DIR" "/backups"
 
 # 4. Pre-update PostgreSQL safety backup if container is running (online, zero downtime)
 if docker compose ps --status running --services 2>/dev/null | grep -q "^postgres$"; then

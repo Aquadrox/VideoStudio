@@ -46,6 +46,7 @@ import {
 } from '../db/schema.js';
 import type { MediaService } from './media.service.js';
 import type { RealtimeHub } from './realtime.service.js';
+import type { WebhookService } from './webhook.service.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -94,6 +95,7 @@ export interface ResolvedReferenceResult {
 
 export class StudioService {
   private readonly comfyPollers = new Map<string, NodeJS.Timeout>();
+  private webhookService?: WebhookService;
 
   constructor(
     private readonly db: Database,
@@ -101,6 +103,10 @@ export class StudioService {
     private readonly realtime: RealtimeHub,
     private readonly comfyuiBaseUrl: string | null = null,
   ) {}
+
+  setWebhookService(webhookService: WebhookService): void {
+    this.webhookService = webhookService;
+  }
 
   // --- Projects ---
 
@@ -651,6 +657,16 @@ export class StudioService {
       },
     });
 
+    this.webhookService?.emit('asset.created', project.id, {
+      assetId: dto.id,
+      handle: dto.handle,
+      title: dto.title,
+      type: dto.type,
+      qualityTier: dto.qualityTier,
+      folderPath: dto.folderPath,
+      actor,
+    });
+
     return dto;
   }
 
@@ -863,6 +879,18 @@ export class StudioService {
       entityId: dto.id,
       entityRef: dto.handle,
     });
+
+    if (input.status !== undefined && input.status !== existing.asset.status) {
+      this.webhookService?.emit('asset.status_changed', dto.projectId, {
+        assetId: dto.id,
+        handle: dto.handle,
+        title: dto.title,
+        previousStatus: existing.asset.status,
+        status: dto.status,
+        qualityTier: dto.qualityTier,
+        actor,
+      });
+    }
 
     return dto;
   }
@@ -1251,6 +1279,22 @@ export class StudioService {
     const project = await this.getProjectByIdOrSlug(updated.projectId);
     const dto = this.toJobDto(updated, project?.slug ?? 'unknown');
     this.realtime.broadcast({ type: 'job.updated', payload: dto });
+
+    if (patch.status === 'completed' || patch.status === 'failed') {
+      this.webhookService?.emit(
+        patch.status === 'completed' ? 'job.completed' : 'job.failed',
+        updated.projectId,
+        {
+          jobId: dto.id,
+          title: dto.title,
+          status: dto.status,
+          message: dto.message,
+          errorMessage: dto.errorMessage,
+          resultAssetId: dto.resultAssetId,
+        },
+      );
+    }
+
     return dto;
   }
 

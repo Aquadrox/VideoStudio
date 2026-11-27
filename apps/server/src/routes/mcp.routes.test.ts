@@ -2,10 +2,14 @@ import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import type { MediaService } from '../services/media.service.js';
+import type { OpsService } from '../services/ops.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
 import type { Stage4Service } from '../services/stage4.service.js';
 import type { StudioService } from '../services/studio.service.js';
+import type { WatchFolderService } from '../services/watch-folder.service.js';
+import type { WebhookService } from '../services/webhook.service.js';
+import type { YouTubeUploadService } from '../services/youtube-upload.service.js';
 import { registerMcpRoutes } from './mcp.routes.js';
 
 function createTestConfig(): AppConfig {
@@ -20,9 +24,11 @@ function createTestConfig(): AppConfig {
     ingestAllowedDir: '/tmp/videostudio-test-ingest',
     ingestExtraDirs: [],
     skillsSyncDir: '/tmp/videostudio-test-skills',
+    backupDir: '/tmp/videostudio-test-backups',
     maxUploadBytes: 10 * 1024 * 1024,
     allowedFetchHosts: [],
     comfyuiBaseUrl: null,
+    youtubeOAuth: null,
   };
 }
 
@@ -56,7 +62,7 @@ describe('MCP Streamable HTTP route', () => {
     await app.close();
   });
 
-  it('responds to authenticated MCP initialize and tools/list requests including Stage 2, Stage 3 & Stage 4 tools', async () => {
+  it('responds to authenticated MCP initialize and tools/list requests including Stage 2-5 tools', async () => {
     const app = Fastify({ logger: false });
     registerMcpRoutes(app, {
       config: createTestConfig(),
@@ -65,6 +71,12 @@ describe('MCP Streamable HTTP route', () => {
       stage2: {} as Stage2Service,
       stage3: {} as Stage3Service,
       stage4: {} as Stage4Service,
+      stage5: {
+        ops: {} as OpsService,
+        watchFolders: {} as WatchFolderService,
+        webhooks: {} as WebhookService,
+        youtubeUpload: {} as YouTubeUploadService,
+      },
     });
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -150,6 +162,16 @@ describe('MCP Streamable HTTP route', () => {
       expect(toolsText).toContain('switch_timeline_quality');
       expect(toolsText).toContain('render_timeline');
       expect(toolsText).toContain('export_nle');
+      // Stage 5 (Ops, Cleanup, Backups, Watch Folders, Webhooks, YouTube Draft Upload)
+      expect(toolsText).toContain('get_system_health_and_disk');
+      expect(toolsText).toContain('preview_disk_cleanup');
+      expect(toolsText).toContain('run_disk_cleanup');
+      expect(toolsText).toContain('create_backup');
+      expect(toolsText).toContain('list_watch_folders');
+      expect(toolsText).toContain('create_watch_folder');
+      expect(toolsText).toContain('list_webhooks');
+      expect(toolsText).toContain('create_webhook');
+      expect(toolsText).toContain('upload_youtube_draft');
     } finally {
       await app.close();
     }

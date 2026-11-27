@@ -11,6 +11,7 @@ x-server-common: &server-common
     - ./data:/data
     - ${INGEST_HOST_DIR:-./ingest}:/ingest:ro
     - ./skills:/skills
+    - ./backups:/backups
   networks:
     - videostudio-internal
   healthcheck:
@@ -30,9 +31,13 @@ x-server-env: &server-env
   INGEST_ALLOWED_DIR: /ingest
   INGEST_EXTRA_DIRS: ${INGEST_EXTRA_DIRS:-}
   SKILLS_SYNC_DIR: /skills
+  BACKUP_DIR: /backups
   MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
   ALLOWED_FETCH_HOSTS: ${ALLOWED_FETCH_HOSTS:-}
   COMFYUI_BASE_URL: ${COMFYUI_BASE_URL:-}
+  YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+  YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+  YOUTUBE_REFRESH_TOKEN: ${YOUTUBE_REFRESH_TOKEN:-}
 
 x-web-common: &web-common
   build:

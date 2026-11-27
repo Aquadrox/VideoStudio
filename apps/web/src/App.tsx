@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Clapperboard,
   Columns2,
+  Command,
   Copy,
   CornerLeftUp,
   FileText,
@@ -12,9 +13,11 @@ import {
   Folder,
   FolderPlus,
   GitBranch,
+  Keyboard,
   Layers,
   Music,
   Search,
+  Server,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -43,10 +46,16 @@ import { AssetCard } from './components/AssetCard';
 import { AssetInspector } from './components/AssetInspector';
 import { AudioPanel } from './components/AudioPanel';
 import { ClaudeLiveBar } from './components/ClaudeLiveBar';
+import {
+  CommandPalette,
+  ShortcutsHelpModal,
+  type ExecutableCommandItem,
+} from './components/CommandPalette';
 import { CompareView } from './components/CompareView';
 import { LibraryPanel } from './components/LibraryPanel';
 import { MediaLightbox } from './components/MediaLightbox';
 import { CreateProjectModal, McpSetupModal } from './components/Modals';
+import { OpsPanel } from './components/OpsPanel';
 import { PreprodPanel } from './components/PreprodPanel';
 import { ProjectGitPanel } from './components/ProjectGitPanel';
 import { RulesPanel } from './components/RulesPanel';
@@ -71,7 +80,8 @@ type WorkspaceMode =
   | 'library'
   | 'skills'
   | 'youtube'
-  | 'git';
+  | 'git'
+  | 'ops';
 
 function parseCompareDeepLink(): { active: boolean; leftRef: string | null; rightRef: string | null } {
   if (typeof window === 'undefined') return { active: false, leftRef: null, rightRef: null };
@@ -133,6 +143,8 @@ export function App() {
 
   const [showNewProject, setShowNewProject] = useState(false);
   const [showMcpModal, setShowMcpModal] = useState(false);
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -519,6 +531,238 @@ export function App() {
     }
   };
 
+  // Stage 5: Pro Keyboard Shortcuts (Cmd/Ctrl+K, ?, A/R triage, 1-5 rating, J/K/L & arrows video transport)
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        target.isContentEditable
+      );
+    };
+
+    const findActiveVideoElement = (): HTMLVideoElement | null => {
+      const lightboxVideo = document.querySelector<HTMLVideoElement>('.lightbox-stage video');
+      if (lightboxVideo) return lightboxVideo;
+      const timelineVideo = document.querySelector<HTMLVideoElement>('.timeline-monitor-stage video');
+      if (timelineVideo) return timelineVideo;
+      const inspectorVideo = document.querySelector<HTMLVideoElement>('.inspector video');
+      if (inspectorVideo) return inspectorVideo;
+      return document.querySelector<HTMLVideoElement>('video');
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowCommandPalette((open) => !open);
+        return;
+      }
+
+      if (showCommandPalette || showNewProject || showMcpModal) return;
+      if (isTypingTarget(e.target)) return;
+
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+        e.preventDefault();
+        setShowShortcutsHelp((open) => !open);
+        return;
+      }
+
+      if (showShortcutsHelp) return;
+
+      const key = e.key.toLowerCase();
+
+      // Quick triage on selected asset (A = Approve, R = Needs revision, 1..5 = Rating)
+      if (selectedAsset && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (key === 'a') {
+          e.preventDefault();
+          void api
+            .updateAsset(selectedAsset.id, { status: 'approved' })
+            .then((updated) => {
+              setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+              showToast(`Approuvé : ${updated.handle}`);
+            })
+            .catch(() => undefined);
+          return;
+        }
+        if (key === 'r') {
+          e.preventDefault();
+          void api
+            .updateAsset(selectedAsset.id, { status: 'needs_revision' })
+            .then((updated) => {
+              setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+              showToast(`À revoir : ${updated.handle}`);
+            })
+            .catch(() => undefined);
+          return;
+        }
+        if (/^[1-5]$/.test(key)) {
+          e.preventDefault();
+          const rating = Number(key);
+          void api
+            .updateAsset(selectedAsset.id, { rating })
+            .then((updated) => {
+              setAssets((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+              showToast(`Note ${rating}/5 sur ${updated.handle}`);
+            })
+            .catch(() => undefined);
+          return;
+        }
+      }
+
+      // Pro video transport (J / K / L and frame-by-frame ArrowLeft / ArrowRight)
+      const video = findActiveVideoElement();
+      if (video && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (key === 'k') {
+          e.preventDefault();
+          video.playbackRate = 1;
+          if (video.paused) {
+            void video.play().catch(() => undefined);
+          } else {
+            video.pause();
+          }
+          return;
+        }
+        if (key === 'l') {
+          e.preventDefault();
+          if (video.paused) {
+            video.playbackRate = 1;
+            void video.play().catch(() => undefined);
+          } else {
+            video.playbackRate = video.playbackRate >= 2 ? 2 : video.playbackRate >= 1.5 ? 2 : 1.5;
+          }
+          return;
+        }
+        if (key === 'j') {
+          e.preventDefault();
+          video.playbackRate = 1;
+          video.currentTime = Math.max(0, video.currentTime - 1);
+          return;
+        }
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !lightboxAssetId) {
+          e.preventDefault();
+          video.pause();
+          const frameStep = 1 / (activeProject?.fps || 24);
+          const delta = e.key === 'ArrowRight' ? frameStep : -frameStep;
+          video.currentTime = Math.max(
+            0,
+            Math.min(video.duration || Number.MAX_SAFE_INTEGER, video.currentTime + delta),
+          );
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    activeProject?.fps,
+    lightboxAssetId,
+    selectedAsset,
+    showCommandPalette,
+    showMcpModal,
+    showNewProject,
+    showShortcutsHelp,
+    showToast,
+  ]);
+
+  const commandPaletteItems = useMemo<ExecutableCommandItem[]>(() => {
+    const items: ExecutableCommandItem[] = [
+      {
+        id: 'action-new-project',
+        category: 'action',
+        label: 'Créer un nouveau projet',
+        subtitle: 'Ouvre la fenêtre de création de projet',
+        keywords: ['project', 'nouveau', 'create'],
+        onSelect: () => setShowNewProject(true),
+      },
+      {
+        id: 'action-backup-now',
+        category: 'action',
+        label: 'Créer un backup complet maintenant',
+        subtitle: 'Exporte DB + métadonnées + skills dans BACKUP_DIR',
+        keywords: ['sauvegarde', 'archive', 'dump', 'ops'],
+        onSelect: () => {
+          void api
+            .createBackup('Backup rapide (Palette Cmd+K)')
+            .then((b) => showToast(`Backup créé : ${b.filename}`))
+            .catch((err) => showToast(err instanceof Error ? err.message : 'Erreur backup'));
+        },
+      },
+      {
+        id: 'action-mcp-setup',
+        category: 'action',
+        label: 'Configurer Claude Code (MCP)',
+        subtitle: 'Afficher l’URL MCP, le token et la santé serveur',
+        keywords: ['claude', 'token', 'mcp'],
+        onSelect: () => setShowMcpModal(true),
+      },
+      {
+        id: 'action-shortcuts',
+        category: 'action',
+        label: 'Afficher les raccourcis clavier Pro',
+        subtitle: 'J/K/L, A/R, 1-5, Cmd+K',
+        shortcut: '?',
+        keywords: ['help', 'keyboard', 'raccourcis'],
+        onSelect: () => setShowShortcutsHelp(true),
+      },
+    ];
+
+    const tabs: Array<{ mode: WorkspaceMode; label: string; subtitle: string }> = [
+      { mode: 'media', label: 'Module Médias', subtitle: 'Galerie DAM, dossiers et versions' },
+      { mode: 'preprod', label: 'Module Pré-prod', subtitle: 'Scénario, Bible & Storyboard' },
+      { mode: 'timeline', label: 'Module Timeline', subtitle: 'Montage multi-pistes, animatique & rendu FFmpeg' },
+      { mode: 'audio', label: 'Module Audio', subtitle: 'Musique, paroles LRC/SRT et marqueurs' },
+      { mode: 'compare', label: 'Module Comparateur', subtitle: 'A/B côte à côte, slider & paires auto' },
+      { mode: 'rules', label: 'Module Règles', subtitle: 'Rulebooks globaux & surcharges projet' },
+      { mode: 'library', label: 'Module Prompts & Workflows', subtitle: 'Templates prompts & ComfyUI JSON' },
+      { mode: 'skills', label: 'Module Skills', subtitle: 'Guides méthodologiques synchronisés' },
+      { mode: 'youtube', label: 'Module YouTube', subtitle: 'Miniatures A/B, chapitres & upload brouillon' },
+      { mode: 'git', label: 'Module Git Projet', subtitle: 'Dépôt local & synchronisation GitHub' },
+      { mode: 'ops', label: 'Module Exploitation', subtitle: 'Monitoring, disque, backups, watch folders & webhooks' },
+    ];
+
+    for (const t of tabs) {
+      items.push({
+        id: `tab-${t.mode}`,
+        category: 'tab',
+        label: t.label,
+        subtitle: t.subtitle,
+        keywords: [t.mode],
+        onSelect: () => setWorkspaceMode(t.mode),
+      });
+    }
+
+    for (const proj of projects) {
+      items.push({
+        id: `proj-${proj.id}`,
+        category: 'project',
+        label: proj.name,
+        subtitle: `@proj-${proj.slug} · ${proj.aspectRatio} · ${proj.assetCount} médias`,
+        keywords: [proj.slug, proj.status, proj.type],
+        onSelect: () => setActiveProjectId(proj.id),
+      });
+    }
+
+    for (const a of assets.slice(0, 200)) {
+      items.push({
+        id: `asset-${a.id}`,
+        category: 'asset',
+        label: `${a.handle} — ${a.title}`,
+        subtitle: `${a.type} · ${a.status} · ${a.qualityTier}${a.folderPath ? ` · /${a.folderPath}` : ''}`,
+        keywords: [a.refCode, a.originalFilename, ...a.tags],
+        onSelect: () => {
+          setSelectedAssetId(a.id);
+          setRightTab('inspector');
+          setWorkspaceMode('media');
+        },
+      });
+    }
+
+    return items;
+  }, [assets, projects, showToast]);
+
   return (
     <div className="studio-shell">
       {/* Left Sidebar: Projects & Server Status */}
@@ -530,18 +774,36 @@ export function App() {
             </div>
             <div>
               <div className="brand-title">VideoStudio</div>
-              <div className="brand-sub">v0.4.0 · MCP · LAN</div>
+              <div className="brand-sub">v0.5.0 · MCP · LAN</div>
             </div>
           </div>
 
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => setShowMcpModal(true)}
-            title="Configuration MCP Claude Code & Santé Serveur"
-          >
-            <Terminal size={15} />
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowCommandPalette(true)}
+              title="Palette de commandes (Ctrl+K / ⌘K)"
+            >
+              <Command size={14} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowShortcutsHelp(true)}
+              title="Raccourcis clavier Pro (?)"
+            >
+              <Keyboard size={14} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowMcpModal(true)}
+              title="Configuration MCP Claude Code & Santé Serveur"
+            >
+              <Terminal size={14} />
+            </button>
+          </div>
         </div>
 
         <div className="sidebar-section-header">
@@ -768,6 +1030,13 @@ export function App() {
             onClick={() => setWorkspaceMode('git')}
           >
             <GitBranch size={14} /> Git
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'ops' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('ops')}
+          >
+            <Server size={14} /> Exploitation
           </button>
         </nav>
 
@@ -1172,6 +1441,21 @@ export function App() {
             onNotify={showToast}
           />
         )}
+
+        {workspaceMode === 'ops' && (
+          <OpsPanel
+            projects={projects}
+            activeProject={activeProject}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+            onAssetsMutated={() => {
+              if (activeProjectId) {
+                void api.listAssets(activeProjectId).then(setAssets);
+                void refreshFolders(activeProjectId);
+              }
+            }}
+          />
+        )}
       </main>
 
       {/* Right Panel: Asset Inspector & Claude Live Feed */}
@@ -1268,6 +1552,17 @@ export function App() {
           onClose={() => setShowMcpModal(false)}
           onCopyText={handleCopyText}
         />
+      )}
+
+      {showCommandPalette && (
+        <CommandPalette
+          items={commandPaletteItems}
+          onClose={() => setShowCommandPalette(false)}
+        />
+      )}
+
+      {showShortcutsHelp && (
+        <ShortcutsHelpModal onClose={() => setShowShortcutsHelp(false)} />
       )}
 
       {toast && (
