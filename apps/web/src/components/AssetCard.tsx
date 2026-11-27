@@ -59,7 +59,26 @@ export function AssetCard({
           <span className={`badge badge-tier-${asset.qualityTier}`}>
             {QUALITY_TIER_SHORT[asset.qualityTier]}
           </span>
+          {asset.relationType && asset.relationType !== 'revision' && (
+            <span className="badge badge-relation">{asset.relationType.toUpperCase()}</span>
+          )}
           {asset.versionNumber > 1 && <span className="badge">v{asset.versionNumber}</span>}
+          {asset.qcStatus && asset.qcStatus !== 'pending' && (
+            <span
+              className={`badge badge-qc-${asset.qcStatus}`}
+              title={
+                Object.entries(asset.qcChecks ?? {})
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(' · ') || `QC ${asset.qcStatus}`
+              }
+            >
+              {asset.qcStatus === 'pass'
+                ? 'QC ✓'
+                : asset.qcStatus === 'warn'
+                  ? 'QC !'
+                  : 'QC ✗'}
+            </span>
+          )}
         </div>
 
         <div className="asset-overlay-bottom">

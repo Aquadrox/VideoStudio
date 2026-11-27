@@ -520,6 +520,94 @@ export function AssetInspector({
         </div>
       </div>
 
+      {/* Visual QC Checklist (recorded by Claude or User) */}
+      <div className="inspector-section">
+        <div className="section-label">
+          <span>Contrôle Visuel (QC)</span>
+          <span className={`badge badge-qc-${asset.qcStatus ?? 'pending'}`}>
+            {asset.qcStatus === 'pass'
+              ? 'QC ✓ Validé'
+              : asset.qcStatus === 'warn'
+                ? 'QC ! Alerte'
+                : asset.qcStatus === 'fail'
+                  ? 'QC ✗ Rejeté'
+                  : 'En attente'}
+          </span>
+        </div>
+
+        {Object.keys(asset.qcChecks ?? {}).length > 0 ? (
+          <div className="qc-checks-grid">
+            {Object.entries(asset.qcChecks ?? {}).map(([checkKey, val]) => {
+              const nextCycle =
+                val === 'ok' ? 'warn' : val === 'warn' ? 'fail' : val === 'fail' ? 'na' : 'ok';
+              return (
+                <button
+                  key={checkKey}
+                  type="button"
+                  className={`qc-pill qc-${val}`}
+                  title="Cliquer pour changer le statut de ce contrôle"
+                  onClick={() => {
+                    void api
+                      .recordAssetQc(asset.id, {
+                        checks: { ...asset.qcChecks, [checkKey]: nextCycle },
+                      })
+                      .then(() => onNotify(`QC "${checkKey}" → ${nextCycle.toUpperCase()}`))
+                      .catch(() => onNotify('Erreur mise à jour QC'));
+                  }}
+                >
+                  <span>{checkKey}</span>
+                  <strong>{val.toUpperCase()}</strong>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 6 }}>
+            Aucun contrôle visuel enregistré. Claude peut pousser un bilan via <code>record_qc</code>{' '}
+            ou clique sur un contrôle rapide :
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
+          {['mains', 'yeux', 'visage', 'doublon', 'age'].map((preset) =>
+            asset.qcChecks?.[preset] ? null : (
+              <button
+                key={preset}
+                type="button"
+                className="chip"
+                style={{ fontSize: 11, padding: '2px 8px' }}
+                onClick={() => {
+                  void api
+                    .recordAssetQc(asset.id, {
+                      checks: { ...(asset.qcChecks ?? {}), [preset]: 'ok' },
+                    })
+                    .then(() => onNotify(`QC "${preset}" marqué OK`))
+                    .catch(() => onNotify('Erreur mise à jour QC'));
+                }}
+              >
+                + {preset}
+              </button>
+            ),
+          )}
+        </div>
+
+        {asset.qcNotes && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 11.5,
+              color: 'var(--text-secondary)',
+              background: 'var(--bg-surface)',
+              padding: '6px 8px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border-subtle)',
+            }}
+          >
+            {asset.qcNotes}
+          </div>
+        )}
+      </div>
+
       {/* Lineage (Parent / Derivatives) */}
       {lineage && (lineage.ancestors.length > 0 || lineage.children.length > 0) && (
         <div className="inspector-section">
@@ -549,7 +637,10 @@ export function AssetInspector({
                 className="lineage-item"
                 onClick={() => onSelectAsset(child)}
               >
-                <span>↓ Dérivé : {child.title}</span>
+                <span>
+                  ↓ {child.relationType && child.relationType !== 'revision' ? `[${child.relationType}] ` : 'Dérivé : '}
+                  {child.title}
+                </span>
                 <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--status-live)' }}>
                   {child.handle}
                 </span>

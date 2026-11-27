@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   formatYoutubeChapters,
   lrcToSrt,
+  selectInjectableRuleFragments,
   slugifyProjectName,
+  sunoAlignmentToEnhancedLrc,
   type Actor,
   type AudioCategory,
   type AudioTrackDto,
@@ -25,6 +27,7 @@ import {
   type UpdateYouTubePackageInput,
   type UpsertAudioTrackInput,
   type UpsertBibleEntityInput,
+  type UpsertStoryboardInput,
   type YouTubePackageDto,
 } from '@videostudio/shared';
 import type { AppConfig } from '../config.js';
@@ -308,25 +311,425 @@ export class Stage3Service {
         .orderBy(asc(shots.sortOrder), asc(shots.shotCode)),
     ]);
 
-    const shotsByScene = new Map<string, ShotDto[]>();
+    const shotsByScene = new Map<string, Array<typeof shots.$inferSelect>>();
     for (const s of shotRows) {
       const list = shotsByScene.get(s.sceneId) ?? [];
-      list.push(this.toShotDto(s));
+      list.push(s);
       shotsByScene.set(s.sceneId, list);
     }
 
-    return sceneRows.map((sc) => ({
+    // Compute cumulative absolute startSec across ordered scenes & shots when startSec is null
+    let runningTimeSec = 0;
+    return sceneRows.map((sc) => {
+      const sceneShots = (shotsByScene.get(sc.id) ?? []).map((s) => {
+        const effectiveStart = s.startSec ?? Math.round(runningTimeSec * 1000) / 1000;
+        runningTimeSec = effectiveStart + Math.max(0.05, s.durationSec);
+        return this.toShotDto(s, effectiveStart);
+      });
+
+      return {
+        id: sc.id,
+        projectId: sc.projectId,
+        sceneNumber: sc.sceneNumber,
+        title: sc.title,
+        summary: sc.summary,
+        locationRef: sc.locationRef,
+        sortOrder: sc.sortOrder,
+        shots: sceneShots,
+        createdAt: sc.createdAt.toISOString(),
+        updatedAt: sc.updatedAt.toISOString(),
+      };
+    });
+  }
+
+  toCompactStoryboard(storyboard: SceneDto[]): Array<{
+    id: string;
+    sceneNumber: number;
+    title: string;
+    locationRef: string;
+    shotCount: number;
+    shots: Array<{
+      id: string;
+      shotCode: string;
+      externalId: string | null;
+      handle: string;
+      title: string;
+      startSec: number | null;
+      durationSec: number;
+      status: ShotStatus;
+      keyframeAssetId: string | null;
+      videoAssetId: string | null;
+      bibleEntityRefs: string[];
+    }>;
+  }> {
+    return storyboard.map((sc) => ({
       id: sc.id,
-      projectId: sc.projectId,
       sceneNumber: sc.sceneNumber,
       title: sc.title,
-      summary: sc.summary,
       locationRef: sc.locationRef,
-      sortOrder: sc.sortOrder,
-      shots: shotsByScene.get(sc.id) ?? [],
-      createdAt: sc.createdAt.toISOString(),
-      updatedAt: sc.updatedAt.toISOString(),
+      shotCount: sc.shots.length,
+      shots: sc.shots.map((sh) => ({
+        id: sh.id,
+        shotCode: sh.shotCode,
+        externalId: sh.externalId,
+        handle: sh.handle,
+        title: sh.title,
+        startSec: sh.startSec,
+        durationSec: sh.durationSec,
+        status: sh.status,
+        keyframeAssetId: sh.keyframeAssetId,
+        videoAssetId: sh.videoAssetId,
+        bibleEntityRefs: sh.bibleEntityRefs,
+      })),
     }));
+  }
+
+  /**
+   * Idempotent batch upsert of scenes & shots keyed by sceneNumber and shot externalId (or shotCode).
+   * Safe to re-run repeatedly without creating duplicates.
+   */
+  async upsertStoryboard(
+    projectIdOrSlug: string,
+    input: UpsertStoryboardInput,
+    actor: Actor = 'claude',
+  ): Promise<{
+    scenes: SceneDto[];
+    stats: {
+      scenesCreated: number;
+      scenesUpdated: number;
+      shotsCreated: number;
+      shotsUpdated: number;
+      shotsPruned: number;
+    };
+  } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const existingScenes = await this.db
+      .select()
+      .from(scenes)
+      .where(eq(scenes.projectId, project.id))
+      .orderBy(asc(scenes.sortOrder), asc(scenes.sceneNumber));
+
+    const existingShots = await this.db
+      .select()
+      .from(shots)
+      .where(eq(shots.projectId, project.id));
+
+    const sceneByNumber = new Map<number, typeof scenes.$inferSelect>();
+    for (const sc of existingScenes) {
+      sceneByNumber.set(sc.sceneNumber, sc);
+    }
+
+    const shotByExternalId = new Map<string, typeof shots.$inferSelect>();
+    const shotByCode = new Map<string, typeof shots.$inferSelect>();
+    for (const sh of existingShots) {
+      if (sh.externalId) shotByExternalId.set(sh.externalId.toLowerCase(), sh);
+      shotByCode.set(sh.shotCode.toLowerCase(), sh);
+    }
+
+    let scenesCreated = 0;
+    let scenesUpdated = 0;
+    let shotsCreated = 0;
+    let shotsUpdated = 0;
+    let shotsPruned = 0;
+    const touchedShotIds = new Set<string>();
+
+    const resolveOptionalAssetId = async (ref?: string | null): Promise<string | null | undefined> => {
+      if (ref === undefined) return undefined;
+      if (ref === null || ref.trim() === '') return null;
+      if (UUID_REGEX.test(ref)) return ref;
+      const resolved = await this.studio.resolveReference(ref, project.slug);
+      return resolved?.asset?.id ?? null;
+    };
+
+    let runningTimeSec = 0;
+
+    for (let sIdx = 0; sIdx < input.scenes.length; sIdx += 1) {
+      const scInput = input.scenes[sIdx]!;
+      const sceneNum = scInput.sceneNumber ?? sIdx + 1;
+      const existingScene = sceneByNumber.get(sceneNum);
+
+      let sceneRow: typeof scenes.$inferSelect;
+      if (existingScene) {
+        const [updated] = await this.db
+          .update(scenes)
+          .set({
+            title: scInput.title,
+            summary: scInput.summary ?? existingScene.summary,
+            locationRef: scInput.locationRef ?? existingScene.locationRef,
+            sortOrder: sIdx + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(scenes.id, existingScene.id))
+          .returning();
+        sceneRow = updated ?? existingScene;
+        scenesUpdated += 1;
+      } else {
+        const [created] = await this.db
+          .insert(scenes)
+          .values({
+            projectId: project.id,
+            sceneNumber: sceneNum,
+            title: scInput.title,
+            summary: scInput.summary ?? '',
+            locationRef: scInput.locationRef ?? '',
+            sortOrder: sIdx + 1,
+          })
+          .returning();
+        if (!created) continue;
+        sceneRow = created;
+        sceneByNumber.set(sceneNum, created);
+        scenesCreated += 1;
+      }
+
+      for (let shIdx = 0; shIdx < scInput.shots.length; shIdx += 1) {
+        const shInput = scInput.shots[shIdx]!;
+        const extKey = shInput.externalId.trim();
+        const desiredStart = shInput.startSec ?? Math.round(runningTimeSec * 1000) / 1000;
+        runningTimeSec = desiredStart + Math.max(0.05, shInput.durationSec);
+
+        const match =
+          shotByExternalId.get(extKey.toLowerCase()) ??
+          shotByCode.get(extKey.toLowerCase());
+
+        const keyframeId = await resolveOptionalAssetId(shInput.keyframeRef);
+        const videoId = await resolveOptionalAssetId(shInput.videoRef);
+
+        if (match) {
+          const [updated] = await this.db
+            .update(shots)
+            .set({
+              sceneId: sceneRow.id,
+              externalId: extKey,
+              title: shInput.title,
+              visualDescription: shInput.visualDescription,
+              cameraMovement: shInput.cameraMovement,
+              dialogue: shInput.dialogue,
+              prompt: shInput.prompt,
+              startSec: desiredStart,
+              durationSec: shInput.durationSec,
+              status: shInput.status,
+              ...(keyframeId !== undefined ? { keyframeAssetId: keyframeId } : {}),
+              ...(videoId !== undefined ? { videoAssetId: videoId } : {}),
+              bibleEntityRefs: shInput.bibleEntityRefs,
+              sortOrder: shIdx + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(shots.id, match.id))
+            .returning();
+          if (updated) {
+            touchedShotIds.add(updated.id);
+            shotsUpdated += 1;
+          }
+        } else {
+          let seq = shIdx + 1;
+          let candidateCode = extKey.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+
+          while (!candidateCode || shotByCode.has(candidateCode.toLowerCase())) {
+            candidateCode = `s${String(sceneNum).padStart(2, '0')}-sh${String(seq).padStart(2, '0')}`;
+            seq += 1;
+          }
+
+          const [created] = await this.db
+            .insert(shots)
+            .values({
+              sceneId: sceneRow.id,
+              projectId: project.id,
+              shotCode: candidateCode,
+              externalId: extKey,
+              title: shInput.title,
+              visualDescription: shInput.visualDescription,
+              cameraMovement: shInput.cameraMovement,
+              dialogue: shInput.dialogue,
+              prompt: shInput.prompt,
+              startSec: desiredStart,
+              durationSec: shInput.durationSec,
+              status: shInput.status,
+              keyframeAssetId: keyframeId ?? null,
+              videoAssetId: videoId ?? null,
+              bibleEntityRefs: shInput.bibleEntityRefs,
+              sortOrder: shIdx + 1,
+            })
+            .returning();
+          if (created) {
+            touchedShotIds.add(created.id);
+            shotByCode.set(created.shotCode.toLowerCase(), created);
+            if (created.externalId) shotByExternalId.set(created.externalId.toLowerCase(), created);
+            shotsCreated += 1;
+          }
+        }
+      }
+    }
+
+    if (input.pruneMissing) {
+      const toDelete = existingShots.filter((sh) => !touchedShotIds.has(sh.id)).map((sh) => sh.id);
+      if (toDelete.length > 0) {
+        await this.db.delete(shots).where(inArray(shots.id, toDelete));
+        shotsPruned = toDelete.length;
+      }
+    }
+
+    const updatedBoard = await this.getStoryboard(project.id);
+    this.realtime.broadcast({
+      type: 'stage3.changed',
+      payload: { projectId: project.id, domain: 'storyboard' },
+    });
+
+    await this.studio.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'storyboard.upserted',
+      summary: `Storyboard synchronisé (+${shotsCreated} plans, ${shotsUpdated} mis à jour${shotsPruned ? `, -${shotsPruned} supprimés` : ''})`,
+      entityType: 'project',
+      entityId: project.id,
+      entityRef: `@proj-${project.slug}`,
+    });
+
+    return {
+      scenes: updatedBoard,
+      stats: { scenesCreated, scenesUpdated, shotsCreated, shotsUpdated, shotsPruned },
+    };
+  }
+
+  /**
+   * Compose final generation prompt for a shot: combines referenced Bible entities,
+   * ordered reference assets, active project rules filtered by tags, and shot description/prompt.
+   */
+  async composeShotPrompt(
+    projectIdOrSlug: string,
+    shotIdOrCode: string,
+    options: { extraTags?: string[]; extraPositive?: string; extraNegative?: string } = {},
+  ): Promise<{
+    shot: ShotDto;
+    positivePrompt: string;
+    negativePrompt: string;
+    referenceAssets: Array<{
+      order: number;
+      entityHandle: string;
+      entityName: string;
+      assetId: string;
+      assetHandle: string;
+      originalFilename: string;
+      url: string;
+    }>;
+    loras: string[];
+    injectedRulesCount: number;
+    informativeRules: Array<{ code: string; title: string; instruction: string }>;
+  } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const cleanCode = shotIdOrCode.trim().replace(/^@/, '');
+    const allShots = await this.db
+      .select()
+      .from(shots)
+      .where(eq(shots.projectId, project.id));
+
+    const match = allShots.find(
+      (s) =>
+        s.id === cleanCode ||
+        s.shotCode.toLowerCase() === cleanCode.toLowerCase() ||
+        (s.externalId && s.externalId.toLowerCase() === cleanCode.toLowerCase()),
+    );
+    if (!match) return null;
+
+    const shotDto = this.toShotDto(match);
+    const bibleList = await this.listBibleEntities(project.id);
+    const wantedRefs = new Set(
+      shotDto.bibleEntityRefs.map((r) => r.trim().replace(/^@/, '').toLowerCase()),
+    );
+    const matchedEntities = bibleList.filter(
+      (e) =>
+        wantedRefs.has(e.refCode.toLowerCase()) ||
+        wantedRefs.has(e.name.toLowerCase()) ||
+        wantedRefs.has(e.id.toLowerCase()),
+    );
+
+    const referenceAssets: Array<{
+      order: number;
+      entityHandle: string;
+      entityName: string;
+      assetId: string;
+      assetHandle: string;
+      originalFilename: string;
+      url: string;
+    }> = [];
+    const seenAssetIds = new Set<string>();
+    const loras: string[] = [];
+    const tagSet = new Set<string>((options.extraTags ?? []).map((t) => t.toLowerCase()));
+
+    for (const entity of matchedEntities) {
+      if (entity.loraName.trim()) loras.push(entity.loraName.trim());
+      for (const t of entity.tags) tagSet.add(t.toLowerCase());
+      tagSet.add(entity.entityType.toLowerCase());
+      tagSet.add(entity.name.toLowerCase());
+
+      for (const assetId of entity.referenceAssetIds) {
+        if (seenAssetIds.has(assetId)) continue;
+        const found = await this.studio.getAssetById(assetId);
+        if (found) {
+          seenAssetIds.add(assetId);
+          referenceAssets.push({
+            order: referenceAssets.length + 1,
+            entityHandle: entity.handle,
+            entityName: entity.name,
+            assetId: found.asset.id,
+            assetHandle: found.asset.handle,
+            originalFilename: found.asset.originalFilename,
+            url: found.asset.urls.original,
+          });
+        }
+      }
+    }
+
+    const tagsArray = Array.from(tagSet);
+    const rulesBundle = await this.stage2.getResolvedProjectRules(project.id, tagsArray);
+    const resolvedRules = rulesBundle?.resolvedRules ?? [];
+    const injected = selectInjectableRuleFragments(resolvedRules, tagsArray);
+    const informativeRules = resolvedRules
+      .filter((r) => r.enabled && !r.autoInject)
+      .map((r) => ({ code: r.code, title: r.title, instruction: r.instruction }));
+
+    const positiveParts: string[] = [];
+    if (shotDto.prompt.trim()) {
+      positiveParts.push(shotDto.prompt.trim());
+    } else if (shotDto.visualDescription.trim()) {
+      positiveParts.push(shotDto.visualDescription.trim());
+    }
+    if (shotDto.cameraMovement.trim()) {
+      positiveParts.push(`camera: ${shotDto.cameraMovement.trim()}`);
+    }
+    for (const entity of matchedEntities) {
+      if (entity.visualPrompt.trim()) {
+        positiveParts.push(`${entity.name}: ${entity.visualPrompt.trim()}`);
+      }
+    }
+    if (options.extraPositive?.trim()) {
+      positiveParts.push(options.extraPositive.trim());
+    }
+    if (injected.positive.trim()) {
+      positiveParts.push(injected.positive.trim());
+    }
+
+    const negativeParts: string[] = [];
+    if (options.extraNegative?.trim()) {
+      negativeParts.push(options.extraNegative.trim());
+    }
+    if (injected.negative.trim()) {
+      negativeParts.push(injected.negative.trim());
+    }
+
+    return {
+      shot: shotDto,
+      positivePrompt: positiveParts.join(', '),
+      negativePrompt: negativeParts.join(', '),
+      referenceAssets,
+      loras: Array.from(new Set(loras)),
+      injectedRulesCount: injected.injectedRulesCount,
+      informativeRules,
+    };
   }
 
   async createScene(
@@ -424,7 +827,7 @@ export class Stage3Service {
       const collision = await this.db
         .select({ id: shots.id })
         .from(shots)
-        .where(eq(shots.shotCode, shotCode))
+        .where(and(eq(shots.projectId, project.id), eq(shots.shotCode, shotCode)))
         .limit(1);
       if (collision.length === 0) break;
       seq += 1;
@@ -437,11 +840,13 @@ export class Stage3Service {
         sceneId: scene.id,
         projectId: project.id,
         shotCode,
+        externalId: input.externalId ?? null,
         title: input.title,
         visualDescription: input.visualDescription,
         cameraMovement: input.cameraMovement,
         dialogue: input.dialogue,
         prompt: input.prompt,
+        startSec: input.startSec ?? null,
         durationSec: input.durationSec,
         status: input.status,
         keyframeAssetId: input.keyframeAssetId ?? null,
@@ -483,6 +888,7 @@ export class Stage3Service {
       .update(shots)
       .set({
         ...(input.sceneId !== undefined ? { sceneId: input.sceneId } : {}),
+        ...(input.externalId !== undefined ? { externalId: input.externalId } : {}),
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.visualDescription !== undefined
           ? { visualDescription: input.visualDescription }
@@ -490,6 +896,7 @@ export class Stage3Service {
         ...(input.cameraMovement !== undefined ? { cameraMovement: input.cameraMovement } : {}),
         ...(input.dialogue !== undefined ? { dialogue: input.dialogue } : {}),
         ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+        ...(input.startSec !== undefined ? { startSec: input.startSec } : {}),
         ...(input.durationSec !== undefined ? { durationSec: input.durationSec } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.keyframeAssetId !== undefined ? { keyframeAssetId: input.keyframeAssetId } : {}),
@@ -643,6 +1050,77 @@ export class Stage3Service {
     });
 
     return dto;
+  }
+
+  async importSunoAlignment(
+    projectIdOrSlug: string,
+    params: {
+      trackId?: string;
+      title?: string;
+      words: Array<{ word: string; startS?: number; endS?: number; start_s?: number; end_s?: number }>;
+      pauseThresholdSec?: number;
+    },
+    actor: Actor = 'claude',
+  ): Promise<AudioTrackDto | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const normalizedWords = params.words.map((w) => ({
+      word: w.word,
+      start_s: w.start_s ?? w.startS ?? 0,
+      end_s: w.end_s ?? w.endS,
+    }));
+    const enhancedLrc = sunoAlignmentToEnhancedLrc(normalizedWords);
+    const plainLyrics = enhancedLrc
+      .replace(/\[\d+:\d+(?:\.\d+)?\]/g, '')
+      .replace(/<\d+:\d+(?:\.\d+)?>/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+
+    if (params.trackId && UUID_REGEX.test(params.trackId)) {
+      const existingRows = await this.db
+        .select()
+        .from(audioTracks)
+        .where(and(eq(audioTracks.projectId, project.id), eq(audioTracks.id, params.trackId)))
+        .limit(1);
+      const existing = existingRows[0];
+      if (!existing) return null;
+
+      return this.upsertAudioTrack(
+        project.id,
+        {
+          id: existing.id,
+          assetId: existing.assetId,
+          title: params.title ?? existing.title,
+          category: existing.category as AudioCategory,
+          bpm: existing.bpm,
+          musicalKey: existing.musicalKey,
+          promptUsed: existing.promptUsed,
+          lyrics: existing.lyrics || plainLyrics,
+          lrcContent: enhancedLrc,
+          srtContent: lrcToSrt(enhancedLrc),
+          markers: existing.markers ?? [],
+          notes: existing.notes,
+        },
+        actor,
+      );
+    }
+
+    return this.upsertAudioTrack(
+      project.id,
+      {
+        title: params.title ?? 'Suno Aligned Track',
+        category: 'music',
+        musicalKey: '',
+        promptUsed: '',
+        lyrics: plainLyrics,
+        lrcContent: enhancedLrc,
+        srtContent: lrcToSrt(enhancedLrc),
+        markers: [],
+        notes: 'Importé depuis alignement Suno mot à mot',
+      },
+      actor,
+    );
   }
 
   async deleteAudioTrack(trackId: string): Promise<boolean> {
@@ -1034,18 +1512,23 @@ export class Stage3Service {
     };
   }
 
-  private toShotDto(row: typeof shots.$inferSelect): ShotDto {
+  private toShotDto(
+    row: typeof shots.$inferSelect,
+    computedStartSec?: number | null,
+  ): ShotDto {
     return {
       id: row.id,
       sceneId: row.sceneId,
       projectId: row.projectId,
       shotCode: row.shotCode,
+      externalId: row.externalId ?? null,
       handle: `@${row.shotCode}`,
       title: row.title,
       visualDescription: row.visualDescription,
       cameraMovement: row.cameraMovement,
       dialogue: row.dialogue,
       prompt: row.prompt,
+      startSec: computedStartSec !== undefined && computedStartSec !== null ? computedStartSec : (row.startSec ?? 0),
       durationSec: row.durationSec,
       status: row.status as ShotStatus,
       keyframeAssetId: row.keyframeAssetId,

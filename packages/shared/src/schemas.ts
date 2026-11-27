@@ -83,6 +83,7 @@ export const CreateProjectInputSchema = z.object({
   aspectRatio: z.string().trim().min(1).max(16).default('16:9'),
   fps: z.number().int().min(1).max(120).default(24),
   targetResolution: z.string().trim().min(1).max(32).default('1920x1080'),
+  localPath: z.string().trim().max(500).default(''),
 });
 export type CreateProjectInput = z.infer<typeof CreateProjectInputSchema>;
 
@@ -94,6 +95,7 @@ export const UpdateProjectInputSchema = z.object({
   fps: z.number().int().min(1).max(120).optional(),
   targetResolution: z.string().trim().min(1).max(32).optional(),
   status: ProjectStatusSchema.optional(),
+  localPath: z.string().trim().max(500).optional(),
 });
 export type UpdateProjectInput = z.infer<typeof UpdateProjectInputSchema>;
 
@@ -107,6 +109,7 @@ export const ProjectDtoSchema = z.object({
   fps: z.number().int(),
   targetResolution: z.string(),
   status: ProjectStatusSchema,
+  localPath: z.string(),
   assetCount: z.number().int().default(0),
   uri: z.string(),
   createdAt: z.string(),
@@ -119,11 +122,28 @@ export type ProjectDto = z.infer<typeof ProjectDtoSchema>;
 export const StorageModeSchema = z.enum(['copy', 'hardlink', 'reference']);
 export type StorageMode = z.infer<typeof StorageModeSchema>;
 
+export const AssetRelationTypeSchema = z.enum(['revision', 'upscale', 'crop', 'variant']);
+export type AssetRelationType = z.infer<typeof AssetRelationTypeSchema>;
+
+export const QcCheckValueSchema = z.enum(['ok', 'warn', 'fail', 'na']);
+export type QcCheckValue = z.infer<typeof QcCheckValueSchema>;
+
+export const QcOverallStatusSchema = z.enum(['pending', 'pass', 'warn', 'fail']);
+export type QcOverallStatus = z.infer<typeof QcOverallStatusSchema>;
+
+export const RecordQcInputSchema = z.object({
+  checks: z.record(z.string().trim().min(1).max(64), QcCheckValueSchema),
+  status: QcOverallStatusSchema.optional(),
+  notes: z.string().max(2000).optional(),
+});
+export type RecordQcInput = z.infer<typeof RecordQcInputSchema>;
+
 export const UpdateAssetInputSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   folderPath: z.string().max(300).optional(),
   status: AssetStatusSchema.optional(),
   qualityTier: QualityTierSchema.optional(),
+  relationType: AssetRelationTypeSchema.optional(),
   rating: z.number().int().min(0).max(5).optional(),
   notes: z.string().max(8000).optional(),
   tags: z.array(z.string().trim().min(1).max(64)).max(50).optional(),
@@ -148,6 +168,7 @@ export const IngestAssetJsonInputSchema = z
     status: AssetStatusSchema.default('new'),
     parentAssetId: z.string().uuid().optional(),
     parentRef: z.string().optional(),
+    relationType: AssetRelationTypeSchema.default('revision'),
     promptUsed: z.string().max(16000).optional(),
     negativePrompt: z.string().max(16000).optional(),
     modelName: z.string().max(255).optional(),
@@ -183,6 +204,7 @@ export const AssetDtoSchema = z.object({
   qualityTier: QualityTierSchema,
   rating: z.number().int().min(0).max(5),
   parentAssetId: z.string().uuid().nullable(),
+  relationType: AssetRelationTypeSchema,
   versionNumber: z.number().int(),
   originalFilename: z.string(),
   mimeType: z.string(),
@@ -196,6 +218,9 @@ export const AssetDtoSchema = z.object({
   modelName: z.string().nullable(),
   seed: z.string().nullable(),
   comfyMetadata: ComfyMetadataSchema.nullable(),
+  qcChecks: z.record(z.string(), QcCheckValueSchema).nullable(),
+  qcStatus: QcOverallStatusSchema,
+  qcNotes: z.string(),
   tags: z.array(z.string()),
   notes: z.string(),
   createdBy: ActorSchema,
@@ -234,6 +259,12 @@ export const JobDtoSchema = z.object({
   title: z.string(),
   status: JobStatusSchema,
   progress: z.number().int().min(0).max(100),
+  stepCurrent: z.number().int().min(0).nullable(),
+  stepTotal: z.number().int().min(0).nullable(),
+  message: z.string(),
+  comfyPromptIds: z.array(z.string()),
+  etaSeconds: z.number().int().min(0).nullable(),
+  estimatedCompletionAt: z.string().nullable(),
   resultAssetId: z.string().uuid().nullable(),
   errorMessage: z.string().nullable(),
   createdAt: z.string(),
@@ -260,6 +291,8 @@ export const AgentTaskDtoSchema = z.object({
   detail: z.string(),
   status: AgentTaskStatusSchema,
   progress: z.number().int().min(0).max(100).nullable(),
+  etaSeconds: z.number().int().min(0).nullable(),
+  estimatedCompletionAt: z.string().nullable(),
   groupName: z.string(),
   assetRef: z.string().nullable(),
   sortOrder: z.number().int(),
@@ -274,6 +307,8 @@ export const SyncAgentTaskItemSchema = z.object({
   detail: z.string().max(1000).default(''),
   status: AgentTaskStatusSchema.default('pending'),
   progress: z.number().int().min(0).max(100).nullable().optional(),
+  etaSeconds: z.number().int().min(0).max(86400 * 7).nullable().optional(),
+  estimatedCompletionAt: z.string().datetime().nullable().optional(),
   groupName: z.string().trim().max(120).default(''),
   assetRef: z.string().trim().max(120).nullable().optional(),
   sortOrder: z.number().int().min(0).max(10000).optional(),
@@ -291,6 +326,8 @@ export const UpdateAgentTaskInputSchema = z.object({
   detail: z.string().max(1000).optional(),
   status: AgentTaskStatusSchema.optional(),
   progress: z.number().int().min(0).max(100).nullable().optional(),
+  etaSeconds: z.number().int().min(0).max(86400 * 7).nullable().optional(),
+  estimatedCompletionAt: z.string().datetime().nullable().optional(),
   groupName: z.string().trim().max(120).optional(),
   assetRef: z.string().trim().max(120).nullable().optional(),
   sortOrder: z.number().int().min(0).max(10000).optional(),
@@ -339,6 +376,10 @@ export const RealtimeEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('folders.changed'),
+    payload: z.object({ projectId: z.string().uuid() }),
+  }),
+  z.object({
+    type: z.literal('timeline.changed'),
     payload: z.object({ projectId: z.string().uuid() }),
   }),
 ]);

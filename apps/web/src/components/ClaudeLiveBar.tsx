@@ -1,16 +1,19 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Circle,
+  Clock,
   ListChecks,
   Loader2,
   MinusCircle,
   Trash2,
 } from 'lucide-react';
 import {
+  computeRemainingEtaSeconds,
+  formatEtaDuration,
   summarizeAgentTasks,
   type AgentTaskDto,
   type AgentTaskStatus,
@@ -58,8 +61,28 @@ export function ClaudeLiveBar({
 }: ClaudeLiveBarProps) {
   const [expanded, setExpanded] = useState(false);
   const [filter, setFilter] = useState<TaskFilter>('all');
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const summary = useMemo(() => summarizeAgentTasks(tasks), [tasks]);
+  const hasAnyEta = useMemo(
+    () =>
+      runningJobs.some((j) => j.estimatedCompletionAt || j.etaSeconds !== null) ||
+      tasks.some(
+        (t) =>
+          (t.status === 'in_progress' || t.status === 'pending') &&
+          (t.estimatedCompletionAt || t.etaSeconds !== null),
+      ),
+    [runningJobs, tasks],
+  );
+
+  // Live 1-second tick whenever an active ETA countdown is visible
+  useEffect(() => {
+    if (!hasAnyEta) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasAnyEta]);
+
+  const summary = useMemo(() => summarizeAgentTasks(tasks, nowMs), [tasks, nowMs]);
 
   const visibleTasks = useMemo(() => {
     const ordered = [...tasks].sort((a, b) => a.sortOrder - b.sortOrder);
@@ -79,6 +102,24 @@ export function ClaudeLiveBar({
   const isLiveRunning = runningJobs.length > 0 || summary.inProgress > 0;
   const canExpand = tasks.length > 0 || runningJobs.length > 1;
 
+  const primaryJobEtaSec = primaryJob
+    ? computeRemainingEtaSeconds(
+        {
+          etaSeconds: primaryJob.etaSeconds,
+          estimatedCompletionAt: primaryJob.estimatedCompletionAt,
+        },
+        nowMs,
+      )
+    : null;
+
+  const headlineEtaSec =
+    primaryJobEtaSec !== null
+      ? primaryJobEtaSec
+      : summary.totalRemainingEtaSeconds;
+
+  const headlineEtaLabel =
+    headlineEtaSec !== null && isLiveRunning ? formatEtaDuration(headlineEtaSec) : null;
+
   // Progress bar shown on collapsed row: prefer active job progress, else task progress/overall
   const headlineProgress =
     primaryJob !== null
@@ -89,7 +130,7 @@ export function ClaudeLiveBar({
 
   return (
     <div className={`claude-live-panel ${expanded ? 'expanded' : ''}`} role="region" aria-label="Suivi Claude Live">
-      {/* Compact 1-line Collapsed Header: shows ONLY what is currently in progress */}
+      {/* Compact 1-line Collapsed Header: shows ONLY what is currently in progress + live ETA */}
       <div
         className={`claude-live-header ${canExpand ? 'clickable' : ''}`}
         role={canExpand ? 'button' : undefined}
@@ -114,7 +155,15 @@ export function ClaudeLiveBar({
           {primaryJob ? (
             <div className="claude-live-headline">
               <span className="claude-live-title">{primaryJob.title}</span>
-              {headlineTask && (
+              {primaryJob.stepTotal !== null && primaryJob.stepCurrent !== null && (
+                <span className="claude-live-step-pill">
+                  {primaryJob.stepCurrent}/{primaryJob.stepTotal}
+                </span>
+              )}
+              {primaryJob.message && (
+                <span className="claude-live-detail">— {primaryJob.message}</span>
+              )}
+              {!primaryJob.message && headlineTask && (
                 <span className="claude-live-subtask" title={headlineTask.detail || headlineTask.title}>
                   <TaskStatusIcon status={headlineTask.status} />
                   <span>{headlineTask.title}</span>
@@ -133,6 +182,13 @@ export function ClaudeLiveBar({
         </div>
 
         <div className="claude-live-right">
+          {headlineEtaLabel && (
+            <span className="claude-live-eta" title="Temps restant estimé (ETA)">
+              <Clock size={12} />
+              ETA {headlineEtaLabel}
+            </span>
+          )}
+
           <div className="job-progress-bar">
             <div
               className={`job-progress-fill ${
@@ -166,16 +222,38 @@ export function ClaudeLiveBar({
         <div className="claude-live-drawer">
           {runningJobs.length > 0 && (
             <div className="claude-live-jobs-box">
-              {runningJobs.map((job) => (
-                <div key={job.id} className="job-row">
-                  <Loader2 size={13} className="task-spin" color="var(--status-live)" />
-                  <span style={{ fontWeight: 500 }}>{job.title}</span>
-                  <div className="job-progress-bar">
-                    <div className="job-progress-fill" style={{ width: `${job.progress}%` }} />
+              {runningJobs.map((job) => {
+                const jobEta = computeRemainingEtaSeconds(
+                  {
+                    etaSeconds: job.etaSeconds,
+                    estimatedCompletionAt: job.estimatedCompletionAt,
+                  },
+                  nowMs,
+                );
+                return (
+                  <div key={job.id} className="job-row">
+                    <Loader2 size={13} className="task-spin" color="var(--status-live)" />
+                    <span style={{ fontWeight: 500 }}>{job.title}</span>
+                    {job.stepTotal !== null && job.stepCurrent !== null && (
+                      <span className="claude-live-step-pill">
+                        {job.stepCurrent}/{job.stepTotal}
+                      </span>
+                    )}
+                    {job.message && (
+                      <span className="claude-live-detail">{job.message}</span>
+                    )}
+                    {jobEta !== null && (
+                      <span className="claude-live-eta" style={{ marginLeft: 'auto' }}>
+                        <Clock size={11} /> {formatEtaDuration(jobEta)}
+                      </span>
+                    )}
+                    <div className="job-progress-bar">
+                      <div className="job-progress-fill" style={{ width: `${job.progress}%` }} />
+                    </div>
+                    <span className="claude-live-pct">{job.progress}%</span>
                   </div>
-                  <span className="claude-live-pct">{job.progress}%</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -243,6 +321,16 @@ export function ClaudeLiveBar({
                   visibleTasks.map((task, idx) => {
                     const prevGroup = idx > 0 ? visibleTasks[idx - 1]?.groupName : '';
                     const showGroupHeader = Boolean(task.groupName && task.groupName !== prevGroup);
+                    const taskEtaSec =
+                      task.status === 'in_progress' || task.status === 'pending'
+                        ? computeRemainingEtaSeconds(
+                            {
+                              etaSeconds: task.etaSeconds,
+                              estimatedCompletionAt: task.estimatedCompletionAt,
+                            },
+                            nowMs,
+                          )
+                        : null;
 
                     return (
                       <div key={task.id}>
@@ -274,6 +362,11 @@ export function ClaudeLiveBar({
                           </div>
 
                           <div className="claude-task-meta">
+                            {taskEtaSec !== null && (
+                              <span className="claude-live-eta" title="ETA estimée">
+                                <Clock size={11} /> {formatEtaDuration(taskEtaSec)}
+                              </span>
+                            )}
                             {task.status === 'in_progress' && task.progress !== null && (
                               <div className="claude-task-mini-progress">
                                 <div className="job-progress-bar" style={{ width: 64 }}>

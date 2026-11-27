@@ -63,19 +63,20 @@ export function registerStage2Routes(
     return reply.code(204).send();
   });
 
-  app.get<{ Params: { projectIdOrSlug: string }; Querystring: { status?: string } }>(
-    '/api/projects/:projectIdOrSlug/feedback',
-    async (request) => {
-      const st = request.query.status;
-      const parsedStatus =
-        st === 'all' ? 'all' : AnnotationStatusSchema.safeParse(st).data ?? 'open';
-      const items = await stage2.listProjectFeedback(
-        request.params.projectIdOrSlug,
-        parsedStatus,
-      );
-      return { feedback: items };
-    },
-  );
+  app.get<{
+    Params: { projectIdOrSlug: string };
+    Querystring: { status?: string; since?: string };
+  }>('/api/projects/:projectIdOrSlug/feedback', async (request) => {
+    const st = request.query.status;
+    const parsedStatus =
+      st === 'all' ? 'all' : AnnotationStatusSchema.safeParse(st).data ?? 'open';
+    const items = await stage2.listProjectFeedback(
+      request.params.projectIdOrSlug,
+      parsedStatus,
+      request.query.since,
+    );
+    return { feedback: items };
+  });
 
   // ==========================================================================
   // 2. Rulebooks, Rules & Per-Project Overrides

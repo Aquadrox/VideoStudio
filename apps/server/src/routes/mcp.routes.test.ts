@@ -4,6 +4,7 @@ import type { AppConfig } from '../config.js';
 import type { MediaService } from '../services/media.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
+import type { Stage4Service } from '../services/stage4.service.js';
 import type { StudioService } from '../services/studio.service.js';
 import { registerMcpRoutes } from './mcp.routes.js';
 
@@ -17,9 +18,11 @@ function createTestConfig(): AppConfig {
     corsOrigin: '*',
     dataDir: '/tmp/videostudio-test-data',
     ingestAllowedDir: '/tmp/videostudio-test-ingest',
+    ingestExtraDirs: [],
     skillsSyncDir: '/tmp/videostudio-test-skills',
     maxUploadBytes: 10 * 1024 * 1024,
     allowedFetchHosts: [],
+    comfyuiBaseUrl: null,
   };
 }
 
@@ -32,6 +35,7 @@ describe('MCP Streamable HTTP route', () => {
       media: {} as MediaService,
       stage2: {} as Stage2Service,
       stage3: {} as Stage3Service,
+      stage4: {} as Stage4Service,
     });
 
     const missingAuth = await app.inject({
@@ -52,7 +56,7 @@ describe('MCP Streamable HTTP route', () => {
     await app.close();
   });
 
-  it('responds to authenticated MCP initialize and tools/list requests including Stage 2 & Stage 3 tools', async () => {
+  it('responds to authenticated MCP initialize and tools/list requests including Stage 2, Stage 3 & Stage 4 tools', async () => {
     const app = Fastify({ logger: false });
     registerMcpRoutes(app, {
       config: createTestConfig(),
@@ -60,6 +64,7 @@ describe('MCP Streamable HTTP route', () => {
       media: {} as MediaService,
       stage2: {} as Stage2Service,
       stage3: {} as Stage3Service,
+      stage4: {} as Stage4Service,
     });
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -105,8 +110,13 @@ describe('MCP Streamable HTTP route', () => {
 
       expect(toolsRes.status).toBe(200);
       const toolsText = await toolsRes.text();
-      // Stage 1
+      // Stage 1 + v0.4.0 DAM / QC / Batch
       expect(toolsText).toContain('register_asset');
+      expect(toolsText).toContain('ingest_folder');
+      expect(toolsText).toContain('get_asset');
+      expect(toolsText).toContain('record_qc');
+      expect(toolsText).toContain('get_frame');
+      expect(toolsText).toContain('contact_sheet');
       expect(toolsText).toContain('resolve_reference');
       expect(toolsText).toContain('update_project');
       expect(toolsText).toContain('list_media_folders');
@@ -121,15 +131,25 @@ describe('MCP Streamable HTTP route', () => {
       expect(toolsText).toContain('update_rule');
       expect(toolsText).toContain('delete_rule');
       expect(toolsText).toContain('save_skill');
-      // Stage 3
+      // Stage 3 + v0.4.0 Storyboard / Audio
       expect(toolsText).toContain('update_script');
       expect(toolsText).toContain('upsert_bible_entity');
+      expect(toolsText).toContain('upsert_storyboard');
+      expect(toolsText).toContain('compose_prompt');
       expect(toolsText).toContain('create_shot');
       expect(toolsText).toContain('upsert_audio_track');
+      expect(toolsText).toContain('import_suno_alignment');
       expect(toolsText).toContain('update_youtube_package');
       expect(toolsText).toContain('prepare_youtube_pack');
       expect(toolsText).toContain('init_project_git_repo');
       expect(toolsText).toContain('sync_and_commit_project_repo');
+      // Stage 4 (Timeline, Animatic, Render & NLE Export)
+      expect(toolsText).toContain('get_timeline');
+      expect(toolsText).toContain('save_timeline');
+      expect(toolsText).toContain('build_animatic_from_storyboard');
+      expect(toolsText).toContain('switch_timeline_quality');
+      expect(toolsText).toContain('render_timeline');
+      expect(toolsText).toContain('export_nle');
     } finally {
       await app.close();
     }

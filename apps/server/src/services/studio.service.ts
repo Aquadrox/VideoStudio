@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import path from 'node:path';
+import { and, asc, desc, eq, ilike, inArray, lt, or, sql } from 'drizzle-orm';
 import {
   buildAssetHandle,
   buildStudioUri,
@@ -12,6 +13,7 @@ import {
   type AgentTaskDto,
   type AgentTaskStatus,
   type AssetDto,
+  type AssetRelationType,
   type AssetStatus,
   type AssetType,
   type CreateProjectInput,
@@ -21,7 +23,10 @@ import {
   type ProjectDto,
   type ProjectStatus,
   type ProjectType,
+  type QcCheckValue,
+  type QcOverallStatus,
   type QualityTier,
+  type RecordQcInput,
   type StorageMode,
   type SyncAgentTasksInput,
   type UpdateAgentTaskInput,
@@ -53,6 +58,28 @@ export interface ListAssetsFilter {
   tag?: string;
   search?: string;
   limit?: number;
+  cursor?: string;
+}
+
+export interface CompactAssetDto {
+  id: string;
+  refCode: string;
+  handle: string;
+  originalFilename: string;
+  folderPath: string;
+  title: string;
+  type: AssetType;
+  status: AssetStatus;
+  qualityTier: QualityTier;
+  relationType: AssetRelationType;
+  parentAssetId: string | null;
+  versionNumber: number;
+  width: number | null;
+  height: number | null;
+  durationSec: number | null;
+  qcStatus: QcOverallStatus;
+  tags: string[];
+  createdAt: string;
 }
 
 export interface ResolvedReferenceResult {
@@ -66,10 +93,13 @@ export interface ResolvedReferenceResult {
 }
 
 export class StudioService {
+  private readonly comfyPollers = new Map<string, NodeJS.Timeout>();
+
   constructor(
     private readonly db: Database,
     private readonly media: MediaService,
     private readonly realtime: RealtimeHub,
+    private readonly comfyuiBaseUrl: string | null = null,
   ) {}
 
   // --- Projects ---
@@ -123,6 +153,7 @@ export class StudioService {
         aspectRatio: input.aspectRatio,
         fps: input.fps,
         targetResolution: input.targetResolution,
+        localPath: input.localPath ?? '',
       })
       .returning();
 
@@ -168,6 +199,7 @@ export class StudioService {
         ...(input.fps !== undefined ? { fps: input.fps } : {}),
         ...(input.targetResolution !== undefined ? { targetResolution: input.targetResolution } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.localPath !== undefined ? { localPath: input.localPath } : {}),
         updatedAt: new Date(),
       })
       .where(eq(projects.id, existing.id))
@@ -346,35 +378,62 @@ export class StudioService {
   // --- Assets ---
 
   async listAssets(projectIdOrSlug: string, filter: ListAssetsFilter = {}): Promise<AssetDto[]> {
-    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
-    if (!project) return [];
+    const page = await this.listAssetsPage(projectIdOrSlug, filter);
+    return page.assets;
+  }
 
-    const conditions = [eq(assets.projectId, project.id)];
-    if (filter.type) conditions.push(eq(assets.type, filter.type));
-    if (filter.status) conditions.push(eq(assets.status, filter.status));
-    if (filter.qualityTier) conditions.push(eq(assets.qualityTier, filter.qualityTier));
+  async listAssetsPage(
+    projectIdOrSlug: string,
+    filter: ListAssetsFilter = {},
+  ): Promise<{ assets: AssetDto[]; nextCursor: string | null; total: number }> {
+    const project = await this.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return { assets: [], nextCursor: null, total: 0 };
+
+    const baseConditions = [eq(assets.projectId, project.id)];
+    if (filter.type) baseConditions.push(eq(assets.type, filter.type));
+    if (filter.status) baseConditions.push(eq(assets.status, filter.status));
+    if (filter.qualityTier) baseConditions.push(eq(assets.qualityTier, filter.qualityTier));
     if (filter.folderPath !== undefined && !filter.recursive) {
-      conditions.push(eq(assets.folderPath, normalizeFolderPath(filter.folderPath)));
+      baseConditions.push(eq(assets.folderPath, normalizeFolderPath(filter.folderPath)));
     }
     if (filter.search) {
       const pattern = `%${filter.search.trim()}%`;
       const searchCond = or(
         ilike(assets.title, pattern),
         ilike(assets.refCode, pattern),
+        ilike(assets.originalFilename, pattern),
         ilike(assets.promptUsed, pattern),
         ilike(assets.notes, pattern),
       );
-      if (searchCond) conditions.push(searchCond);
+      if (searchCond) baseConditions.push(searchCond);
     }
 
+    const countRows = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(assets)
+      .where(and(...baseConditions));
+    const total = countRows[0]?.count ?? 0;
+
+    const pageConditions = [...baseConditions];
+    if (filter.cursor) {
+      const cursorDate = new Date(filter.cursor);
+      if (!Number.isNaN(cursorDate.getTime())) {
+        pageConditions.push(lt(assets.createdAt, cursorDate));
+      }
+    }
+
+    const pageLimit = Math.max(1, Math.min(filter.limit ?? 200, 500));
     const rows = await this.db
       .select()
       .from(assets)
-      .where(and(...conditions))
+      .where(and(...pageConditions))
       .orderBy(desc(assets.createdAt))
-      .limit(filter.limit ?? 200);
+      .limit(pageLimit + 1);
 
-    let mapped = rows.map((row) => this.toAssetDto(row, project.slug));
+    const hasMore = rows.length > pageLimit;
+    const slicedRows = hasMore ? rows.slice(0, pageLimit) : rows;
+    let mapped = slicedRows.map((row) => this.toAssetDto(row, project.slug));
+
     if (filter.folderPath !== undefined && filter.recursive) {
       const prefix = normalizeFolderPath(filter.folderPath);
       if (prefix) {
@@ -387,7 +446,36 @@ export class StudioService {
       const targetTag = filter.tag.toLowerCase();
       mapped = mapped.filter((a) => a.tags.some((t) => t.toLowerCase() === targetTag));
     }
-    return mapped;
+
+    const nextCursor =
+      hasMore && slicedRows.length > 0
+        ? slicedRows[slicedRows.length - 1]!.createdAt.toISOString()
+        : null;
+
+    return { assets: mapped, nextCursor, total };
+  }
+
+  toCompactAssetDto(asset: AssetDto): CompactAssetDto {
+    return {
+      id: asset.id,
+      refCode: asset.refCode,
+      handle: asset.handle,
+      originalFilename: asset.originalFilename,
+      folderPath: asset.folderPath,
+      title: asset.title,
+      type: asset.type,
+      status: asset.status,
+      qualityTier: asset.qualityTier,
+      relationType: asset.relationType,
+      parentAssetId: asset.parentAssetId,
+      versionNumber: asset.versionNumber,
+      width: asset.width,
+      height: asset.height,
+      durationSec: asset.durationSec,
+      qcStatus: asset.qcStatus,
+      tags: asset.tags,
+      createdAt: asset.createdAt,
+    };
   }
 
   async getAssetById(assetId: string): Promise<{ asset: AssetDto; raw: typeof assets.$inferSelect } | null> {
@@ -418,12 +506,14 @@ export class StudioService {
     storageMode?: StorageMode;
     sourceLocalAbsPath?: string;
     ingestRelativePath?: string;
+    referenceUri?: string;
     folderPath?: string;
     title?: string;
     qualityTier?: QualityTier;
     status?: AssetStatus;
     parentAssetId?: string;
     parentRef?: string;
+    relationType?: AssetRelationType;
     promptUsed?: string;
     negativePrompt?: string;
     modelName?: string;
@@ -457,9 +547,11 @@ export class StudioService {
       storageMode: params.storageMode,
       sourceLocalAbsPath: params.sourceLocalAbsPath,
       ingestRelativePath: params.ingestRelativePath,
+      referenceUri: params.referenceUri,
     });
 
-    // Resolve optional parent asset (for version stacking & Draft -> HQ linking)
+    // Resolve optional parent asset (for version stacking & derivations: upscale / crop / variant)
+    const relationType: AssetRelationType = params.relationType ?? 'revision';
     let resolvedParentId: string | null = params.parentAssetId ?? null;
     let versionNumber = 1;
 
@@ -473,7 +565,8 @@ export class StudioService {
     if (resolvedParentId) {
       const parentInfo = await this.getAssetById(resolvedParentId);
       if (parentInfo && parentInfo.asset.projectId === project.id) {
-        versionNumber = parentInfo.asset.versionNumber + 1;
+        // Only increment versionNumber (-v2, -v3...) for true revisions; derivations (upscale/crop/variant) stay v1
+        versionNumber = relationType === 'revision' ? parentInfo.asset.versionNumber + 1 : 1;
       } else {
         resolvedParentId = null;
       }
@@ -500,6 +593,7 @@ export class StudioService {
         status: params.status ?? 'new',
         qualityTier: params.qualityTier ?? 'test',
         parentAssetId: resolvedParentId,
+        relationType,
         versionNumber,
         originalFilename: processed.originalFilename,
         filePath: processed.filePath,
@@ -544,12 +638,13 @@ export class StudioService {
       projectSlug: project.slug,
       actor,
       action: 'asset.created',
-      summary: `${dto.type.toUpperCase()} ajouté : ${dto.title} (${dto.handle})${folderPath ? ` dans /${folderPath}` : ''}`,
+      summary: `${dto.type.toUpperCase()} ajouté : ${dto.title} (${dto.handle})${relationType !== 'revision' ? ` [${relationType}]` : ''}${folderPath ? ` dans /${folderPath}` : ''}`,
       entityType: 'asset',
       entityId: dto.id,
       entityRef: dto.handle,
       metadata: {
         qualityTier: dto.qualityTier,
+        relationType,
         folderPath,
         hasComfyMetadata: Boolean(dto.comfyMetadata),
         versionNumber: dto.versionNumber,
@@ -557,6 +652,154 @@ export class StudioService {
     });
 
     return dto;
+  }
+
+  async ingestFolderBatch(params: {
+    projectIdOrSlug: string;
+    localDir: string;
+    glob?: string;
+    recursive?: boolean;
+    folderPath?: string;
+    storageMode?: StorageMode;
+    qualityTier?: QualityTier;
+    relationType?: AssetRelationType;
+    parentMatch?: 'none' | 'suffix_strip' | string;
+    tags?: string[];
+    limit?: number;
+    createdBy?: Actor;
+  }): Promise<{
+    ingested: CompactAssetDto[];
+    skipped: Array<{ filename: string; reason: string; existingHandle?: string }>;
+    errors: Array<{ filename: string; error: string }>;
+  }> {
+    const project = await this.getProjectByIdOrSlug(params.projectIdOrSlug);
+    if (!project) {
+      throw new Error(`Project not found: ${params.projectIdOrSlug}`);
+    }
+
+    const scanned = await this.media.scanIngestFolder({
+      localDir: params.localDir,
+      glob: params.glob,
+      recursive: params.recursive,
+      limit: params.limit,
+    });
+
+    const existingRows = await this.db
+      .select()
+      .from(assets)
+      .where(eq(assets.projectId, project.id));
+
+    const byFilePath = new Map<string, typeof assets.$inferSelect>();
+    const byStem = new Map<string, typeof assets.$inferSelect>();
+    const byFolderFilename = new Map<string, typeof assets.$inferSelect>();
+
+    for (const row of existingRows) {
+      byFilePath.set(row.filePath, row);
+      const stem = path.basename(row.originalFilename, path.extname(row.originalFilename)).toLowerCase();
+      if (!byStem.has(stem)) byStem.set(stem, row);
+      byFolderFilename.set(`${row.folderPath}::${row.originalFilename.toLowerCase()}`, row);
+    }
+
+    const baseFolder = normalizeFolderPath(params.folderPath ?? '');
+    const storageMode: StorageMode = params.storageMode ?? 'reference';
+    const parentMatchMode = params.parentMatch ?? 'none';
+
+    const ingested: CompactAssetDto[] = [];
+    const skipped: Array<{ filename: string; reason: string; existingHandle?: string }> = [];
+    const errors: Array<{ filename: string; error: string }> = [];
+
+    for (const entry of scanned) {
+      const relSubdir = path.dirname(entry.relToDir);
+      const targetFolder =
+        relSubdir && relSubdir !== '.'
+          ? normalizeFolderPath(baseFolder ? `${baseFolder}/${relSubdir}` : relSubdir)
+          : baseFolder;
+
+      // Idempotency check: skip if referenceUri or same filename in same folder already exists
+      const existingByRef = byFilePath.get(entry.referenceUri);
+      const existingByName = byFolderFilename.get(`${targetFolder}::${entry.filename.toLowerCase()}`);
+      const duplicate = existingByRef ?? existingByName;
+      if (duplicate) {
+        skipped.push({
+          filename: entry.filename,
+          reason: 'already_ingested',
+          existingHandle: buildAssetHandle(duplicate.refCode),
+        });
+        continue;
+      }
+
+      // Optional parent matching (e.g. S10_4k.png -> S10.png)
+      let matchedParentId: string | undefined;
+      if (parentMatchMode !== 'none') {
+        const stem = path.basename(entry.filename, path.extname(entry.filename));
+        let candidateParentStem: string | null = null;
+        if (parentMatchMode === 'suffix_strip') {
+          candidateParentStem = stem.replace(
+            /(?:[_-](?:4k|2k|hq|upscale|upscaled|crop|cropped|v\d+|final|edit|variant\d*))+$/i,
+            '',
+          );
+        } else {
+          try {
+            const re = new RegExp(parentMatchMode, 'i');
+            const m = stem.match(re);
+            candidateParentStem = m?.[1] ?? m?.[0] ?? null;
+          } catch {
+            candidateParentStem = null;
+          }
+        }
+        if (candidateParentStem && candidateParentStem.toLowerCase() !== stem.toLowerCase()) {
+          const parentRow = byStem.get(candidateParentStem.toLowerCase());
+          if (parentRow) {
+            matchedParentId = parentRow.id;
+          }
+        }
+      }
+
+      try {
+        const fileData = await this.media.readLocalIngestFile(entry.absPath);
+        const created = await this.ingestAssetFromBuffer({
+          projectIdOrSlug: project.id,
+          buffer: fileData.buffer,
+          filename: fileData.filename,
+          mimeType: fileData.mimeType,
+          storageMode,
+          sourceLocalAbsPath: fileData.resolvedAbsPath,
+          ingestRelativePath: fileData.ingestRelativePath,
+          referenceUri: fileData.referenceUri,
+          folderPath: targetFolder,
+          qualityTier: params.qualityTier ?? 'test',
+          parentAssetId: matchedParentId,
+          relationType:
+            params.relationType ?? (matchedParentId ? 'upscale' : 'revision'),
+          tags: params.tags ?? [],
+          createdBy: params.createdBy ?? 'claude',
+        });
+        ingested.push(this.toCompactAssetDto(created));
+
+        // Update in-memory maps so later files in same batch can match earlier ones as parents
+        const stemLower = path
+          .basename(created.originalFilename, path.extname(created.originalFilename))
+          .toLowerCase();
+        if (!byStem.has(stemLower)) {
+          const rawInfo = await this.getAssetById(created.id);
+          if (rawInfo) {
+            byStem.set(stemLower, rawInfo.raw);
+            byFilePath.set(rawInfo.raw.filePath, rawInfo.raw);
+            byFolderFilename.set(
+              `${targetFolder}::${created.originalFilename.toLowerCase()}`,
+              rawInfo.raw,
+            );
+          }
+        }
+      } catch (err) {
+        errors.push({
+          filename: entry.filename,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { ingested, skipped, errors };
   }
 
   async updateAsset(
@@ -587,6 +830,7 @@ export class StudioService {
         ...(normalizedFolder !== undefined ? { folderPath: normalizedFolder } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.qualityTier !== undefined ? { qualityTier: input.qualityTier } : {}),
+        ...(input.relationType !== undefined ? { relationType: input.relationType } : {}),
         ...(input.rating !== undefined ? { rating: input.rating } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.tags !== undefined ? { tags: input.tags } : {}),
@@ -618,6 +862,63 @@ export class StudioService {
       entityType: 'asset',
       entityId: dto.id,
       entityRef: dto.handle,
+    });
+
+    return dto;
+  }
+
+  async recordAssetQc(
+    assetIdOrRef: string,
+    input: RecordQcInput,
+    actor: Actor = 'claude',
+    defaultProjectSlug?: string,
+  ): Promise<AssetDto | null> {
+    let existing = await this.getAssetById(assetIdOrRef);
+    if (!existing) {
+      const resolved = await this.resolveReference(assetIdOrRef, defaultProjectSlug);
+      if (resolved?.asset) {
+        existing = await this.getAssetById(resolved.asset.id);
+      }
+    }
+    if (!existing) return null;
+
+    const mergedChecks: Record<string, QcCheckValue> = {
+      ...(existing.asset.qcChecks ?? {}),
+      ...input.checks,
+    };
+
+    const computedStatus: QcOverallStatus = input.status ?? computeQcStatus(mergedChecks);
+
+    const [updated] = await this.db
+      .update(assets)
+      .set({
+        qcChecks: mergedChecks,
+        qcStatus: computedStatus,
+        ...(input.notes !== undefined ? { qcNotes: input.notes } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(assets.id, existing.asset.id))
+      .returning();
+
+    if (!updated) return null;
+
+    const dto = this.toAssetDto(updated, existing.asset.projectSlug);
+    this.realtime.broadcast({ type: 'asset.updated', payload: dto });
+
+    const checkSummary = Object.entries(mergedChecks)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(', ');
+
+    await this.logActivity({
+      projectId: dto.projectId,
+      projectSlug: dto.projectSlug,
+      actor,
+      action: 'asset.qc_recorded',
+      summary: `QC ${computedStatus.toUpperCase()} sur ${dto.handle}${checkSummary ? ` (${checkSummary})` : ''}`,
+      entityType: 'asset',
+      entityId: dto.id,
+      entityRef: dto.handle,
+      metadata: { qcStatus: computedStatus, qcChecks: mergedChecks },
     });
 
     return dto;
@@ -834,15 +1135,26 @@ export class StudioService {
     }));
   }
 
-  // --- Live Jobs (Claude generation tracking) ---
+  // --- Live Jobs (Claude generation tracking + optional ComfyUI /history poller) ---
 
   async startJob(params: {
     projectIdOrSlug: string;
     type: string;
     title: string;
+    stepCurrent?: number | null;
+    stepTotal?: number | null;
+    message?: string;
+    comfyPromptIds?: string[];
+    etaSeconds?: number | null;
+    estimatedCompletionAt?: string | null;
   }): Promise<JobDto> {
     const project = await this.getProjectByIdOrSlug(params.projectIdOrSlug);
     if (!project) throw new Error(`Project not found: ${params.projectIdOrSlug}`);
+
+    const etaDate = resolveEtaDate(params.etaSeconds, params.estimatedCompletionAt);
+    const comfyPromptIds = params.comfyPromptIds ?? [];
+    const stepTotal = params.stepTotal ?? (comfyPromptIds.length > 0 ? comfyPromptIds.length : null);
+    const stepCurrent = params.stepCurrent ?? (comfyPromptIds.length > 0 ? 0 : null);
 
     const [created] = await this.db
       .insert(jobs)
@@ -852,6 +1164,12 @@ export class StudioService {
         title: params.title,
         status: 'running',
         progress: 5,
+        stepCurrent,
+        stepTotal,
+        message: params.message ?? '',
+        comfyPromptIds,
+        etaSeconds: params.etaSeconds ?? null,
+        estimatedCompletionAt: etaDate,
       })
       .returning();
 
@@ -860,12 +1178,16 @@ export class StudioService {
     const dto = this.toJobDto(created, project.slug);
     this.realtime.broadcast({ type: 'job.updated', payload: dto });
 
+    if (comfyPromptIds.length > 0 && this.comfyuiBaseUrl) {
+      this.startComfyJobPoller(dto.id, comfyPromptIds);
+    }
+
     await this.logActivity({
       projectId: project.id,
       projectSlug: project.slug,
       actor: 'claude',
       action: 'job.started',
-      summary: `Génération lancée : ${dto.title}`,
+      summary: `Génération lancée : ${dto.title}${stepTotal ? ` (0/${stepTotal})` : ''}`,
       entityType: 'job',
       entityId: dto.id,
     });
@@ -878,17 +1200,41 @@ export class StudioService {
     patch: {
       status?: JobStatus;
       progress?: number;
+      stepCurrent?: number | null;
+      stepTotal?: number | null;
+      message?: string;
+      comfyPromptIds?: string[];
+      etaSeconds?: number | null;
+      estimatedCompletionAt?: string | null;
       resultAssetId?: string | null;
       errorMessage?: string | null;
     },
   ): Promise<JobDto | null> {
     if (!UUID_REGEX.test(jobId)) return null;
 
+    const etaDate =
+      patch.etaSeconds !== undefined || patch.estimatedCompletionAt !== undefined
+        ? resolveEtaDate(patch.etaSeconds, patch.estimatedCompletionAt)
+        : undefined;
+
+    const computedProgress =
+      patch.progress !== undefined
+        ? Math.max(0, Math.min(100, patch.progress))
+        : patch.stepCurrent != null && patch.stepTotal != null && patch.stepTotal > 0
+          ? Math.max(0, Math.min(100, Math.round((patch.stepCurrent / patch.stepTotal) * 100)))
+          : undefined;
+
     const [updated] = await this.db
       .update(jobs)
       .set({
         ...(patch.status !== undefined ? { status: patch.status } : {}),
-        ...(patch.progress !== undefined ? { progress: Math.max(0, Math.min(100, patch.progress)) } : {}),
+        ...(computedProgress !== undefined ? { progress: computedProgress } : {}),
+        ...(patch.stepCurrent !== undefined ? { stepCurrent: patch.stepCurrent } : {}),
+        ...(patch.stepTotal !== undefined ? { stepTotal: patch.stepTotal } : {}),
+        ...(patch.message !== undefined ? { message: patch.message } : {}),
+        ...(patch.comfyPromptIds !== undefined ? { comfyPromptIds: patch.comfyPromptIds } : {}),
+        ...(patch.etaSeconds !== undefined ? { etaSeconds: patch.etaSeconds } : {}),
+        ...(etaDate !== undefined ? { estimatedCompletionAt: etaDate } : {}),
         ...(patch.resultAssetId !== undefined ? { resultAssetId: patch.resultAssetId } : {}),
         ...(patch.errorMessage !== undefined ? { errorMessage: patch.errorMessage } : {}),
         updatedAt: new Date(),
@@ -898,10 +1244,110 @@ export class StudioService {
 
     if (!updated) return null;
 
+    if (patch.status === 'completed' || patch.status === 'failed') {
+      this.stopComfyJobPoller(jobId);
+    }
+
     const project = await this.getProjectByIdOrSlug(updated.projectId);
     const dto = this.toJobDto(updated, project?.slug ?? 'unknown');
     this.realtime.broadcast({ type: 'job.updated', payload: dto });
     return dto;
+  }
+
+  private startComfyJobPoller(jobId: string, promptIds: string[]): void {
+    const baseUrl = this.comfyuiBaseUrl;
+    if (!baseUrl || promptIds.length === 0) return;
+
+    this.stopComfyJobPoller(jobId);
+    const startedAt = Date.now();
+    const maxDurationMs = 60 * 60 * 1000; // 1 hour safety cap
+
+    const timer = setInterval(async () => {
+      try {
+        if (Date.now() - startedAt > maxDurationMs) {
+          this.stopComfyJobPoller(jobId);
+          return;
+        }
+
+        let completedCount = 0;
+        let failedMessage: string | null = null;
+
+        for (const pid of promptIds) {
+          const res = await fetch(`${baseUrl}/history/${encodeURIComponent(pid)}`, {
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!res.ok) continue;
+          const json = (await res.json()) as Record<
+            string,
+            { status?: { status_str?: string; completed?: boolean; messages?: unknown[] } }
+          >;
+          const entry = json[pid];
+          if (!entry) continue;
+          const statusStr = entry.status?.status_str;
+          if (statusStr === 'error') {
+            failedMessage = `ComfyUI prompt ${pid} failed`;
+            break;
+          }
+          if (entry.status?.completed || statusStr === 'success') {
+            completedCount += 1;
+          }
+        }
+
+        if (failedMessage) {
+          this.stopComfyJobPoller(jobId);
+          await this.updateJob(jobId, {
+            status: 'failed',
+            stepCurrent: completedCount,
+            stepTotal: promptIds.length,
+            errorMessage: failedMessage,
+            message: failedMessage,
+            etaSeconds: 0,
+          });
+          return;
+        }
+
+        const progress = Math.round((completedCount / promptIds.length) * 100);
+        const elapsedSec = (Date.now() - startedAt) / 1000;
+        const remainingEta =
+          completedCount > 0 && completedCount < promptIds.length
+            ? Math.round((elapsedSec / completedCount) * (promptIds.length - completedCount))
+            : null;
+
+        if (completedCount >= promptIds.length) {
+          this.stopComfyJobPoller(jobId);
+          await this.updateJob(jobId, {
+            status: 'completed',
+            progress: 100,
+            stepCurrent: promptIds.length,
+            stepTotal: promptIds.length,
+            message: `ComfyUI terminé (${promptIds.length}/${promptIds.length})`,
+            etaSeconds: 0,
+          });
+        } else {
+          await this.updateJob(jobId, {
+            status: 'running',
+            progress: Math.max(5, progress),
+            stepCurrent: completedCount,
+            stepTotal: promptIds.length,
+            message: `ComfyUI ${completedCount}/${promptIds.length}`,
+            ...(remainingEta !== null ? { etaSeconds: remainingEta } : {}),
+          });
+        }
+      } catch {
+        // Transient network hiccup to ComfyUI — retry next tick
+      }
+    }, 4000);
+
+    timer.unref();
+    this.comfyPollers.set(jobId, timer);
+  }
+
+  private stopComfyJobPoller(jobId: string): void {
+    const existing = this.comfyPollers.get(jobId);
+    if (existing) {
+      clearInterval(existing);
+      this.comfyPollers.delete(jobId);
+    }
   }
 
   async listJobs(projectIdOrSlug?: string, limit = 30): Promise<JobDto[]> {
@@ -951,6 +1397,7 @@ export class StudioService {
 
       for (let i = 0; i < input.tasks.length; i += 1) {
         const item = input.tasks[i]!;
+        const etaDate = resolveEtaDate(item.etaSeconds, item.estimatedCompletionAt);
         await this.db.insert(agentTasks).values({
           projectId: project.id,
           externalKey: item.key ?? null,
@@ -960,6 +1407,8 @@ export class StudioService {
           progress: item.progress ?? null,
           groupName: item.groupName ?? '',
           assetRef: item.assetRef ?? null,
+          etaSeconds: item.etaSeconds ?? null,
+          estimatedCompletionAt: etaDate,
           sortOrder: item.sortOrder ?? i,
         });
       }
@@ -979,6 +1428,10 @@ export class StudioService {
 
       for (const item of input.tasks) {
         const match = item.key ? byKey.get(item.key) : undefined;
+        const etaDate =
+          item.etaSeconds !== undefined || item.estimatedCompletionAt !== undefined
+            ? resolveEtaDate(item.etaSeconds, item.estimatedCompletionAt)
+            : undefined;
         if (match) {
           await this.db
             .update(agentTasks)
@@ -989,6 +1442,8 @@ export class StudioService {
               progress: item.progress !== undefined ? item.progress : match.progress,
               groupName: item.groupName ?? match.groupName,
               assetRef: item.assetRef !== undefined ? item.assetRef : match.assetRef,
+              ...(item.etaSeconds !== undefined ? { etaSeconds: item.etaSeconds } : {}),
+              ...(etaDate !== undefined ? { estimatedCompletionAt: etaDate } : {}),
               sortOrder: item.sortOrder ?? match.sortOrder,
               updatedAt: new Date(),
             })
@@ -1004,6 +1459,8 @@ export class StudioService {
             progress: item.progress ?? null,
             groupName: item.groupName ?? '',
             assetRef: item.assetRef ?? null,
+            etaSeconds: item.etaSeconds ?? null,
+            estimatedCompletionAt: etaDate ?? null,
             sortOrder: item.sortOrder ?? maxOrder,
           });
         }
@@ -1048,6 +1505,11 @@ export class StudioService {
       ? and(eq(agentTasks.projectId, project.id), eq(agentTasks.id, taskIdOrKey))
       : and(eq(agentTasks.projectId, project.id), eq(agentTasks.externalKey, taskIdOrKey));
 
+    const etaDate =
+      patch.etaSeconds !== undefined || patch.estimatedCompletionAt !== undefined
+        ? resolveEtaDate(patch.etaSeconds, patch.estimatedCompletionAt)
+        : undefined;
+
     const [updated] = await this.db
       .update(agentTasks)
       .set({
@@ -1062,6 +1524,8 @@ export class StudioService {
           : {}),
         ...(patch.groupName !== undefined ? { groupName: patch.groupName } : {}),
         ...(patch.assetRef !== undefined ? { assetRef: patch.assetRef } : {}),
+        ...(patch.etaSeconds !== undefined ? { etaSeconds: patch.etaSeconds } : {}),
+        ...(etaDate !== undefined ? { estimatedCompletionAt: etaDate } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
         updatedAt: new Date(),
       })
@@ -1197,6 +1661,7 @@ export class StudioService {
       fps: row.fps,
       targetResolution: row.targetResolution,
       status: row.status as ProjectStatus,
+      localPath: row.localPath ?? '',
       assetCount,
       uri: buildStudioUri(row.slug, 'project'),
       createdAt: row.createdAt.toISOString(),
@@ -1219,6 +1684,7 @@ export class StudioService {
       qualityTier: row.qualityTier as QualityTier,
       rating: row.rating,
       parentAssetId: row.parentAssetId,
+      relationType: (row.relationType ?? 'revision') as AssetRelationType,
       versionNumber: row.versionNumber,
       originalFilename: row.originalFilename,
       mimeType: row.mimeType,
@@ -1234,6 +1700,9 @@ export class StudioService {
       comfyMetadata: row.comfyMetadata,
       tags: row.tags ?? [],
       notes: row.notes,
+      qcChecks: row.qcChecks ?? {},
+      qcStatus: (row.qcStatus ?? 'pending') as QcOverallStatus,
+      qcNotes: row.qcNotes ?? '',
       createdBy: row.createdBy as Actor,
       urls: {
         original: `/api/media/${row.id}/original`,
@@ -1254,6 +1723,14 @@ export class StudioService {
       title: row.title,
       status: row.status as JobStatus,
       progress: row.progress,
+      stepCurrent: row.stepCurrent ?? null,
+      stepTotal: row.stepTotal ?? null,
+      message: row.message ?? '',
+      comfyPromptIds: row.comfyPromptIds ?? [],
+      etaSeconds: row.etaSeconds ?? null,
+      estimatedCompletionAt: row.estimatedCompletionAt
+        ? row.estimatedCompletionAt.toISOString()
+        : null,
       resultAssetId: row.resultAssetId,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt.toISOString(),
@@ -1272,9 +1749,37 @@ export class StudioService {
       progress: row.progress,
       groupName: row.groupName,
       assetRef: row.assetRef,
+      etaSeconds: row.etaSeconds ?? null,
+      estimatedCompletionAt: row.estimatedCompletionAt
+        ? row.estimatedCompletionAt.toISOString()
+        : null,
       sortOrder: row.sortOrder,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
   }
+}
+
+function resolveEtaDate(
+  etaSeconds?: number | null,
+  estimatedCompletionAt?: string | null,
+): Date | null {
+  if (estimatedCompletionAt) {
+    const parsed = new Date(estimatedCompletionAt);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  if (typeof etaSeconds === 'number' && Number.isFinite(etaSeconds)) {
+    if (etaSeconds <= 0) return new Date();
+    return new Date(Date.now() + etaSeconds * 1000);
+  }
+  return null;
+}
+
+function computeQcStatus(checks: Record<string, QcCheckValue>): QcOverallStatus {
+  const values = Object.values(checks);
+  if (values.length === 0) return 'pending';
+  if (values.includes('fail')) return 'fail';
+  if (values.includes('warn')) return 'warn';
+  if (values.includes('ok')) return 'pass';
+  return 'pending';
 }

@@ -74,6 +74,7 @@ export class RealtimeHub {
       case 'tasks.changed':
       case 'annotation.changed':
       case 'stage3.changed':
+      case 'timeline.changed':
       case 'folders.changed':
         return event.payload.projectId;
       case 'activity.logged':

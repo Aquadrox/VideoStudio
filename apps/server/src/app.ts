@@ -13,12 +13,14 @@ import { registerMediaRoutes } from './routes/media.routes.js';
 import { registerProjectRoutes } from './routes/projects.routes.js';
 import { registerStage2Routes } from './routes/stage2.routes.js';
 import { registerStage3Routes } from './routes/stage3.routes.js';
+import { registerStage4Routes } from './routes/stage4.routes.js';
 import { MediaService } from './services/media.service.js';
 import { ProjectGitService } from './services/project-git.service.js';
 import { RealtimeHub } from './services/realtime.service.js';
 import { SkillsSyncService } from './services/skills-sync.service.js';
 import { Stage2Service } from './services/stage2.service.js';
 import { Stage3Service } from './services/stage3.service.js';
+import { Stage4Service } from './services/stage4.service.js';
 import { StudioService } from './services/studio.service.js';
 
 export interface BuildAppDeps {
@@ -32,6 +34,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
   studio: StudioService;
   stage2: Stage2Service;
   stage3: Stage3Service;
+  stage4: Stage4Service;
   realtime: RealtimeHub;
 }> {
   const app = Fastify({
@@ -39,6 +42,25 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
       level: deps.config.nodeEnv === 'test' ? 'silent' : 'info',
     },
     bodyLimit: Math.min(deps.config.maxUploadBytes, 100 * 1024 * 1024), // JSON limit up to 100MB for base64 MCP ingest
+  });
+
+  // Track active non-health HTTP & hijacked MCP requests so Blue/Green updates drain safely
+  let inFlightRequests = 0;
+  app.addHook('onRequest', async (request, reply) => {
+    const urlPath = request.url.split('?')[0] ?? '';
+    if (urlPath === '/api/health' || urlPath === '/ws') {
+      return;
+    }
+    inFlightRequests += 1;
+    let decremented = false;
+    const done = () => {
+      if (!decremented) {
+        decremented = true;
+        inFlightRequests = Math.max(0, inFlightRequests - 1);
+      }
+    };
+    reply.raw.once('finish', done);
+    reply.raw.once('close', done);
   });
 
   await app.register(cors, {
@@ -59,11 +81,12 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
   await media.ensureStorageRoot();
 
   const realtime = new RealtimeHub();
-  const studio = new StudioService(deps.db, media, realtime);
+  const studio = new StudioService(deps.db, media, realtime, deps.config.comfyuiBaseUrl);
   const skillsSync = new SkillsSyncService(deps.config);
   const stage2 = new Stage2Service(deps.db, studio, realtime, skillsSync);
   const projectGit = new ProjectGitService(deps.config);
   const stage3 = new Stage3Service(deps.config, deps.db, studio, stage2, media, projectGit, realtime);
+  const stage4 = new Stage4Service(deps.config, deps.db, studio, stage3, media, realtime);
 
   // Realtime WebSocket endpoint
   app.get<{ Querystring: { projectId?: string } }>(
@@ -80,15 +103,21 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
     },
   );
 
-  // REST + Media + Stage 2 + Stage 3 + MCP Routes
-  registerHealthRoutes(app, { pool: deps.pool, media, realtime });
+  // REST + Media + Stage 2 + Stage 3 + Stage 4 + MCP Routes
+  registerHealthRoutes(app, {
+    pool: deps.pool,
+    media,
+    realtime,
+    getInFlightRequests: () => inFlightRequests,
+  });
   registerProjectRoutes(app, studio);
   registerAssetRoutes(app, studio, media);
   registerMediaRoutes(app, studio, media);
   registerActivityAndRefRoutes(app, studio);
   registerStage2Routes(app, stage2);
   registerStage3Routes(app, stage3);
-  registerMcpRoutes(app, { config: deps.config, studio, media, stage2, stage3 });
+  registerStage4Routes(app, stage4);
+  registerMcpRoutes(app, { config: deps.config, studio, media, stage2, stage3, stage4 });
 
-  return { app, studio, stage2, stage3, realtime };
+  return { app, studio, stage2, stage3, stage4, realtime };
 }

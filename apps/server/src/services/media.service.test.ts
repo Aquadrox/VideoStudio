@@ -28,9 +28,11 @@ describe('MediaService storage modes (reference, hardlink, copy)', () => {
       corsOrigin: '*',
       dataDir,
       ingestAllowedDir: ingestDir,
+      ingestExtraDirs: [],
       skillsSyncDir: path.join(tmpRoot, 'skills'),
       maxUploadBytes: 50 * 1024 * 1024,
       allowedFetchHosts: [],
+      comfyuiBaseUrl: null,
     };
     media = new MediaService(config);
   });

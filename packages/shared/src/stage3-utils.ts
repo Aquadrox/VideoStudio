@@ -52,36 +52,104 @@ export function computeLineDiff(oldText: string, newText: string): DiffLine[] {
   return out;
 }
 
+export interface TimedLyricWord {
+  timeSec: number;
+  word: string;
+}
+
 export interface TimedLyricLine {
   timeSec: number;
   text: string;
+  words?: TimedLyricWord[];
+}
+
+function parseTimestampParts(minsStr: string, secsStr: string, fracRaw = '0'): number {
+  const mins = Number(minsStr);
+  const secs = Number(secsStr);
+  const millis = Number(fracRaw.padEnd(3, '0').slice(0, 3));
+  return Math.round((mins * 60 + secs + millis / 1000) * 1000) / 1000;
 }
 
 /**
- * Parses LRC timed lyrics (e.g. "[00:12.50] Neon rain falls down").
+ * Parses standard LRC (`[00:12.50] Neon rain`) AND Enhanced word-level LRC
+ * (`[00:12.50] <00:12.50>Neon <00:12.90>rain <00:13.30>falls`).
  */
 export function parseLrc(lrcText: string): TimedLyricLine[] {
   const lines = lrcText.split(/\r?\n/);
   const result: TimedLyricLine[] = [];
   const tagRegex = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+  const wordTagRegex = /<(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?>\s*([^<\r\n]+)/g;
 
   for (const line of lines) {
     const matches = Array.from(line.matchAll(tagRegex));
     if (matches.length === 0) continue;
-    const text = line.replace(tagRegex, '').trim();
-    if (!text) continue;
+    const rawBody = line.replace(tagRegex, '').trim();
+    if (!rawBody) continue;
+
+    const wordMatches = Array.from(rawBody.matchAll(wordTagRegex));
+    let words: TimedLyricWord[] | undefined;
+    let cleanText = rawBody;
+    if (wordMatches.length > 0) {
+      words = wordMatches
+        .map((wm) => ({
+          timeSec: parseTimestampParts(wm[1]!, wm[2]!, wm[3]),
+          word: (wm[4] ?? '').trim(),
+        }))
+        .filter((w) => w.word.length > 0);
+      cleanText = words.map((w) => w.word).join(' ').trim();
+    }
+    if (!cleanText) continue;
 
     for (const m of matches) {
-      const mins = Number(m[1]);
-      const secs = Number(m[2]);
-      const fracRaw = m[3] ?? '0';
-      const millis = Number(fracRaw.padEnd(3, '0').slice(0, 3));
-      const timeSec = Math.round((mins * 60 + secs + millis / 1000) * 1000) / 1000;
-      result.push({ timeSec, text });
+      const timeSec = parseTimestampParts(m[1]!, m[2]!, m[3]);
+      result.push(words ? { timeSec, text: cleanText, words } : { timeSec, text: cleanText });
     }
   }
 
   return result.sort((a, b) => a.timeSec - b.timeSec);
+}
+
+export interface SunoAlignedWord {
+  word: string;
+  start_s: number;
+  end_s?: number;
+}
+
+function formatLrcStamp(seconds: number): string {
+  const totalCs = Math.max(0, Math.round(seconds * 100));
+  const mins = Math.floor(totalCs / 6000);
+  const secs = Math.floor((totalCs % 6000) / 100);
+  const cs = totalCs % 100;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+}
+
+/**
+ * Converts a Suno word-level alignment array (`[{ word, start_s, end_s }]`) into Enhanced LRC (`[mm:ss.xx] <mm:ss.xx>word ...`).
+ */
+export function sunoAlignmentToEnhancedLrc(alignedWords: SunoAlignedWord[]): string {
+  if (alignedWords.length === 0) return '';
+  const lines: SunoAlignedWord[][] = [[]];
+
+  for (const entry of alignedWords) {
+    const rawWord = entry.word ?? '';
+    const hasNewline = rawWord.includes('\n');
+    const clean = rawWord.replace(/\r?\n/g, ' ').trim();
+    if (clean) {
+      lines[lines.length - 1]!.push({ ...entry, word: clean });
+    }
+    if (hasNewline && lines[lines.length - 1]!.length > 0) {
+      lines.push([]);
+    }
+  }
+
+  return lines
+    .filter((group) => group.length > 0)
+    .map((group) => {
+      const lineStart = formatLrcStamp(group[0]!.start_s);
+      const body = group.map((w) => `<${formatLrcStamp(w.start_s)}>${w.word}`).join(' ');
+      return `[${lineStart}] ${body}`;
+    })
+    .join('\n');
 }
 
 export function formatSrtTimestamp(seconds: number): string {
@@ -94,7 +162,7 @@ export function formatSrtTimestamp(seconds: number): string {
 }
 
 /**
- * Converts timed LRC lyrics into standard SRT subtitles.
+ * Converts timed LRC (standard or enhanced word-level) lyrics into standard SRT subtitles.
  */
 export function lrcToSrt(lrcText: string, defaultLineDurationSec = 3.5): string {
   const timed = parseLrc(lrcText);

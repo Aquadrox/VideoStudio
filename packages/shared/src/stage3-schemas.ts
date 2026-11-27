@@ -92,11 +92,13 @@ export type CreateSceneInput = z.infer<typeof CreateSceneInputSchema>;
 
 export const CreateShotInputSchema = z.object({
   sceneId: z.string().uuid(),
+  externalId: z.string().trim().min(1).max(64).nullable().optional(),
   title: z.string().trim().min(1).max(160),
   visualDescription: z.string().max(4000).default(''),
   cameraMovement: z.string().max(200).default(''),
   dialogue: z.string().max(4000).default(''),
   prompt: z.string().max(8000).default(''),
+  startSec: z.number().min(0).nullable().optional(),
   durationSec: z.number().min(0.5).max(300).default(4),
   status: ShotStatusSchema.default('planned'),
   keyframeAssetId: z.string().uuid().nullable().optional(),
@@ -115,6 +117,7 @@ export const ShotDtoSchema = z.object({
   id: z.string().uuid(),
   sceneId: z.string().uuid(),
   projectId: z.string().uuid(),
+  externalId: z.string().nullable(),
   shotCode: z.string(),
   handle: z.string(),
   title: z.string(),
@@ -122,6 +125,7 @@ export const ShotDtoSchema = z.object({
   cameraMovement: z.string(),
   dialogue: z.string(),
   prompt: z.string(),
+  startSec: z.number(),
   durationSec: z.number(),
   status: ShotStatusSchema,
   keyframeAssetId: z.string().uuid().nullable(),
@@ -146,6 +150,37 @@ export const SceneDtoSchema = z.object({
   updatedAt: z.string(),
 });
 export type SceneDto = z.infer<typeof SceneDtoSchema>;
+
+export const UpsertStoryboardShotInputSchema = z.object({
+  externalId: z.string().trim().min(1).max(64),
+  title: z.string().trim().min(1).max(160),
+  visualDescription: z.string().max(4000).default(''),
+  cameraMovement: z.string().max(200).default(''),
+  dialogue: z.string().max(4000).default(''),
+  prompt: z.string().max(8000).default(''),
+  startSec: z.number().min(0).nullable().optional(),
+  durationSec: z.number().min(0.1).max(300).default(4),
+  status: ShotStatusSchema.default('planned'),
+  keyframeRef: z.string().trim().max(120).nullable().optional(),
+  videoRef: z.string().trim().max(120).nullable().optional(),
+  bibleEntityRefs: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+});
+export type UpsertStoryboardShotInput = z.infer<typeof UpsertStoryboardShotInputSchema>;
+
+export const UpsertStoryboardSceneInputSchema = z.object({
+  sceneNumber: z.number().int().min(1).max(999).optional(),
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().max(4000).default(''),
+  locationRef: z.string().max(120).default(''),
+  shots: z.array(UpsertStoryboardShotInputSchema).max(300).default([]),
+});
+export type UpsertStoryboardSceneInput = z.infer<typeof UpsertStoryboardSceneInputSchema>;
+
+export const UpsertStoryboardInputSchema = z.object({
+  scenes: z.array(UpsertStoryboardSceneInputSchema).max(100),
+  pruneMissing: z.boolean().default(false),
+});
+export type UpsertStoryboardInput = z.infer<typeof UpsertStoryboardInputSchema>;
 
 // ============================================================================
 // 2. Audio, Music, Lyrics & Lip-Sync Studio

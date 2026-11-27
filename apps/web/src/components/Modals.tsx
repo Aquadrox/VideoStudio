@@ -16,6 +16,7 @@ export function CreateProjectModal({ onClose, onCreate }: CreateProjectModalProp
   const [aspectRatio, setAspectRatio] = useState('16:9');
   const [fps, setFps] = useState(24);
   const [targetResolution, setTargetResolution] = useState('1920x1080');
+  const [localPath, setLocalPath] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +33,7 @@ export function CreateProjectModal({ onClose, onCreate }: CreateProjectModalProp
         aspectRatio,
         fps,
         targetResolution,
+        localPath: localPath.trim(),
       });
       onClose();
     } catch (err) {
@@ -137,6 +139,17 @@ export function CreateProjectModal({ onClose, onCreate }: CreateProjectModalProp
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="Contexte, direction artistique, objectif YouTube..."
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="proj-local-path">Dossier local de travail (optionnel, pour Claude MCP)</label>
+              <input
+                id="proj-local-path"
+                className="input"
+                value={localPath}
+                onChange={(e) => setLocalPath(e.target.value)}
+                placeholder="/mnt/projects/mon-film"
               />
             </div>
 
