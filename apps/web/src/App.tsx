@@ -1185,7 +1185,7 @@ export function App() {
                 </div>
                 <div>
                   <div className="brand-title">VideoStudio</div>
-                  <div className="brand-sub">v0.5.3 · MCP · LAN</div>
+                  <div className="brand-sub">v0.5.4 · MCP · LAN</div>
                 </div>
               </div>
 

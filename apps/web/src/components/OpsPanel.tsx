@@ -340,7 +340,7 @@ export function OpsPanel({
       <div className="stage-header-bar">
         <div>
           <h2 className="stage-title" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <Server size={18} color="var(--accent-amber)" /> Exploitation & Maintenance (v0.5.3)
+            <Server size={18} color="var(--accent-amber)" /> Exploitation & Maintenance (v0.5.4)
           </h2>
           <p className="stage-subtitle">
             Monitoring serveur, espace disque & nettoyage sélectif, sauvegardes, watch folders ComfyUI et webhooks sortants.
@@ -363,7 +363,7 @@ export function OpsPanel({
             <Activity size={13} /> Instance & Slot Blue/Green
           </div>
           <div className="ops-metric-value">
-            v{metrics?.version ?? '0.5.3'}{' '}
+            v{metrics?.version ?? '0.5.4'}{' '}
             <span className={`pill ${metrics?.slot === 'green' ? 'status-approved' : 'tier-hq_upscale'}`}>
               {metrics?.slot ?? 'standalone'}
             </span>

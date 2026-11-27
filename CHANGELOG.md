@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-27
+
+### Added
+- **Suppression d'assets via MCP (`delete_asset`, `delete_assets_batch`)** :
+  - Ajout de `delete_asset(ref, project?, force?)` et `delete_assets_batch(refs[], project?, force?)` dans `mcp-server.ts` pour supprimer un ou plusieurs médias par `@ref`, `studio://` URI ou UUID (avec suppression DB + fichiers gérés dans `DATA_DIR`, sans jamais toucher les fichiers sources externes `ingest://` / `ingest-root://`).
+  - Garde-fou de sécurité : les médias `approved`, `winner` ou `final_master` sont protégés par défaut et exigent explicitement `force: true`.
+  - Diffusion temps réel `folders.changed` en complément de `asset.deleted` lorsque l'asset supprimé se trouvait dans un sous-dossier.
+
 ## [0.5.3] - 2026-11-27
 
 ### Added
