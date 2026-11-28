@@ -12,3 +12,6 @@ export * from './task-utils.js';
 export * from './sketch-schemas.js';
 export * from './sketch-utils.js';
 export * from './text-document-utils.js';
+export * from './subtitle-utils.js';
+export * from './timeline-v2-utils.js';
+export * from './dossier-utils.js';

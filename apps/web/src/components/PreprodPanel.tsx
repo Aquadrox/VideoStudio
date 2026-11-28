@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   PenTool,
   Plus,
+  Printer,
   Save,
   Trash2,
   Users,
@@ -26,6 +27,7 @@ import {
 } from '@videostudio/shared';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/format';
+import { ProductionDossierModal } from './ProductionDossierModal';
 
 interface PreprodPanelProps {
   project: ProjectDto | null;
@@ -66,6 +68,7 @@ export function PreprodPanel({
   onNotify,
 }: PreprodPanelProps) {
   const [subTab, setSubTab] = useState<'script' | 'bible' | 'storyboard'>(initialSubTab ?? 'script');
+  const [showDossierModal, setShowDossierModal] = useState(false);
 
   // Script state
   const [script, setScript] = useState<ProjectScriptDto | null>(null);
@@ -212,32 +215,51 @@ export function PreprodPanel({
 
   return (
     <div className="panel-workspace">
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className={`chip ${subTab === 'script' ? 'active' : ''}`}
+            onClick={() => setSubTab('script')}
+          >
+            <FileText size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
+            Scénario {script ? `(v${script.version})` : ''}
+          </button>
+          <button
+            type="button"
+            className={`chip ${subTab === 'bible' ? 'active' : ''}`}
+            onClick={() => setSubTab('bible')}
+          >
+            <Users size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
+            Bible continuité ({entities.length})
+          </button>
+          <button
+            type="button"
+            className={`chip ${subTab === 'storyboard' ? 'active' : ''}`}
+            onClick={() => setSubTab('storyboard')}
+          >
+            <Film size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
+            Storyboard ({scenes.length} scènes)
+          </button>
+        </div>
+
         <button
           type="button"
-          className={`chip ${subTab === 'script' ? 'active' : ''}`}
-          onClick={() => setSubTab('script')}
+          className="btn btn-secondary btn-sm"
+          onClick={() => setShowDossierModal(true)}
+          title="Exporter un Dossier de Production ou Pitch Deck imprimable en PDF / HTML / Markdown"
         >
-          <FileText size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-          Scénario {script ? `(v${script.version})` : ''}
-        </button>
-        <button
-          type="button"
-          className={`chip ${subTab === 'bible' ? 'active' : ''}`}
-          onClick={() => setSubTab('bible')}
-        >
-          <Users size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-          Bible continuité ({entities.length})
-        </button>
-        <button
-          type="button"
-          className={`chip ${subTab === 'storyboard' ? 'active' : ''}`}
-          onClick={() => setSubTab('storyboard')}
-        >
-          <Film size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-          Storyboard ({scenes.length} scènes)
+          <Printer size={13} /> Dossier PDF / Pitch Deck
         </button>
       </div>
+
+      {showDossierModal && (
+        <ProductionDossierModal
+          project={project}
+          onClose={() => setShowDossierModal(false)}
+          onNotify={onNotify}
+        />
+      )}
 
       {/* Sub-tab 1: Versioned Script + Diff */}
       {subTab === 'script' && (

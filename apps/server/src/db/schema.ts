@@ -693,3 +693,34 @@ export const sketches = pgTable(
   ],
 );
 
+// --- Stage 7 (v0.9.0): Synchronized Subtitles (SRT / VTT / Burn-in) ---
+
+export const projectSubtitles = pgTable('project_subtitles', {
+  projectId: uuid('project_id')
+    .primaryKey()
+    .references(() => projects.id, { onDelete: 'cascade' }),
+  language: text('language').notNull().default('fr'),
+  cues: jsonb('cues')
+    .$type<Array<{ id: string; startSec: number; endSec: number; text: string; speaker: string }>>()
+    .notNull()
+    .default([]),
+  style: jsonb('style')
+    .$type<{
+      fontSize: number;
+      position: 'bottom' | 'middle' | 'top';
+      color: string;
+      outlineColor: string;
+      backgroundOpacity: number;
+    }>()
+    .notNull()
+    .default({
+      fontSize: 24,
+      position: 'bottom',
+      color: '#FFFFFF',
+      outlineColor: '#000000',
+      backgroundOpacity: 0.55,
+    }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+

@@ -15,6 +15,7 @@ import {
   Link2,
   PenTool,
   Plus,
+  Printer,
   Send,
   Unlink2,
 } from 'lucide-react';
@@ -27,6 +28,7 @@ import {
 } from '@videostudio/shared';
 import { api } from '../api/client';
 import { renderSketchStoryboardSheetPng } from '../utils/sketch-renderer';
+import { ProductionDossierModal } from './ProductionDossierModal';
 
 type BoardLayout = 'grid-2' | 'grid-3' | 'grid-4' | 'strip';
 
@@ -63,6 +65,7 @@ export function SketchStoryboardView({
   const [exportingSheet, setExportingSheet] = useState(false);
   const [linkingSketchId, setLinkingSketchId] = useState<string | null>(null);
   const [captionDrafts, setCaptionDrafts] = useState<Record<string, string>>({});
+  const [showDossierModal, setShowDossierModal] = useState(false);
   const [durationDrafts, setDurationDrafts] = useState<Record<string, string>>({});
 
   const boardSketches = useMemo(() => sortSketchesForBoard(sketches), [sketches]);
@@ -352,6 +355,15 @@ export function SketchStoryboardView({
           <button
             type="button"
             className="btn btn-xs btn-ghost"
+            onClick={() => setShowDossierModal(true)}
+            title="Exporter le Dossier de Production / Pitch Deck en PDF"
+          >
+            <Printer size={13} /> Dossier PDF
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-xs btn-ghost"
             onClick={onOpenPreprodStoryboard}
             title="Voir le Storyboard complet dans Pré-prod"
           >
@@ -359,6 +371,15 @@ export function SketchStoryboardView({
           </button>
         </div>
       </div>
+
+      {showDossierModal && (
+        <ProductionDossierModal
+          project={project}
+          onClose={() => setShowDossierModal(false)}
+          onNotify={onNotify}
+          onAssetSaved={onExportedSheetToMedia}
+        />
+      )}
 
       {/* Main Side-by-Side Storyboard Canvas */}
       <div className="sketch-board-scroll">

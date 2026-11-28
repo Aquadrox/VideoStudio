@@ -1,6 +1,6 @@
 # VideoStudio — Studio Vidéo Assisté par IA & Claude Code
 
-[![Version](https://img.shields.io/badge/version-0.8.2-e5a038?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-0.9.0-e5a038?style=flat-square)](#)
 [![Stack](https://img.shields.io/badge/stack-React%20%7C%20Fastify%20%7C%20PostgreSQL%20%7C%20MCP-1e293b?style=flat-square)](#architecture)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Blue%2FGreen-10b981?style=flat-square)](#mises-à-jour-sans-interruption-bluegreen)
 
@@ -43,10 +43,10 @@
 | --- | --- |
 | **Médias & DAM** | Arborescence de dossiers & sous-dossiers, **glisser-déposer simple ou multi-sélection** (`Ctrl/Cmd+Clic`, `Shift+Clic`), vues **Grille / Grandes miniatures / Liste / Détails**, filtre **Récents**, extraction automatique des métadonnées **ComfyUI** (prompts, seed, CFG, LoRAs, workflow JSON), références `@ref` & `studio://`, lignage de versions (`v1 → v2`), panneaux latéraux redimensionnables & masquables. |
 | **Croquis & Plans de Scène** | **Plan de scène (Blocking vue du dessus)** : caméras avec cône FOV par focale (`24–135mm`), personnages liés à la Bible, lumières (`Key/Fill/Rim/Practical`), décors, trajectoires & ligne des 180°, **Brief IA auto-généré**. **Mode Croquis / Feuille blanche** : dessin main levée, guides cinéma, underlay image, ouverture **plein cadre**, zoom fluide (`35%–300%` + `Ctrl+Molette`) et mode **Plein écran (`F`)**. |
-| **Storyboard Croquis & Pré-prod** | Planche côte à côte (`2/3/4 colonnes` ou bande horizontale), réordonnancement Drag & Drop, export planche PNG, **liaison bidirectionnelle** avec le **Storyboard Pré-prod** (Scénario versionné, Bible de continuité, Découpage technique & composition de prompts). |
+| **Storyboard Croquis & Pré-prod** | Planche côte à côte (`2/3/4 colonnes` ou bande horizontale), réordonnancement Drag & Drop, export planche PNG, **liaison bidirectionnelle** avec le **Storyboard Pré-prod** (Scénario, Bible, Découpage technique) et **Export Dossier de Production PDF / Pitch Deck** en 1 clic. |
 | **Éditeur texte enrichi** | Lecture et édition in-app de `.md`, `.txt`, `.log`, `.json`, `.yaml`, `.srt`, `.lrc`, `.fountain`, etc. Mode **Split** (Markdown + aperçu enrichi), colorisation de logs par niveau (`ERROR`/`WARN`/`INFO`), formatage JSON, `Ctrl+F` Rechercher/Remplacer et versionnage `v1 → v2`. |
-| **Timeline NLE & Audio** | Montage multi-pistes (Vidéo, Audio, Voix, Musique, Sous-titres), bascule **Draft ↔ HQ Upscale** en 1 clic, rendu FFmpeg, exports **OTIO / FCPXML / EDL**, gestionnaire audio **Suno & paroles LRC** avec détection automatique des temps forts. |
-| **Collaboration Claude Code (MCP)** | **77 outils MCP** (`Streamable HTTP`), suivi en direct des tâches & **ETA temps réel** par WebSocket, file d'attente de retours horodatés sur frames vidéo, règles de studio hiérarchiques, bibliothèque de prompts/workflows & synchronisation `SKILL.md`. |
+| **Timeline NLE v2 & Sous-titres** | Montage multi-pistes avec **Drag & Trim direct**, aimantation **Snap**, **waveforms audio**, marqueurs **BPM & paroles Suno/LRC**, aperçu live des transitions (`Crossfade` / `Fondu au noir`), **piste Sous-titres SRT/VTT** avec incrustation live + **Burn-in FFmpeg**, bascule **Draft ↔ HQ** et exports **OTIO / FCPXML / EDL**. |
+| **Collaboration Claude Code (MCP)** | **81 outils MCP** (`Streamable HTTP`), suivi en direct des tâches & **ETA temps réel** par WebSocket, file d'attente de retours horodatés sur frames vidéo, règles de studio hiérarchiques, bibliothèque de prompts/workflows & synchronisation `SKILL.md`. |
 | **Publication & Exploitation** | Préparation **YouTube Ready Pack** (miniatures, chapitres, titres, description) + upload brouillon OAuth2 optionnel, **Watch Folders ComfyUI**, webhooks HMAC, monitoring disque/nettoyage, backups automatiques & déploiement **Blue/Green zéro coupure**. |
 
 ---
@@ -261,16 +261,16 @@ L'onglet **Pré-prod** regroupe toute la préparation créative du film :
 
 ## 🤖 Catalogue des outils MCP (Claude Code)
 
-VideoStudio expose **77 outils MCP** et des ressources `studio://` en `Streamable HTTP` sur `/mcp` :
+VideoStudio expose **81 outils MCP** et des ressources `studio://` en `Streamable HTTP` sur `/mcp` :
 
 | Domaine | Exemples d'outils MCP |
 | --- | --- |
 | **Projets & Activité** | `list_projects`, `create_project`, `update_project`, `get_project_overview`, `log_activity`, `start_job`, `update_job`, `sync_agent_tasks`, `update_agent_task` |
 | **Médias, Dossiers & QC** | `register_asset`, `ingest_folder`, `list_assets`, `get_asset`, `update_asset`, `delete_asset`, `delete_assets_batch`, `list_media_folders`, `create_media_folder`, `resolve_reference`, `record_qc`, `get_frame`, `contact_sheet` |
 | **Croquis & Plans de Scène** | `list_sketches`, `get_sketch`, `save_sketch`, `get_sketch_storyboard` |
-| **Documents Texte** | `read_text_asset`, `save_text_asset` |
+| **Documents & Dossiers PDF** | `read_text_asset`, `save_text_asset`, `export_production_dossier` |
 | **Pré-prod & Audio** | `get_script`, `update_script`, `upsert_bible_entity`, `get_storyboard`, `upsert_storyboard`, `create_scene`, `create_shot`, `update_shot`, `compose_prompt`, `upsert_audio_track`, `import_suno_alignment` |
-| **Timeline & Exports** | `get_timeline`, `save_timeline`, `build_animatic_from_storyboard`, `switch_timeline_quality`, `render_timeline`, `export_nle` |
+| **Timeline, Sous-titres & Exports** | `get_timeline`, `save_timeline`, `build_animatic_from_storyboard`, `switch_timeline_quality`, `render_timeline` *(avec `burnSubtitles`)*, `export_nle`, `get_subtitles`, `save_subtitles`, `export_subtitles_srt` |
 | **Règles, Prompts & Skills** | `get_active_rules`, `list_rulebooks`, `set_project_rule_override`, `add_project_custom_rule`, `list_prompt_templates`, `render_prompt_with_rules`, `list_comfy_workflows`, `list_skills`, `read_skill`, `save_skill` |
 | **Retours, Git, YouTube & Ops** | `get_pending_feedback`, `resolve_feedback`, `update_youtube_package`, `prepare_youtube_pack`, `upload_youtube_draft`, `init_project_git_repo`, `sync_and_commit_project_repo`, `get_system_health_and_disk`, `create_backup`, `list_watch_folders`, `create_watch_folder`, `list_webhooks` |
 

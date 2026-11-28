@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
+### Added
+- **Dossier de Production & Export PDF / Pitch Deck (`ProductionDossierModal`, `DossierService`, `dossier-utils.ts`, `dossier.routes.ts`)** :
+  - Génération en 1 clic d'un **Dossier de Production A4 (Portrait)** ou d'un **Pitch Deck (A4 Paysage)** combinant couverture cinéma, **Bible de continuité**, **Scénario**, **Planche Storyboard Croquis**, **Découpage technique Pré-prod**, **Briefs IA** et **Prompts/LoRAs**.
+  - Aperçu en direct dans la modale accessible depuis **Pré-prod** et **Storyboard Croquis**, impression/export **PDF** natif, téléchargement **`.html` autonome** (images embarquées) ou **`.md`**, et archivage direct dans Médias `/exports`.
+  - Outil MCP **`export_production_dossier`** pour Claude Code.
+- **Timeline NLE v2 — Édition directe, Waveforms, Beats Suno/LRC & Aperçu Transitions (`TimelinePanel`, `TimelineWaveform`, `timeline-v2-utils.ts`)** :
+  - **Glisser-déposer direct** des clips sur la timeline et **redimensionnement (Trim In/Out)** par poignées gauche/droite avec sauvegarde automatique au relâchement.
+  - **Aimantation (Snap)** intelligente sur les bords de clips, la tête de lecture et les marqueurs rythmiques (`Alt` pour désactiver ponctuellement) + guide vertical doré + scrubbing direct sur la règle temporelle.
+  - **Formes d'onde audio (Waveforms)** rendues directement dans les blocs audio (`Web Audio API` + cache) et **marqueurs BPM / Paroles Suno LRC** sur la règle et les pistes.
+  - **Aperçu temps réel des transitions** (`Crossfade` et `Fondu au noir`) dans le moniteur vidéo avec durée réglable.
+- **Sous-titres synchronisés (SRT / VTT / LRC) & Incrustation FFmpeg Burn-in (`SubtitleEditorPanel`, `subtitle-utils.ts`, `Stage4Service`, table additive `project_subtitles`)** :
+  - Piste dédiée **`S1 · Sous-titres`** dans la timeline (blocs déplaçables et rognables) + **incrustation cinéma en direct** sur le moniteur vidéo avec style personnalisable (position, taille, couleur, opacité de fond).
+  - Éditeur complet synchronisé au curseur (`+ Au curseur`, boutons `In`/`Out`, import depuis **Storyboard**, **Suno/LRC**, ou collage `.srt`/`.vtt`/`.lrc`, export `.srt`/`.vtt` et sauvegarde dans Médias `/subtitles`).
+  - Option **`Burn-in ST`** lors du **Rendu MP4 FFmpeg** serveur (`burnSubtitles: true`) pour incruster directement les sous-titres dans la vidéo rendue.
+  - Outils MCP **`get_subtitles`**, **`save_subtitles`**, **`export_subtitles_srt`** et paramètre `burnSubtitles` sur **`render_timeline`**.
+
 ## [0.8.2] - 2026-11-28
 
 ### Added

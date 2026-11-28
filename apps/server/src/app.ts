@@ -7,6 +7,7 @@ import type { AppConfig } from './config.js';
 import type { Database } from './db/index.js';
 import { registerActivityAndRefRoutes } from './routes/activity.routes.js';
 import { registerAssetRoutes } from './routes/assets.routes.js';
+import { registerDossierRoutes } from './routes/dossier.routes.js';
 import { registerHealthRoutes } from './routes/health.routes.js';
 import { registerMcpRoutes } from './routes/mcp.routes.js';
 import { registerMediaRoutes } from './routes/media.routes.js';
@@ -16,6 +17,7 @@ import { registerStage2Routes } from './routes/stage2.routes.js';
 import { registerStage3Routes } from './routes/stage3.routes.js';
 import { registerStage4Routes } from './routes/stage4.routes.js';
 import { registerStage5Routes } from './routes/stage5.routes.js';
+import { DossierService } from './services/dossier.service.js';
 import { MediaService } from './services/media.service.js';
 import { OpsService } from './services/ops.service.js';
 import { ProjectGitService } from './services/project-git.service.js';
@@ -104,6 +106,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
   const stage3 = new Stage3Service(deps.config, deps.db, studio, stage2, media, projectGit, realtime);
   const stage4 = new Stage4Service(deps.config, deps.db, studio, stage3, media, realtime);
   stage4.setWebhookService(webhooks);
+  const dossier = new DossierService(studio, stage3, sketches, media);
   const watchFolders = new WatchFolderService(deps.db, studio, media, realtime);
   const ops = new OpsService(deps.config, deps.db, deps.pool, studio, media, realtime, webhooks);
   const youtubeUpload = new YouTubeUploadService(deps.config, studio, stage3, media);
@@ -130,7 +133,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
     },
   );
 
-  // REST + Media + Stage 2 + Stage 3 + Stage 4 + Stage 5 + Sketches + MCP Routes
+  // REST + Media + Stage 2 + Stage 3 + Stage 4 + Stage 5 + Sketches + Dossier + MCP Routes
   const getInFlightRequests = () => inFlightRequests;
   registerHealthRoutes(app, {
     pool: deps.pool,
@@ -143,6 +146,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
   registerMediaRoutes(app, studio, media);
   registerActivityAndRefRoutes(app, studio);
   registerSketchRoutes(app, sketches);
+  registerDossierRoutes(app, dossier);
   registerStage2Routes(app, stage2);
   registerStage3Routes(app, stage3);
   registerStage4Routes(app, stage4);
@@ -168,6 +172,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
       getInFlightRequests,
     },
     sketches,
+    dossier,
   });
 
   return {

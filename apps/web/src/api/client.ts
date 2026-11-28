@@ -26,16 +26,19 @@ import type {
   LinkSketchToShotInput,
   MediaFolderDto,
   NleExportFormat,
+  ProductionDossierOptions,
   ProjectDto,
   ProjectRepoStatusDto,
   ProjectRulesBundle,
   ProjectScriptDto,
+  ProjectSubtitlesDto,
   PromptTemplateDto,
   RecordQcInput,
   RenderedPromptResult,
   ReorderSketchBoardInput,
   RulebookDto,
   RuleDto,
+  SaveProjectSubtitlesInput,
   SaveSketchInput,
   SceneDto,
   ShotDto,
@@ -782,6 +785,96 @@ export const api = {
 
   getTimelineExportUrl(projectId: string, format: NleExportFormat): string {
     return `/api/projects/${encodeURIComponent(projectId)}/timeline/export?format=${format}&download=1`;
+  },
+
+  // --- Synchronized Subtitles (SRT / VTT / LRC & Burn-in) ---
+
+  async getSubtitles(projectId: string): Promise<ProjectSubtitlesDto> {
+    const res = await apiFetch<{ subtitles: ProjectSubtitlesDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/subtitles`,
+    );
+    return res.subtitles;
+  },
+
+  async saveSubtitles(
+    projectId: string,
+    input: SaveProjectSubtitlesInput,
+  ): Promise<ProjectSubtitlesDto> {
+    const res = await apiFetch<{ subtitles: ProjectSubtitlesDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/subtitles`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.subtitles;
+  },
+
+  async importSubtitles(
+    projectId: string,
+    input: {
+      source: 'raw' | 'audio_track' | 'storyboard';
+      content?: string;
+      audioTrackId?: string;
+      replace?: boolean;
+    },
+  ): Promise<{ subtitles: ProjectSubtitlesDto; importedCount: number }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/subtitles/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  },
+
+  getSubtitlesExportUrl(projectId: string, format: 'srt' | 'vtt' = 'srt'): string {
+    return `/api/projects/${encodeURIComponent(projectId)}/subtitles/export?format=${format}&download=1`;
+  },
+
+  async saveSubtitlesAsset(
+    projectId: string,
+    format: 'srt' | 'vtt' = 'srt',
+  ): Promise<{ asset: AssetDto; filename: string }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/subtitles/save-asset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format }),
+    });
+  },
+
+  // --- Production Dossier & Pitch Deck (HTML/PDF & Markdown) ---
+
+  getDossierUrl(
+    projectId: string,
+    format: 'html' | 'markdown',
+    options: Partial<ProductionDossierOptions> = {},
+    flags: { download?: boolean; standalone?: boolean } = {},
+  ): string {
+    const qs = new URLSearchParams();
+    qs.set('format', format);
+    if (options.layout) qs.set('layout', options.layout);
+    if (options.includeScript !== undefined) qs.set('includeScript', options.includeScript ? '1' : '0');
+    if (options.includeBible !== undefined) qs.set('includeBible', options.includeBible ? '1' : '0');
+    if (options.includeSketchBoard !== undefined) qs.set('includeSketchBoard', options.includeSketchBoard ? '1' : '0');
+    if (options.includeStoryboard !== undefined) qs.set('includeStoryboard', options.includeStoryboard ? '1' : '0');
+    if (options.includePrompts !== undefined) qs.set('includePrompts', options.includePrompts ? '1' : '0');
+    if (options.includeBriefs !== undefined) qs.set('includeBriefs', options.includeBriefs ? '1' : '0');
+    if (options.subtitle) qs.set('subtitle', options.subtitle);
+    if (options.director) qs.set('director', options.director);
+    if (flags.download) qs.set('download', '1');
+    if (flags.standalone) qs.set('standalone', '1');
+    return `/api/projects/${encodeURIComponent(projectId)}/dossier?${qs.toString()}`;
+  },
+
+  async saveDossierAsset(
+    projectId: string,
+    input: Partial<ProductionDossierOptions> & { format?: 'html' | 'markdown' },
+  ): Promise<{ asset: AssetDto; filename: string }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/dossier/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
   },
 
   // --- Stage 5: Exploitation, Disk Cleanup, Backups, Watch Folders, Webhooks & YouTube API ---
