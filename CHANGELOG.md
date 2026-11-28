@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-28
+
+### Fixed & Improved
+- **Atelier Croquis & Plans — Ouverture plein cadre, zoom fluide & mode Plein écran (`SketchStudioPanel`, `studio.css`)** :
+  - Correction de l'ouverture initiale du canvas (qui démarrait dézoomé à `300×150px` jusqu'au premier trait) : le canvas calcule désormais automatiquement sa taille optimale via `ResizeObserver` pour occuper **100 % de la zone disponible dès l'ouverture**, dans le respect exact du ratio du projet (`16:9`, `9:16`, `2.39:1`, etc.).
+  - **Zoom / Dézoom facile (`35%` à `300%`)** : contrôles `-` / `100%` / `+` dans la barre inférieure, raccourcis clavier `+` / `-` / `0`, et **`Ctrl/Cmd + Molette`** directement sur la zone de dessin avec défilement fluide lorsque zoomé.
+  - **Agrandissement de la zone de dessin** : bouton **« Agrandir / Plein écran »** (`F` / `Échap`) pour passer l'atelier en plein écran sans quitter le projet, ainsi qu'un bouton dédié pour **masquer / réafficher l'inspecteur droit** de l'atelier.
+- **Documentation & Captures d'écran (`README.md`, `docs/screenshots/`)** :
+  - Refonte complète du `README.md` avec guide d'installation pas à pas (Docker Compose, `.env`, LAN, montages ComfyUI, Claude Code MCP), guide d'utilisation complet par module, raccourcis clavier, mises à jour Blue/Green sans coupure et **6 captures d'écran** haute définition de l'interface.
+
 ## [0.8.0] - 2026-11-27
 
 ### Added

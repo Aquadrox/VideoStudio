@@ -23,9 +23,13 @@ import {
   LayoutGrid,
   Lightbulb,
   Link2,
+  Maximize2,
+  Minimize2,
   Minus,
   MousePointer2,
   Move,
+  PanelRightClose,
+  PanelRightOpen,
   PenTool,
   Plus,
   Redo2,
@@ -235,6 +239,13 @@ export function SketchStudioPanel({
 
   const [selected, setSelected] = useState<SelectedSketchItem | null>(null);
   const [underlayImage, setUnderlayImage] = useState<HTMLImageElement | null>(null);
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showStudioInspector, setShowStudioInspector] = useState(true);
+  const [stageSize, setStageSize] = useState<{ width: number; height: number }>({
+    width: 960,
+    height: 540,
+  });
 
   // Live drag / draw refs (kept out of React state for 60fps pointer responsiveness)
   const previewStrokeRef = useRef<SketchStroke | null>(null);
@@ -513,6 +524,10 @@ export function SketchStudioPanel({
     setSelected(null);
   }, [selected, commitScene]);
 
+  const adjustZoom = useCallback((delta: number) => {
+    setCanvasZoom((prev) => Math.max(0.35, Math.min(3, Math.round((prev + delta) * 100) / 100)));
+  }, []);
+
   // Keyboard shortcuts inside Sketch Studio
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -531,6 +546,26 @@ export function SketchStudioPanel({
         else handleUndo();
         return;
       }
+      if (e.key === 'Escape' && isFullscreen) {
+        e.preventDefault();
+        setIsFullscreen(false);
+        return;
+      }
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        adjustZoom(0.15);
+        return;
+      }
+      if (e.key === '-') {
+        e.preventDefault();
+        adjustZoom(-0.15);
+        return;
+      }
+      if (e.key === '0') {
+        e.preventDefault();
+        setCanvasZoom(1);
+        return;
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selected) {
           e.preventDefault();
@@ -544,13 +579,48 @@ export function SketchStudioPanel({
       else if (lower === 'm') setTool('marker');
       else if (lower === 'e') setTool('eraser');
       else if (lower === 't') setTool('text');
+      else if (lower === 'f') setIsFullscreen((v) => !v);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleUndo, handleRedo, handleDeleteSelected, selected]);
+  }, [handleUndo, handleRedo, handleDeleteSelected, selected, isFullscreen, adjustZoom]);
 
-  // Render canvas at crisp DPR whenever scene, selection, underlay, or aspect ratio changes
+  // Measure stage container continuously so the canvas always opens full-fit immediately
+  useEffect(() => {
+    if (studioView !== 'editor') return;
+    const el = stageWrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 40 && rect.height > 40) {
+        setStageSize({ width: rect.width, height: rect.height });
+      }
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [studioView, isFullscreen, showStudioInspector]);
+
+  // Render canvas at crisp DPR sized to full available stage area * zoom
   const dims = useMemo(() => getCanvasDimensionsForAspectRatio(aspectRatio), [aspectRatio]);
+
+  const canvasDisplaySize = useMemo(() => {
+    const pad = 20;
+    const availW = Math.max(280, stageSize.width - pad * 2);
+    const availH = Math.max(200, stageSize.height - pad * 2);
+    const aspect = dims.width / dims.height;
+    let fitW = availW;
+    let fitH = fitW / aspect;
+    if (fitH > availH) {
+      fitH = availH;
+      fitW = fitH * aspect;
+    }
+    return {
+      width: Math.max(160, Math.round(fitW * canvasZoom)),
+      height: Math.max(120, Math.round(fitH * canvasZoom)),
+    };
+  }, [stageSize.width, stageSize.height, dims.width, dims.height, canvasZoom]);
 
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
@@ -558,11 +628,12 @@ export function SketchStudioPanel({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width < 10 || rect.height < 10) return;
+    const w = canvasDisplaySize.width;
+    const h = canvasDisplaySize.height;
+    if (w < 10 || h < 10) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const targetW = Math.round(rect.width * dpr);
-    const targetH = Math.round(rect.height * dpr);
+    const targetW = Math.round(w * dpr);
+    const targetH = Math.round(h * dpr);
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
@@ -571,8 +642,8 @@ export function SketchStudioPanel({
     ctx.save();
     ctx.scale(dpr, dpr);
     renderSketchToCanvas(ctx, scene, {
-      width: rect.width,
-      height: rect.height,
+      width: w,
+      height: h,
       selected,
       underlayImage,
       forExport: false,
@@ -581,18 +652,10 @@ export function SketchStudioPanel({
       previewShape: previewShapeRef.current,
     });
     ctx.restore();
-  }, [scene, selected, underlayImage]);
+  }, [scene, selected, underlayImage, canvasDisplaySize.width, canvasDisplaySize.height]);
 
   useEffect(() => {
     drawFrame();
-  }, [drawFrame, dims]);
-
-  useEffect(() => {
-    const el = stageWrapRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => drawFrame());
-    ro.observe(el);
-    return () => ro.disconnect();
   }, [drawFrame]);
 
   // Pointer coordinates normalized [0..1]
@@ -1217,7 +1280,7 @@ export function SketchStudioPanel({
     selected?.kind === 'note' ? scene.notes.find((n) => n.id === selected.id) ?? null : null;
 
   return (
-    <div className="sketch-studio">
+    <div className={`sketch-studio ${isFullscreen ? 'fullscreen' : ''}`}>
       {/* Top Studio Header Bar */}
       <div className="sketch-topbar">
         <div className="sketch-topbar-left">
@@ -1360,6 +1423,27 @@ export function SketchStudioPanel({
             </button>
             <button
               type="button"
+              className={`btn btn-xs ${!showStudioInspector ? 'btn-secondary' : 'btn-ghost'}`}
+              onClick={() => setShowStudioInspector((v) => !v)}
+              title={
+                showStudioInspector
+                  ? 'Masquer le panneau droit pour agrandir la zone de dessin'
+                  : 'Afficher le panneau droit (Fiche, Brief IA & Croquis)'
+              }
+            >
+              {showStudioInspector ? <PanelRightClose size={14} /> : <PanelRightOpen size={14} />}
+            </button>
+            <button
+              type="button"
+              className={`btn btn-xs ${isFullscreen ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setIsFullscreen((v) => !v)}
+              title={isFullscreen ? 'Quitter le plein écran (F / Échap)' : 'Agrandir en plein écran (F)'}
+            >
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {isFullscreen ? 'Réduire' : 'Agrandir'}
+            </button>
+            <button
+              type="button"
               className="btn btn-sm btn-primary"
               onClick={() => void handleSaveToMedia()}
               disabled={saving}
@@ -1394,7 +1478,7 @@ export function SketchStudioPanel({
         />
       ) : (
         /* Mode 2: Main 3-Column Canvas Editor */
-        <div className="sketch-body">
+        <div className={`sketch-body ${showStudioInspector ? '' : 'inspector-hidden'}`}>
         {/* Left Tools Palette */}
         <aside className="sketch-tools">
           <div className="sketch-tool-group">
@@ -1741,12 +1825,24 @@ export function SketchStudioPanel({
             </div>
           )}
 
-          {/* Responsive Canvas Stage */}
-          <div className="sketch-stage-wrap" ref={stageWrapRef}>
+          {/* Responsive Full-Fit & Zoomable Canvas Stage */}
+          <div
+            className="sketch-stage-wrap"
+            ref={stageWrapRef}
+            onWheel={(e) => {
+              if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                adjustZoom(e.deltaY < 0 ? 0.15 : -0.15);
+              }
+            }}
+          >
             <canvas
               ref={canvasRef}
               className={`sketch-canvas tool-${tool}`}
-              style={{ aspectRatio: `${dims.width} / ${dims.height}` }}
+              style={{
+                width: `${canvasDisplaySize.width}px`,
+                height: `${canvasDisplaySize.height}px`,
+              }}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
@@ -1761,19 +1857,47 @@ export function SketchStudioPanel({
                 : tool === 'motion_arrow'
                   ? 'Clique et glisse sur le plan pour tracer la trajectoire de mouvement.'
                   : tool === 'pen' || tool === 'marker'
-                    ? 'Dessine librement sur le cadre (souris, trackpad ou stylet).'
+                    ? 'Dessine librement sur le cadre (Ctrl+molette ou +/- pour zoomer, F pour agrandir).'
                     : tool === 'eraser'
                       ? 'Passe la gomme sur les traits à main levée pour les effacer.'
                       : 'Clique sur le canvas pour placer l’élément.'}
             </span>
-            <span className="mono muted">
-              Export {dims.width}×{dims.height}px
-            </span>
+
+            <div className="sketch-zoom-controls">
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => adjustZoom(-0.2)}
+                title="Dézoomer (-)"
+              >
+                <ZoomOut size={13} />
+              </button>
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost mono"
+                onClick={() => setCanvasZoom(1)}
+                title="Réinitialiser à 100% pleine place (0)"
+                style={{ minWidth: 50 }}
+              >
+                {Math.round(canvasZoom * 100)}%
+              </button>
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => adjustZoom(0.2)}
+                title="Zoomer (+)"
+              >
+                <ZoomIn size={13} />
+              </button>
+              <span className="mono muted" style={{ marginLeft: 6 }}>
+                {dims.width}×{dims.height}
+              </span>
+            </div>
           </div>
         </section>
 
         {/* Right Context Inspector + Save + AI Brief + Saved Sketches */}
-        <aside className="sketch-inspector">
+        {showStudioInspector && <aside className="sketch-inspector">
           {/* Save Metadata & Storyboard Linking Card */}
           <div className="sketch-card">
             <div className="sketch-card-head">
@@ -2529,7 +2653,7 @@ export function SketchStudioPanel({
               </div>
             )}
           </div>
-        </aside>
+        </aside>}
       </div>
       )}
     </div>
