@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AppConfig } from '../config.js';
 import type { MediaService } from '../services/media.service.js';
 import type { OpsService } from '../services/ops.service.js';
+import type { SketchService } from '../services/sketch.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
 import type { Stage4Service } from '../services/stage4.service.js';
@@ -77,6 +78,7 @@ describe('MCP Streamable HTTP route', () => {
         webhooks: {} as WebhookService,
         youtubeUpload: {} as YouTubeUploadService,
       },
+      sketches: {} as SketchService,
     });
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -174,6 +176,10 @@ describe('MCP Streamable HTTP route', () => {
       expect(toolsText).toContain('list_webhooks');
       expect(toolsText).toContain('create_webhook');
       expect(toolsText).toContain('upload_youtube_draft');
+      // Stage 6 (Scene Blocking Plans & Storyboard Sketches)
+      expect(toolsText).toContain('list_sketches');
+      expect(toolsText).toContain('get_sketch');
+      expect(toolsText).toContain('save_sketch');
     } finally {
       await app.close();
     }

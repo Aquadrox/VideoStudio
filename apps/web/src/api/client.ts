@@ -34,8 +34,10 @@ import type {
   RenderedPromptResult,
   RulebookDto,
   RuleDto,
+  SaveSketchInput,
   SceneDto,
   ShotDto,
+  SketchDto,
   SkillDto,
   SkillVersionDto,
   StartTimelineRenderInput,
@@ -932,5 +934,59 @@ export const api = {
       },
     );
     return res.upload;
+  },
+
+  // --- Scene Blocking Plans & Freehand Storyboard Sketches ---
+
+  async listSketches(projectId: string): Promise<SketchDto[]> {
+    const res = await apiFetch<{ sketches: SketchDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sketches`,
+    );
+    return res.sketches;
+  },
+
+  async getSketch(sketchId: string): Promise<SketchDto> {
+    const res = await apiFetch<{ sketch: SketchDto }>(
+      `/api/sketches/${encodeURIComponent(sketchId)}`,
+    );
+    return res.sketch;
+  },
+
+  async getSketchByAssetId(assetId: string): Promise<SketchDto | null> {
+    const res = await apiFetch<{ sketch: SketchDto | null }>(
+      `/api/assets/${encodeURIComponent(assetId)}/sketch`,
+    );
+    return res.sketch;
+  },
+
+  async createSketch(projectId: string, input: SaveSketchInput): Promise<SketchDto> {
+    const res = await apiFetch<{ sketch: SketchDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sketches`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.sketch;
+  },
+
+  async updateSketch(sketchId: string, input: SaveSketchInput): Promise<SketchDto> {
+    const res = await apiFetch<{ sketch: SketchDto }>(
+      `/api/sketches/${encodeURIComponent(sketchId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.sketch;
+  },
+
+  async deleteSketch(sketchId: string, deleteAsset = false): Promise<void> {
+    await apiFetch(
+      `/api/sketches/${encodeURIComponent(sketchId)}?deleteAsset=${deleteAsset ? 'true' : 'false'}`,
+      { method: 'DELETE' },
+    );
   },
 };

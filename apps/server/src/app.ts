@@ -11,6 +11,7 @@ import { registerHealthRoutes } from './routes/health.routes.js';
 import { registerMcpRoutes } from './routes/mcp.routes.js';
 import { registerMediaRoutes } from './routes/media.routes.js';
 import { registerProjectRoutes } from './routes/projects.routes.js';
+import { registerSketchRoutes } from './routes/sketch.routes.js';
 import { registerStage2Routes } from './routes/stage2.routes.js';
 import { registerStage3Routes } from './routes/stage3.routes.js';
 import { registerStage4Routes } from './routes/stage4.routes.js';
@@ -19,6 +20,7 @@ import { MediaService } from './services/media.service.js';
 import { OpsService } from './services/ops.service.js';
 import { ProjectGitService } from './services/project-git.service.js';
 import { RealtimeHub } from './services/realtime.service.js';
+import { SketchService } from './services/sketch.service.js';
 import { SkillsSyncService } from './services/skills-sync.service.js';
 import { Stage2Service } from './services/stage2.service.js';
 import { Stage3Service } from './services/stage3.service.js';
@@ -37,6 +39,7 @@ export interface BuildAppDeps {
 export async function buildApp(deps: BuildAppDeps): Promise<{
   app: FastifyInstance;
   studio: StudioService;
+  sketches: SketchService;
   stage2: Stage2Service;
   stage3: Stage3Service;
   stage4: Stage4Service;
@@ -93,6 +96,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
   const webhooks = new WebhookService(deps.db, deps.config);
   const studio = new StudioService(deps.db, media, realtime, deps.config.comfyuiBaseUrl);
   studio.setWebhookService(webhooks);
+  const sketches = new SketchService(deps.db, studio, realtime);
   const skillsSync = new SkillsSyncService(deps.config);
   const stage2 = new Stage2Service(deps.db, studio, realtime, skillsSync);
   stage2.setWebhookService(webhooks);
@@ -126,7 +130,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
     },
   );
 
-  // REST + Media + Stage 2 + Stage 3 + Stage 4 + Stage 5 + MCP Routes
+  // REST + Media + Stage 2 + Stage 3 + Stage 4 + Stage 5 + Sketches + MCP Routes
   const getInFlightRequests = () => inFlightRequests;
   registerHealthRoutes(app, {
     pool: deps.pool,
@@ -138,6 +142,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
   registerAssetRoutes(app, studio, media);
   registerMediaRoutes(app, studio, media);
   registerActivityAndRefRoutes(app, studio);
+  registerSketchRoutes(app, sketches);
   registerStage2Routes(app, stage2);
   registerStage3Routes(app, stage3);
   registerStage4Routes(app, stage4);
@@ -162,7 +167,20 @@ export async function buildApp(deps: BuildAppDeps): Promise<{
       youtubeUpload,
       getInFlightRequests,
     },
+    sketches,
   });
 
-  return { app, studio, stage2, stage3, stage4, ops, watchFolders, webhooks, youtubeUpload, realtime };
+  return {
+    app,
+    studio,
+    sketches,
+    stage2,
+    stage3,
+    stage4,
+    ops,
+    watchFolders,
+    webhooks,
+    youtubeUpload,
+    realtime,
+  };
 }

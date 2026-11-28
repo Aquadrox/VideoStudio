@@ -20,6 +20,8 @@ import {
   RuleCategorySchema,
   RuleSeveritySchema,
   ShotStatusSchema,
+  SketchModeSchema,
+  SketchSceneDataSchema,
   SkillScopeSchema,
   StorageModeSchema,
   SyncAgentTaskItemSchema,
@@ -31,6 +33,7 @@ import {
 } from '@videostudio/shared';
 import type { MediaService } from '../services/media.service.js';
 import type { OpsService } from '../services/ops.service.js';
+import type { SketchService } from '../services/sketch.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
 import type { Stage3Service } from '../services/stage3.service.js';
 import type { Stage4Service } from '../services/stage4.service.js';
@@ -54,10 +57,11 @@ export function createVideoStudioMcpServer(
   stage3: Stage3Service,
   stage4: Stage4Service,
   stage5?: Stage5McpDeps,
+  sketches?: SketchService,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.5.4',
+    version: '0.6.0',
   });
 
   // --- MCP Resources ---
@@ -2410,6 +2414,121 @@ export function createVideoStudioMcpServer(
         try {
           const uploaded = await stage5.youtubeUpload.uploadDraftVideo(project, rest);
           return { content: [{ type: 'text', text: JSON.stringify(uploaded, null, 2) }] };
+        } catch (err) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+          };
+        }
+      },
+    );
+  }
+
+  // ==========================================================================
+  // Scene Blocking Plans & Storyboard Sketches MCP Tools
+  // ==========================================================================
+
+  if (sketches) {
+    server.tool(
+      'list_sketches',
+      'List all scene blocking plans and freehand storyboard sketches in a project with their AI Director Briefs and linked Media @ref handles.',
+      {
+        project: z.string().min(1).describe('Project slug or UUID'),
+      },
+      async ({ project }) => {
+        const list = await sketches.listSketches(project);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                list.map((s) => ({
+                  id: s.id,
+                  title: s.title,
+                  mode: s.mode,
+                  aspectRatio: s.aspectRatio,
+                  folderPath: s.folderPath,
+                  assetId: s.assetId,
+                  assetRef: s.assetRef,
+                  assetHandle: s.assetHandle,
+                  aiDirectorBrief: s.aiDirectorBrief,
+                  camerasCount: s.sceneData.cameras.length,
+                  charactersCount: s.sceneData.characters.length,
+                  arrowsCount: s.sceneData.arrows.length,
+                  strokesCount: s.sceneData.strokes.length,
+                  updatedAt: s.updatedAt,
+                })),
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      },
+    );
+
+    server.tool(
+      'get_sketch',
+      'Get the full structured sceneData (cameras, focal lengths, movements, characters, lights, props, motion arrows, strokes) and AI Director Brief of a sketch by sketch UUID or linked asset @ref.',
+      {
+        sketchIdOrRef: z
+          .string()
+          .min(1)
+          .describe('Sketch UUID, Asset UUID, or Asset @ref handle (e.g. @img-012)'),
+        project: z.string().optional().describe('Optional project slug/UUID when using @ref'),
+      },
+      async ({ sketchIdOrRef, project }) => {
+        let sketch = await sketches.getSketchById(sketchIdOrRef);
+        if (!sketch) {
+          sketch = await sketches.getSketchByAssetId(sketchIdOrRef);
+        }
+        if (!sketch) {
+          const resolved = await studio.resolveReference(sketchIdOrRef, project);
+          if (resolved?.asset) {
+            sketch = await sketches.getSketchByAssetId(resolved.asset.id);
+          }
+        }
+        if (!sketch) {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: `Sketch not found: ${sketchIdOrRef}` }],
+          };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(sketch, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'save_sketch',
+      'Create or update a scene blocking plan or storyboard sketch programmatically (the user can then open, inspect, tweak, and export it in the Sketch Studio UI).',
+      {
+        project: z.string().min(1).describe('Project slug or UUID'),
+        sketchId: z.string().uuid().optional().describe('Existing sketch UUID to update; omit to create new'),
+        title: z.string().min(1).max(140),
+        mode: SketchModeSchema.default('scene_plan'),
+        aspectRatio: z.string().default('16:9'),
+        folderPath: z.string().optional(),
+        sceneData: SketchSceneDataSchema,
+        aiDirectorBrief: z.string().optional(),
+        pngBase64: z.string().optional().describe('Optional rendered PNG base64 to save in Media'),
+      },
+      async ({ project, sketchId, ...rest }) => {
+        try {
+          const saved = sketchId
+            ? await sketches.updateSketch(
+                sketchId,
+                { ...rest, saveMode: 'new_version' },
+                'claude',
+              )
+            : await sketches.createSketch(
+                project,
+                { ...rest, saveMode: 'new_version' },
+                'claude',
+              );
+          if (!saved) {
+            return { isError: true, content: [{ type: 'text', text: `Sketch not found: ${sketchId}` }] };
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
         } catch (err) {
           return {
             isError: true,

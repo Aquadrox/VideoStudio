@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
+### Added
+- **Atelier « Croquis & Plans de Scène » (`SketchStudioPanel`, `sketch-renderer.ts`, `SketchService`, `sketch.routes.ts`)** :
+  - **Mode Plan de scène / Blocking (vue du dessus)** : placement interactif de **Caméras** (avec cône de champ FOV temps réel selon la focale `24/35/50/85/135mm`, valeur de plan `EWS..INSERT` et mouvement caméra `Dolly In`, `Orbite`, `Travelling`, `Pan`, `Tilt`, `Grue`, `Handheld`, etc.), **Personnages** (avec ajout en 1 clic depuis la **Bible de continuité**, pose, action et direction du regard), **Lumières** (`Key`, `Fill`, `Rim`, `Practical`), **Décors & Accessoires** (`Mur`, `Table`, `Porte`, `Fenêtre`, `Repère X`, `Zone`, `Véhicule`), **Trajectoires de mouvement** droites ou courbes (arc/orbite) et **Ligne des 180°** de continuité.
+  - **Mode Croquis Storyboard à main levée (vue cadre)** : **Crayon/Pinceau** lissé, **Marqueur/Surligneur**, **Gomme**, **Formes** (`Flèche`, `Ligne`, `Rectangle`, `Cercle`, cadres **Zoom In / Zoom Out** aux 4 coins façon Storyboarder), **Annotations texte**, **Guides de cadrage cinéma** (`Grille`, `Règle des tiers 3×3`, `Diagonales`, `Croix`, `Safe Frames 90/80`) et **Image de fond (Underlay)** à opacité réglable pour dessiner directement par-dessus un média existant du projet.
+  - **Modèles rapides pré-configurés** (*Dialogue 180°*, *Travelling d'approche Dolly In*, *Orbite héroïque*, *Plan d'ensemble + entrée personnage*), **Annuler/Rétablir** (`Ctrl+Z` / `Ctrl+Shift+Z`) et poignée de rotation directe sur le canvas.
+  - **Brief IA automatique (`generateAiDirectorBrief`)** : synthétise en direct le placement spatial, les focales, les mouvements caméra/personnages et l'éclairage en un brief prêt à copier pour Claude Code ou ComfyUI (et automatiquement stocké dans `notes` et `promptUsed` de l'asset).
+  - **Stockage dans Médias & Ré-édition après coup** : export PNG haute définition adapté au ratio du projet dans `/plans` ou `/croquis` (avec versionnage `v1 → v2` ou remplacement), table PostgreSQL additive `sketches`, bouton **« Éditer le plan / croquis »** et **« Dessiner dessus »** directement depuis l'`AssetInspector`.
+  - **Outils MCP dédiés (`list_sketches`, `get_sketch`, `save_sketch`)** : Claude Code peut lister, lire le `sceneData` structuré + le brief IA par UUID ou `@ref`, et créer/mettre à jour un plan de scène programmatiquement.
+
 ## [0.5.4] - 2026-11-27
 
 ### Added

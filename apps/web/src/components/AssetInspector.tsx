@@ -8,6 +8,7 @@ import {
   Download,
   GitBranch,
   MapPin,
+  PenTool,
   Save,
   Star,
   Trash2,
@@ -18,6 +19,7 @@ import type {
   AssetStatus,
   MediaFolderDto,
   QualityTier,
+  SketchDto,
 } from '@videostudio/shared';
 import { api, type AssetLineage } from '../api/client';
 import { normalizeMediaCoordinates, timecodeToFrame } from '../utils/annotations';
@@ -47,6 +49,8 @@ interface AssetInspectorProps {
   onDelete: (assetId: string) => Promise<void>;
   onSelectAsset: (asset: AssetDto) => void;
   onOpenCompare: (asset: AssetDto, compareWith?: AssetDto) => void;
+  onEditSketch?: (sketchId: string) => void;
+  onSketchOverAsset?: (asset: AssetDto) => void;
   onCopyText: (text: string, label?: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -60,6 +64,8 @@ export function AssetInspector({
   onDelete,
   onSelectAsset,
   onOpenCompare,
+  onEditSketch,
+  onSketchOverAsset,
   onCopyText,
   onNotify,
 }: AssetInspectorProps) {
@@ -71,6 +77,7 @@ export function AssetInspector({
   const [tagsDraft, setTagsDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
   const [showRawWorkflow, setShowRawWorkflow] = useState(false);
+  const [linkedSketch, setLinkedSketch] = useState<SketchDto | null>(null);
 
   // Visual Annotations state
   const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
@@ -91,7 +98,24 @@ export function AssetInspector({
     setAnnotateMode(false);
     setPendingPin(null);
     setPinComment('');
-  }, [asset?.id]);
+    setLinkedSketch(null);
+
+    if (asset?.id && asset.type === 'image') {
+      let active = true;
+      void api
+        .getSketchByAssetId(asset.id)
+        .then((sk) => {
+          if (active) setLinkedSketch(sk);
+        })
+        .catch(() => {
+          if (active) setLinkedSketch(null);
+        });
+      return () => {
+        active = false;
+      };
+    }
+    return undefined;
+  }, [asset?.id, asset?.type]);
 
   useEffect(() => {
     if (!asset?.id) {
@@ -268,6 +292,26 @@ export function AssetInspector({
                 title="Cliquer sur l'image ou la frame vidéo pour laisser un retour à Claude"
               >
                 <MapPin size={12} /> {annotateMode ? 'Clique sur le visuel...' : 'Annoter'}
+              </button>
+            )}
+            {linkedSketch && onEditSketch && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => onEditSketch(linkedSketch.id)}
+                title="Ré-ouvrir ce plan / croquis dans l'atelier pour le modifier"
+              >
+                <PenTool size={12} /> Éditer le {linkedSketch.mode === 'scene_plan' ? 'plan' : 'croquis'}
+              </button>
+            )}
+            {asset.type === 'image' && !linkedSketch && onSketchOverAsset && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onSketchOverAsset(asset)}
+                title="Ouvrir l'atelier Croquis & Plans avec cette image en fond"
+              >
+                <PenTool size={12} /> Dessiner dessus
               </button>
             )}
             {asset.type === 'video' && (
