@@ -9,7 +9,10 @@ import {
   AudioMarkerSchema,
   BibleEntityTypeSchema,
   ClipAppliedEffectSchema,
+  ClipCameraSchema,
+  ClipCinemascopeSchema,
   ClipColorAdjustSchema,
+  ClipFxSchema,
   ClipKeyframeSchema,
   ClipTextOverlaySchema,
   ClipTransformSchema,
@@ -39,6 +42,7 @@ import {
   SubtitleCueSchema,
   SubtitleStyleSchema,
   SyncAgentTaskItemSchema,
+  TimelinePatchOperationSchema,
   TimelineQualityModeSchema,
   TimelineTrackTypeSchema,
   TimelineTransitionSchema,
@@ -84,7 +88,7 @@ export function createVideoStudioMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.11.0',
+    version: '0.12.0',
   });
 
   // --- MCP Resources ---
@@ -3034,11 +3038,58 @@ export function createVideoStudioMcpServer(
     );
   }
 
-  // --- CapCut-Grade Surgical Montage & Custom AI Video/Audio Effects (v0.11.0) ---
+  // --- CapCut-Grade Surgical Montage, AMV FX, Range Preview & Custom AI Effects (v0.11.0) ---
+
+  server.tool(
+    'patch_timeline_clips',
+    'Surgically patch 1 to N clips in a single atomic call without resending the whole timeline via save_timeline. Supports `replace_asset` (swap assetRef/assetId), `update` (timing/notes/camera/cinemascope/fx/flashIn/effects), `move`, `reorder` (with `ripple: true` auto-recomputing consecutive startSec), `insert`, and `delete`. Match clips by `clipId` OR `title`.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      operations: z
+        .array(TimelinePatchOperationSchema)
+        .min(1)
+        .max(100)
+        .describe('Ordered list of surgical operations: replace_asset | update | move | reorder | insert | delete'),
+    },
+    async ({ project, operations }) => {
+      try {
+        const res = await stage4.patchTimelineClips(project, { operations }, 'claude');
+        if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+      }
+    },
+  );
+
+  server.tool(
+    'render_timeline_range',
+    'Fast preview render of ONLY a specific timecode range `[startSec, endSec]` (e.g. 140s → 170s) with synchronized audio, overlays, text, camera/cinemascope/AMV FX, and subtitles, reusing the SHA-256 clip segment cache (`projects/<slug>/cache/timeline_segments/<sha256>.mp4`) for ~5s local validation. Saves preview in `/renders/previews`.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      startSec: z.number().min(0).describe('Range start timestamp in seconds'),
+      endSec: z.number().positive().describe('Range end timestamp in seconds (must be > startSec)'),
+      qualityMode: TimelineQualityModeSchema.optional().describe('Defaults to draft_proxy for speed'),
+      resolution: z.string().regex(/^\d{3,5}x\d{3,5}$/).default('1280x720'),
+      fps: z.number().int().min(1).max(120).optional(),
+      title: z.string().max(180).optional(),
+      burnSubtitles: z.boolean().optional(),
+      bypassCache: z.boolean().optional(),
+    },
+    async ({ project, ...input }) => {
+      try {
+        const res = await stage4.startRangeRender(project, input, 'claude');
+        if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+      }
+    },
+  );
 
   server.tool(
     'add_timeline_clip',
-    'Drop a single video, image, audio, overlay (PiP), or text title clip onto a project timeline track without rewriting the whole timeline. Automatically creates the track if missing and appends after the last clip if startSec is omitted.',
+    'Drop a single video, image, audio, overlay (PiP), or text title clip onto a project timeline track without rewriting the whole timeline. Supports native `camera` (push/pull_back/crash_zoom/p05_vertigo/pan + beatPulseAmp), `cinemascope` (`bar0`/`bar1`), AMV `fx` tags, `flashIn`, and custom `effects`.',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       trackId: z.string().uuid().optional().describe('Optional existing track UUID'),
@@ -3063,6 +3114,10 @@ export function createVideoStudioMcpServer(
       effects: z.array(ClipAppliedEffectSchema).max(20).optional(),
       keyframes: z.array(ClipKeyframeSchema).max(60).optional(),
       textOverlay: ClipTextOverlaySchema.nullable().optional(),
+      camera: ClipCameraSchema.partial().nullable().optional(),
+      cinemascope: ClipCinemascopeSchema.partial().nullable().optional(),
+      fx: ClipFxSchema.nullable().optional(),
+      flashIn: z.number().min(0).max(1).default(0),
       notes: z.string().max(1000).default(''),
     },
     async ({ project, ...input }) => {
@@ -3078,7 +3133,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'update_timeline_clip',
-    'Surgically patch a single clip on the timeline (swap assetRef, adjust timing/trim/speed, add custom effects, tweak color grading, transform, audio volume/fades, or text overlay). Unchanged clips stay cached for ultra-fast re-render!',
+    'Surgically patch a single clip on the timeline (swap assetRef, adjust timing/trim/speed, camera, cinemascope, AMV fx/flashIn, custom effects, color grading, transform, audio volume/fades, or text overlay). Unchanged clips stay cached for ultra-fast re-render!',
     {
       project: z.string().min(1).describe('Project slug or UUID'),
       clipId: z.string().uuid().describe('UUID of the timeline clip to patch'),
@@ -3102,6 +3157,10 @@ export function createVideoStudioMcpServer(
       effects: z.array(ClipAppliedEffectSchema).max(20).optional(),
       keyframes: z.array(ClipKeyframeSchema).max(60).optional(),
       textOverlay: ClipTextOverlaySchema.nullable().optional(),
+      camera: ClipCameraSchema.partial().nullable().optional(),
+      cinemascope: ClipCinemascopeSchema.partial().nullable().optional(),
+      fx: ClipFxSchema.nullable().optional(),
+      flashIn: z.number().min(0).max(1).optional(),
       notes: z.string().max(1000).optional(),
     },
     async ({ project, clipId, ...patch }) => {

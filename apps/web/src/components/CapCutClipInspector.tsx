@@ -17,15 +17,23 @@ import {
   Volume2,
 } from 'lucide-react';
 import {
+  DEFAULT_CLIP_CAMERA,
+  DEFAULT_CLIP_CINEMASCOPE,
   DEFAULT_CLIP_COLOR_ADJUST,
   DEFAULT_CLIP_TRANSFORM,
   DEFAULT_TEXT_OVERLAY,
+  normalizeClipFx,
   TIMELINE_TRANSITION_META,
+  type ClipAmvFxObject,
   type ClipAppliedEffect,
+  type ClipCamera,
+  type ClipCameraMode,
+  type ClipCinemascope,
   type ClipColorAdjust,
   type ClipKeyframe,
   type ClipTextOverlay,
   type ClipTransform,
+  type HorizSpeedLinesDirection,
   type KeyframeProperty,
   type TimelineClipDto,
   type TimelineTrackDto,
@@ -533,11 +541,493 @@ export function CapCutClipInspector({
           </div>
         )}
 
-        {tab === 'effects' && (
+        {tab === 'effects' && (() => {
+          const nfx = normalizeClipFx(clip.fx, clip.flashIn);
+          const cam: ClipCamera = { ...DEFAULT_CLIP_CAMERA, ...(clip.camera ?? {}) };
+          const updateCam = (patch: Partial<ClipCamera>) => {
+            onPatchClip({ camera: { ...cam, ...patch } });
+          };
+          const patchStructuredFx = (patch: Partial<ClipAmvFxObject>) => {
+            const currentObj: ClipAmvFxObject = {
+              mangaBlink: nfx.mangaBlink || undefined,
+              radialSpeedLines: nfx.radialSpeedLines,
+              horizSpeedLines: nfx.horizSpeedLines,
+              particles: nfx.particles,
+              flashIn: nfx.flashIn,
+              fadeOutBlack: nfx.fadeOutBlack,
+            };
+            onPatchClip({
+              fx: { ...currentObj, ...patch },
+              flashIn: patch.flashIn !== undefined ? (patch.flashIn?.alpha ?? 0) : (clip.flashIn ?? 0),
+            });
+          };
+
+          return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Native Camera Motion (AMV / Beat-Sync / Shake / Tremor / Rotation) */}
+            <div className="capcut-applied-fx-card">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <strong style={{ fontSize: 11.5 }}>🎥 Caméra dynamique (Beat-Sync)</strong>
+                {clip.camera && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ padding: '1px 5px', fontSize: 10 }}
+                    onClick={() => onPatchClip({ camera: null })}
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 56px 56px', gap: 5 }}>
+                <select
+                  className="select"
+                  value={cam.mode}
+                  onChange={(e) => updateCam({ mode: e.target.value as ClipCameraMode })}
+                >
+                  <option value="static">Statique</option>
+                  <option value="push">Push-in</option>
+                  <option value="ease">Ease (Doux)</option>
+                  <option value="pull_back">Pull-back</option>
+                  <option value="power_pullback">Power Pullback</option>
+                  <option value="crash_zoom">Crash Zoom</option>
+                  <option value="p05_vertigo">Vertigo P05</option>
+                  <option value="pan">Panoramique</option>
+                </select>
+                <input
+                  className="input"
+                  type="number"
+                  step={0.05}
+                  min={0.5}
+                  max={4}
+                  title="Zoom initial z0"
+                  value={cam.z0}
+                  onChange={(e) => updateCam({ z0: Number(e.target.value) || 1 })}
+                />
+                <input
+                  className="input"
+                  type="number"
+                  step={0.05}
+                  min={0.5}
+                  max={4}
+                  title="Zoom final z1"
+                  value={cam.z1}
+                  onChange={(e) => updateCam({ z1: Number(e.target.value) || 1 })}
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <div className="capcut-slider-row">
+                  <label>Beat Pulse <strong>{Math.round(cam.beatPulseAmp * 100)}%</strong></label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={0.35}
+                    step={0.005}
+                    value={cam.beatPulseAmp}
+                    onChange={(e) => updateCam({ beatPulseAmp: Number(e.target.value) })}
+                  />
+                </div>
+                <div className="capcut-slider-row">
+                  <label>Rotation <strong>{cam.rotDeg.toFixed(1)}°</strong></label>
+                  <input
+                    type="range"
+                    min={-25}
+                    max={25}
+                    step={0.5}
+                    value={cam.rotDeg}
+                    onChange={(e) => updateCam({ rotDeg: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <div className="capcut-slider-row">
+                  <label>Shake Cut <strong>{Math.round(cam.shakeAmp * 100)}%</strong></label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={cam.shakeAmp}
+                    onChange={(e) => updateCam({ shakeAmp: Number(e.target.value) })}
+                  />
+                </div>
+                <div className="capcut-slider-row">
+                  <label>Tremor HF <strong>{Math.round(cam.tremorAmp * 100)}%</strong></label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={cam.tremorAmp}
+                    onChange={(e) => updateCam({ tremorAmp: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Native Cinemascope Letterbox Bars */}
+            <div className="capcut-applied-fx-card">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                <strong style={{ fontSize: 11.5 }}>🎞️ Cinémascope</strong>
+                <div style={{ display: 'flex', gap: 3 }}>
+                  <button
+                    type="button"
+                    className="chip"
+                    style={{ fontSize: 9.5, padding: '1px 5px' }}
+                    onClick={() => onPatchClip({ cinemascope: null })}
+                  >
+                    16:9
+                  </button>
+                  <button
+                    type="button"
+                    className="chip"
+                    style={{ fontSize: 9.5, padding: '1px 5px' }}
+                    onClick={() => onPatchClip({ cinemascope: { bar0: 0.125, bar1: 0.125 } })}
+                  >
+                    2.39:1
+                  </button>
+                  <button
+                    type="button"
+                    className="chip"
+                    style={{ fontSize: 9.5, padding: '1px 5px' }}
+                    onClick={() => onPatchClip({ cinemascope: { bar0: 0.25, bar1: 0.125 } })}
+                  >
+                    Eye-Slit
+                  </button>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <div className="capcut-slider-row">
+                  <label>bar0 <strong>{Math.round((clip.cinemascope?.bar0 ?? 0) * 100)}%</strong></label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={0.4}
+                    step={0.005}
+                    value={clip.cinemascope?.bar0 ?? 0}
+                    onChange={(e) => {
+                      const next: ClipCinemascope = {
+                        ...DEFAULT_CLIP_CINEMASCOPE,
+                        ...(clip.cinemascope ?? {}),
+                        bar0: Number(e.target.value),
+                      };
+                      onPatchClip({ cinemascope: next });
+                    }}
+                  />
+                </div>
+                <div className="capcut-slider-row">
+                  <label>bar1 <strong>{Math.round((clip.cinemascope?.bar1 ?? 0) * 100)}%</strong></label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={0.4}
+                    step={0.005}
+                    value={clip.cinemascope?.bar1 ?? 0}
+                    onChange={(e) => {
+                      const next: ClipCinemascope = {
+                        ...DEFAULT_CLIP_CINEMASCOPE,
+                        ...(clip.cinemascope ?? {}),
+                        bar1: Number(e.target.value),
+                      };
+                      onPatchClip({ cinemascope: next });
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Structured WYSIWYG AMV FX Inspector */}
+            <div className="capcut-applied-fx-card">
+              <strong style={{ fontSize: 11.5 }}>⚡ FX AMV (Temps Réel WYSIWYG)</strong>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className={`chip ${nfx.mangaBlink ? 'active' : ''}`}
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                  onClick={() => patchStructuredFx({ mangaBlink: !nfx.mangaBlink })}
+                >
+                  Manga Blink
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${nfx.radialSpeedLines ? 'active' : ''}`}
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                  onClick={() =>
+                    patchStructuredFx({
+                      radialSpeedLines: nfx.radialSpeedLines
+                        ? null
+                        : { color: '#FFFFFF', intensity: 0.85, count: 48 },
+                    })
+                  }
+                >
+                  Radial Speed
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${nfx.horizSpeedLines ? 'active' : ''}`}
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                  onClick={() =>
+                    patchStructuredFx({
+                      horizSpeedLines: nfx.horizSpeedLines
+                        ? null
+                        : { color: '#FFFFFF', direction: 'left', intensity: 0.8 },
+                    })
+                  }
+                >
+                  Horiz Speed
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${nfx.particles ? 'active' : ''}`}
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                  onClick={() =>
+                    patchStructuredFx({
+                      particles: nfx.particles
+                        ? null
+                        : { color: '#F5B942', count: 36, intensity: 0.9 },
+                    })
+                  }
+                >
+                  Particules
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${nfx.flashIn ? 'active' : ''}`}
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                  onClick={() =>
+                    patchStructuredFx({
+                      flashIn: nfx.flashIn ? null : { alpha: 0.85, color: '#FFFFFF', frames: 6 },
+                    })
+                  }
+                >
+                  Flash Entrée
+                </button>
+                <button
+                  type="button"
+                  className={`chip ${nfx.fadeOutBlack ? 'active' : ''}`}
+                  style={{ fontSize: 10, padding: '2px 6px' }}
+                  onClick={() =>
+                    patchStructuredFx({
+                      fadeOutBlack: nfx.fadeOutBlack ? null : { durationSec: 0.6 },
+                    })
+                  }
+                >
+                  Fondu Noir
+                </button>
+              </div>
+
+              {nfx.radialSpeedLines && (
+                <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 1fr', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={nfx.radialSpeedLines.color}
+                    title="Couleur lignes radiales"
+                    onChange={(e) =>
+                      patchStructuredFx({
+                        radialSpeedLines: { ...nfx.radialSpeedLines!, color: e.target.value },
+                      })
+                    }
+                    style={{ width: 34, height: 24, padding: 1 }}
+                  />
+                  <div className="capcut-slider-row">
+                    <label>Intensité <strong>{nfx.radialSpeedLines.intensity.toFixed(1)}</strong></label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={2}
+                      step={0.1}
+                      value={nfx.radialSpeedLines.intensity}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          radialSpeedLines: { ...nfx.radialSpeedLines!, intensity: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="capcut-slider-row">
+                    <label>Lignes <strong>{nfx.radialSpeedLines.count}</strong></label>
+                    <input
+                      type="range"
+                      min={12}
+                      max={120}
+                      step={4}
+                      value={nfx.radialSpeedLines.count}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          radialSpeedLines: { ...nfx.radialSpeedLines!, count: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+
+              {nfx.horizSpeedLines && (
+                <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 1fr', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={nfx.horizSpeedLines.color}
+                    title="Couleur lignes directionnelles"
+                    onChange={(e) =>
+                      patchStructuredFx({
+                        horizSpeedLines: { ...nfx.horizSpeedLines!, color: e.target.value },
+                      })
+                    }
+                    style={{ width: 34, height: 24, padding: 1 }}
+                  />
+                  <select
+                    className="select"
+                    value={nfx.horizSpeedLines.direction}
+                    onChange={(e) =>
+                      patchStructuredFx({
+                        horizSpeedLines: {
+                          ...nfx.horizSpeedLines!,
+                          direction: e.target.value as HorizSpeedLinesDirection,
+                        },
+                      })
+                    }
+                  >
+                    <option value="left">← Gauche</option>
+                    <option value="right">→ Droite</option>
+                    <option value="diag_up">↗ Diag Haut</option>
+                    <option value="vert_down">↓ Descente</option>
+                  </select>
+                  <div className="capcut-slider-row">
+                    <label>Int. <strong>{nfx.horizSpeedLines.intensity.toFixed(1)}</strong></label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={2}
+                      step={0.1}
+                      value={nfx.horizSpeedLines.intensity}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          horizSpeedLines: { ...nfx.horizSpeedLines!, intensity: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+
+              {nfx.particles && (
+                <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 1fr', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={nfx.particles.color}
+                    title="Couleur particules"
+                    onChange={(e) =>
+                      patchStructuredFx({
+                        particles: { ...nfx.particles!, color: e.target.value },
+                      })
+                    }
+                    style={{ width: 34, height: 24, padding: 1 }}
+                  />
+                  <div className="capcut-slider-row">
+                    <label>Orbes <strong>{nfx.particles.count}</strong></label>
+                    <input
+                      type="range"
+                      min={4}
+                      max={120}
+                      step={2}
+                      value={nfx.particles.count}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          particles: { ...nfx.particles!, count: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="capcut-slider-row">
+                    <label>Glow <strong>{(nfx.particles.intensity ?? 0.85).toFixed(1)}</strong></label>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={2}
+                      step={0.1}
+                      value={nfx.particles.intensity ?? 0.85}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          particles: { ...nfx.particles!, intensity: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+
+              {nfx.flashIn && (
+                <div style={{ display: 'grid', gridTemplateColumns: '40px 1fr 1fr', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={nfx.flashIn.color}
+                    title="Couleur flash"
+                    onChange={(e) =>
+                      patchStructuredFx({
+                        flashIn: { ...nfx.flashIn!, color: e.target.value },
+                      })
+                    }
+                    style={{ width: 34, height: 24, padding: 1 }}
+                  />
+                  <div className="capcut-slider-row">
+                    <label>Alpha <strong>{Math.round(nfx.flashIn.alpha * 100)}%</strong></label>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={nfx.flashIn.alpha}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          flashIn: { ...nfx.flashIn!, alpha: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="capcut-slider-row">
+                    <label>Frames <strong>{nfx.flashIn.frames}f</strong></label>
+                    <input
+                      type="range"
+                      min={1}
+                      max={30}
+                      step={1}
+                      value={nfx.flashIn.frames}
+                      onChange={(e) =>
+                        patchStructuredFx({
+                          flashIn: { ...nfx.flashIn!, frames: Number(e.target.value) },
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+
+              {nfx.fadeOutBlack && (
+                <div className="capcut-slider-row">
+                  <label>Fondu Noir Fin <strong>{nfx.fadeOutBlack.durationSec.toFixed(2)}s</strong></label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={4}
+                    step={0.1}
+                    value={nfx.fadeOutBlack.durationSec}
+                    onChange={(e) =>
+                      patchStructuredFx({
+                        fadeOutBlack: { durationSec: Number(e.target.value) },
+                      })
+                    }
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Custom / Catalog Effects */}
+            <div className="capcut-subhead">
+              <span>Effets Catalogue & IA ({effects.length})</span>
+            </div>
             {effects.length === 0 ? (
-              <p className="muted" style={{ fontSize: 11.5, margin: 0 }}>
-                Aucun effet sur ce clip. Choisis un effet dans la bibliothèque « Effets » à gauche (ou demande à Claude d’en créer un via MCP !).
+              <p className="muted" style={{ fontSize: 11, margin: 0 }}>
+                Ajoute des effets depuis la bibliothèque à gauche (ou via Claude MCP).
               </p>
             ) : (
               effects.map((applied, idx) => {
@@ -596,7 +1086,8 @@ export function CapCutClipInspector({
               })
             )}
           </div>
-        )}
+          );
+        })()}
 
         {tab === 'audio' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -657,14 +1148,40 @@ export function CapCutClipInspector({
             ) : (
               <>
                 <div className="field">
-                  <label>Texte affiché</label>
+                  <label>Titre / Texte principal</label>
                   <input
                     className="input"
                     value={textOverlay.text}
                     onChange={(e) => onPatchClip({ textOverlay: { ...textOverlay, text: e.target.value } })}
                   />
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 68px 68px', gap: 6 }}>
+                <div className="field">
+                  <label>Sous-titre / Paroles (optionnel)</label>
+                  <input
+                    className="input"
+                    placeholder="Ex: Score, paroles synchronisées..."
+                    value={textOverlay.subtitle ?? ''}
+                    onChange={(e) =>
+                      onPatchClip({ textOverlay: { ...textOverlay, subtitle: e.target.value } })
+                    }
+                  />
+                </div>
+                <div className="field">
+                  <label>Police (fontFamily)</label>
+                  <select
+                    className="select"
+                    value={textOverlay.fontFamily ?? 'Inter, system-ui, sans-serif'}
+                    onChange={(e) =>
+                      onPatchClip({ textOverlay: { ...textOverlay, fontFamily: e.target.value } })
+                    }
+                  >
+                    <option value="Inter, system-ui, sans-serif">Inter / Sans (Cinéma)</option>
+                    <option value="Georgia, serif">Georgia / Serif (Dramatique)</option>
+                    <option value="'Impact', 'Arial Black', sans-serif">Impact / Manga Bold</option>
+                    <option value="'JetBrains Mono', monospace">Monospace / HUD</option>
+                  </select>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 50px 50px 50px', gap: 5 }}>
                   <div className="field">
                     <label>Taille ({textOverlay.fontSize}px)</label>
                     <input
@@ -684,17 +1201,31 @@ export function CapCutClipInspector({
                       type="color"
                       value={textOverlay.color}
                       onChange={(e) => onPatchClip({ textOverlay: { ...textOverlay, color: e.target.value } })}
-                      style={{ padding: 2, height: 30 }}
+                      style={{ padding: 2, height: 28 }}
                     />
                   </div>
                   <div className="field">
-                    <label>Fond</label>
+                    <label>Contour</label>
                     <input
                       className="input"
                       type="color"
-                      value={textOverlay.bgColor}
-                      onChange={(e) => onPatchClip({ textOverlay: { ...textOverlay, bgColor: e.target.value } })}
-                      style={{ padding: 2, height: 30 }}
+                      value={textOverlay.strokeColor || '#000000'}
+                      onChange={(e) =>
+                        onPatchClip({ textOverlay: { ...textOverlay, strokeColor: e.target.value } })
+                      }
+                      style={{ padding: 2, height: 28 }}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Halo</label>
+                    <input
+                      className="input"
+                      type="color"
+                      value={textOverlay.glowColor || '#F5B942'}
+                      onChange={(e) =>
+                        onPatchClip({ textOverlay: { ...textOverlay, glowColor: e.target.value } })
+                      }
+                      style={{ padding: 2, height: 28 }}
                     />
                   </div>
                 </div>
@@ -720,18 +1251,58 @@ export function CapCutClipInspector({
                     />
                   </div>
                 </div>
-                <div className="capcut-slider-row">
-                  <label>Opacité fond <strong>{Math.round(textOverlay.bgOpacity * 100)}%</strong></label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={textOverlay.bgOpacity}
-                    onChange={(e) =>
-                      onPatchClip({ textOverlay: { ...textOverlay, bgOpacity: Number(e.target.value) } })
-                    }
-                  />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  <div className="capcut-slider-row">
+                    <label>Fade In <strong>{(textOverlay.fadeInSec ?? 0.25).toFixed(2)}s</strong></label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={3}
+                      step={0.05}
+                      value={textOverlay.fadeInSec ?? 0.25}
+                      onChange={(e) =>
+                        onPatchClip({ textOverlay: { ...textOverlay, fadeInSec: Number(e.target.value) } })
+                      }
+                    />
+                  </div>
+                  <div className="capcut-slider-row">
+                    <label>Fade Out <strong>{(textOverlay.fadeOutSec ?? 0.25).toFixed(2)}s</strong></label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={3}
+                      step={0.05}
+                      value={textOverlay.fadeOutSec ?? 0.25}
+                      onChange={(e) =>
+                        onPatchClip({ textOverlay: { ...textOverlay, fadeOutSec: Number(e.target.value) } })
+                      }
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '52px 1fr', gap: 6, alignItems: 'center' }}>
+                  <div className="field">
+                    <label>Fond</label>
+                    <input
+                      className="input"
+                      type="color"
+                      value={textOverlay.bgColor}
+                      onChange={(e) => onPatchClip({ textOverlay: { ...textOverlay, bgColor: e.target.value } })}
+                      style={{ padding: 2, height: 28 }}
+                    />
+                  </div>
+                  <div className="capcut-slider-row">
+                    <label>Opacité fond <strong>{Math.round(textOverlay.bgOpacity * 100)}%</strong></label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={textOverlay.bgOpacity}
+                      onChange={(e) =>
+                        onPatchClip({ textOverlay: { ...textOverlay, bgOpacity: Number(e.target.value) } })
+                      }
+                    />
+                  </div>
                 </div>
                 <button
                   type="button"

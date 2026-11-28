@@ -29,7 +29,6 @@ import {
   applyClipTrimLeft,
   applyClipTrimRight,
   collectTimelineSnapPoints,
-  compileClipCssPreview,
   DEFAULT_CLIP_COLOR_ADJUST,
   DEFAULT_CLIP_TRANSFORM,
   DEFAULT_SUBTITLE_STYLE,
@@ -37,7 +36,6 @@ import {
   extractTimelineBeatMarkers,
   findActiveSubtitleCues,
   secondsToSmpte,
-  selectTimelinePlaybackUrl,
   TIMELINE_TRANSITION_META,
   type AssetDto,
   type AudioTrackDto,
@@ -57,6 +55,7 @@ import { formatDuration } from '../utils/format';
 import { CapCutClipInspector } from './CapCutClipInspector';
 import { EffectsLibraryDrawer } from './EffectsLibraryDrawer';
 import { SubtitleEditorPanel } from './SubtitleEditorPanel';
+import { TimelinePreviewCanvas, type ActiveTextOverlayEntry } from './TimelinePreviewCanvas';
 import { TimelineWaveform } from './TimelineWaveform';
 
 interface TimelinePanelProps {
@@ -119,18 +118,18 @@ export function TimelinePanel({
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [showBeatMarkers, setShowBeatMarkers] = useState(true);
   const [showSubtitlesPreview, setShowSubtitlesPreview] = useState(true);
+  const [fxPreviewEnabled, setFxPreviewEnabled] = useState(true);
   const [burnSubtitlesOnRender, setBurnSubtitlesOnRender] = useState(false);
   const [bottomTab, setBottomTab] = useState<'tracks' | 'subtitles'>('tracks');
   const [rightMode, setRightMode] = useState<'inspector' | 'renders'>('inspector');
   const [snapGuideSec, setSnapGuideSec] = useState<number | null>(null);
   const [selectedCueId, setSelectedCueId] = useState<string | null>(null);
 
-  // Playback state for live CapCut Preview Monitor
+  // Playback state for live CapCut WYSIWYG Preview Monitor
   const [playheadSec, setPlayheadSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
 
   // Drag / Trim live refs
   const timelineRef = useRef<TimelineDto | null>(null);
@@ -196,9 +195,14 @@ export function TimelinePanel({
     return Math.max(4, Math.round(maxEnd * 100) / 100);
   }, [timeline, subtitles.cues]);
 
+  const allBeatMarkers = useMemo(
+    () => extractTimelineBeatMarkers(audioTracks, totalDuration),
+    [audioTracks, totalDuration],
+  );
+
   const beatMarkers = useMemo(
-    () => (showBeatMarkers ? extractTimelineBeatMarkers(audioTracks, totalDuration) : []),
-    [audioTracks, totalDuration, showBeatMarkers],
+    () => (showBeatMarkers ? allBeatMarkers : []),
+    [allBeatMarkers, showBeatMarkers],
   );
 
   // Advance playhead smoothly when playing preview
@@ -242,14 +246,6 @@ export function TimelinePanel({
   const activeVideoClip = transitionFrame.activeClip;
   const outgoingVideoClip = transitionFrame.outgoingClip;
 
-  // Live CSS preview style for active video clip (effects + color grading + transform + keyframes!)
-  const activeClipCss = useMemo(() => {
-    if (!activeVideoClip) {
-      return { filter: 'none', transform: 'none', opacity: 1, vignetteOpacity: 0 };
-    }
-    return compileClipCssPreview(activeVideoClip, playheadSec, effectCatalog);
-  }, [activeVideoClip, playheadSec, effectCatalog]);
-
   // Active Overlay / PiP clips at playhead
   const activeOverlayClips = useMemo(() => {
     if (!timeline) return [];
@@ -266,10 +262,15 @@ export function TimelinePanel({
   }, [timeline, playheadSec]);
 
   // Active Text track clips + inline clip textOverlay at playhead
-  const activeTextOverlays = useMemo(() => {
-    const items: Array<{ id: string; overlay: ClipTextOverlay }> = [];
+  const activeTextOverlays = useMemo<ActiveTextOverlayEntry[]>(() => {
+    const items: ActiveTextOverlayEntry[] = [];
     if (activeVideoClip?.textOverlay?.text?.trim()) {
-      items.push({ id: `inline-${activeVideoClip.id}`, overlay: activeVideoClip.textOverlay });
+      items.push({
+        id: `inline-${activeVideoClip.id}`,
+        overlay: activeVideoClip.textOverlay,
+        startSec: activeVideoClip.startSec,
+        durationSec: activeVideoClip.durationSec,
+      });
     }
     if (timeline) {
       for (const tr of timeline.tracks) {
@@ -281,7 +282,12 @@ export function TimelinePanel({
             playheadSec >= c.startSec &&
             playheadSec <= c.startSec + c.durationSec
           ) {
-            items.push({ id: c.id, overlay: c.textOverlay });
+            items.push({
+              id: c.id,
+              overlay: c.textOverlay,
+              startSec: c.startSec,
+              durationSec: c.durationSec,
+            });
           }
         }
       }
@@ -388,6 +394,10 @@ export function TimelinePanel({
               effects: c.effects ?? [],
               keyframes: c.keyframes ?? [],
               textOverlay: c.textOverlay ?? null,
+              camera: c.camera ?? null,
+              cinemascope: c.cinemascope ?? null,
+              fx: c.fx ?? [],
+              flashIn: c.flashIn ?? 0,
               notes: c.notes,
             })),
           })),
@@ -736,6 +746,27 @@ export function TimelinePanel({
     }
   };
 
+  const handleStartRangePreview = async () => {
+    const startSec = Math.max(0, Math.round((playheadSec - 5) * 10) / 10);
+    const endSec = Math.min(totalDuration, Math.max(startSec + 2, Math.round((playheadSec + 10) * 10) / 10));
+    setRendering(true);
+    try {
+      const res = await api.startTimelineRangeRender(projectId, {
+        startSec,
+        endSec,
+        resolution: '1280x720',
+        burnSubtitles: burnSubtitlesOnRender,
+      });
+      setRightMode('renders');
+      onNotify(`Preview rapide [${res.startSec.toFixed(1)}s → ${res.endSec.toFixed(1)}s] lancée (${res.clipCount} clip(s)) !`);
+      await loadAll();
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Impossible de lancer la preview plage');
+    } finally {
+      setRendering(false);
+    }
+  };
+
   const handleAddTrack = (type: TimelineTrackType) => {
     if (!timeline) return;
     const count = timeline.tracks.filter((t) => t.type === type).length + 1;
@@ -879,6 +910,10 @@ export function TimelinePanel({
         effects: c.effects,
         keyframes: c.keyframes,
         textOverlay: c.textOverlay,
+        camera: c.camera ?? null,
+        cinemascope: c.cinemascope ?? null,
+        fx: c.fx ?? [],
+        flashIn: c.flashIn ?? 0,
         notes: c.notes,
       });
       setTimeline(res.timeline);
@@ -972,14 +1007,6 @@ export function TimelinePanel({
   }
 
   const qualityMode: TimelineQualityMode = timeline?.qualityMode ?? 'draft_proxy';
-  const playbackUrl =
-    activeVideoAsset && timeline
-      ? selectTimelinePlaybackUrl(activeVideoAsset.urls, activeVideoAsset.type, qualityMode)
-      : null;
-  const outgoingPlaybackUrl =
-    outgoingVideoAsset && timeline
-      ? selectTimelinePlaybackUrl(outgoingVideoAsset.urls, outgoingVideoAsset.type, qualityMode)
-      : null;
 
   const timelineWidthPx = Math.max(780, Math.ceil((totalDuration + 4) * zoomPxPerSec));
   const rulerTicks = Array.from({ length: Math.ceil(totalDuration + 4) + 1 }, (_, i) => i).filter(
@@ -1147,46 +1174,31 @@ export function TimelinePanel({
           onNotify={onNotify}
         />
 
-        {/* CENTER: Live Multi-Layer Compositing Preview Monitor */}
+        {/* CENTER: Real-Time WYSIWYG 16:9 Canvas Compositing Monitor */}
         <div className="timeline-monitor-card">
           <div className="timeline-monitor-stage">
-            {/* Outgoing clip layer for transition preview */}
-            {outgoingVideoAsset && outgoingPlaybackUrl && transitionFrame.outgoingOpacity > 0.01 && (
-              <img
-                src={outgoingVideoAsset.urls.thumbnail || outgoingPlaybackUrl}
-                alt={outgoingVideoAsset.title}
-                className="timeline-transition-layer"
-                style={{ opacity: transitionFrame.outgoingOpacity }}
+            {activeVideoAsset || activeOverlayClips.length > 0 || activeTextOverlays.length > 0 ? (
+              <TimelinePreviewCanvas
+                playheadSec={playheadSec}
+                fps={timeline?.fps ?? 24}
+                playing={playing}
+                fxPreviewEnabled={fxPreviewEnabled}
+                qualityMode={qualityMode}
+                activeVideoClip={activeVideoClip}
+                activeVideoAsset={activeVideoAsset}
+                outgoingVideoAsset={outgoingVideoAsset}
+                transitionFrame={transitionFrame}
+                activeOverlayClips={activeOverlayClips}
+                activeTextOverlays={activeTextOverlays}
+                assetMap={assetMap}
+                effectCatalog={effectCatalog}
+                beatMarkers={allBeatMarkers}
+                activeSubtitleCues={activeSubtitleCues}
+                subtitleStyle={subtitles.style}
+                audioRef={audioRef}
+                activeAudioClipStartSec={activeAudioClip?.startSec}
+                activeAudioClipInSec={activeAudioClip?.inSec}
               />
-            )}
-
-            {/* Main Video / Image Layer with live CapCut CSS FX, Color Grading, Transform & Keyframes */}
-            {activeVideoAsset && playbackUrl ? (
-              activeVideoAsset.type === 'video' ? (
-                <video
-                  ref={videoPreviewRef}
-                  key={playbackUrl}
-                  src={playbackUrl}
-                  muted
-                  playsInline
-                  autoPlay={playing}
-                  style={{
-                    opacity: transitionFrame.activeOpacity * activeClipCss.opacity,
-                    filter: activeClipCss.filter,
-                    transform: activeClipCss.transform,
-                  }}
-                />
-              ) : (
-                <img
-                  src={playbackUrl}
-                  alt={activeVideoAsset.title}
-                  style={{
-                    opacity: transitionFrame.activeOpacity * activeClipCss.opacity,
-                    filter: activeClipCss.filter,
-                    transform: activeClipCss.transform,
-                  }}
-                />
-              )
             ) : (
               <div className="timeline-monitor-empty">
                 <Clapperboard size={30} color="var(--text-muted)" />
@@ -1198,99 +1210,6 @@ export function TimelinePanel({
               </div>
             )}
 
-            {/* Radial Vignette Preview */}
-            {activeClipCss.vignetteOpacity > 0.01 && (
-              <div
-                className="capcut-vignette-overlay"
-                style={{
-                  background: `radial-gradient(circle, transparent 42%, rgba(0,0,0,${Math.min(0.92, activeClipCss.vignetteOpacity * 0.9)}))`,
-                }}
-                aria-hidden="true"
-              />
-            )}
-
-            {/* Live Overlay / PiP Layers (V2+) */}
-            {activeOverlayClips.map((ovClip) => {
-              const ovAsset = ovClip.assetId ? assetMap.get(ovClip.assetId) : null;
-              if (!ovAsset) return null;
-              const ovUrl = selectTimelinePlaybackUrl(ovAsset.urls, ovAsset.type, qualityMode);
-              if (!ovUrl) return null;
-              const ovCss = compileClipCssPreview(ovClip, playheadSec, effectCatalog);
-              const tr = { ...DEFAULT_CLIP_TRANSFORM, ...(ovClip.transform ?? {}) };
-              return (
-                <div
-                  key={ovClip.id}
-                  className="capcut-pip-layer"
-                  style={{
-                    left: `${50 + tr.x * 50}%`,
-                    top: `${50 + tr.y * 50}%`,
-                    width: `${Math.max(12, Math.min(95, tr.scale * 45))}%`,
-                    opacity: ovCss.opacity,
-                    filter: ovCss.filter,
-                    transform: `translate(-50%, -50%) rotate(${tr.rotation}deg)`,
-                  }}
-                >
-                  {ovAsset.type === 'video' ? (
-                    <video src={ovUrl} muted playsInline autoPlay={playing} />
-                  ) : (
-                    <img src={ovUrl} alt={ovClip.title} />
-                  )}
-                </div>
-              );
-            })}
-
-            {/* Live Text Track & Inline Text Overlays */}
-            {activeTextOverlays.map(({ id, overlay }) => (
-              <div
-                key={id}
-                className="capcut-text-layer"
-                style={{
-                  left: `${overlay.x}%`,
-                  top: `${overlay.y}%`,
-                  fontSize: `${Math.max(12, Math.round(overlay.fontSize * 0.56))}px`,
-                  fontWeight: overlay.bold ? 700 : 400,
-                  color: overlay.color,
-                  backgroundColor:
-                    overlay.bgOpacity > 0.02
-                      ? `${overlay.bgColor}${Math.round(overlay.bgOpacity * 255)
-                          .toString(16)
-                          .padStart(2, '0')}`
-                      : 'transparent',
-                }}
-              >
-                {overlay.text}
-              </div>
-            ))}
-
-            {/* Fade-to-Black Transition Overlay */}
-            {transitionFrame.blackOverlayOpacity > 0.01 && (
-              <div
-                className="timeline-black-fade-overlay"
-                style={{ opacity: transitionFrame.blackOverlayOpacity }}
-                aria-hidden="true"
-              />
-            )}
-
-            {/* Live Cinema Subtitle Overlay */}
-            {activeSubtitleCues.length > 0 && (
-              <div className={`timeline-subtitle-overlay pos-${subtitles.style.position}`}>
-                {activeSubtitleCues.map((cue) => (
-                  <div
-                    key={cue.id}
-                    className="timeline-subtitle-pill"
-                    style={{
-                      fontSize: `${Math.max(12, Math.round(subtitles.style.fontSize * 0.68))}px`,
-                      color: subtitles.style.color,
-                      backgroundColor: `rgba(0, 0, 0, ${subtitles.style.backgroundOpacity})`,
-                    }}
-                  >
-                    {cue.speaker ? <strong>{cue.speaker}: </strong> : null}
-                    {cue.text}
-                  </div>
-                ))}
-              </div>
-            )}
-
             <div className="timeline-monitor-hud">
               <span className="badge">
                 {secondsToSmpte(playheadSec, timeline?.fps ?? 24)} /{' '}
@@ -1298,7 +1217,8 @@ export function TimelinePanel({
               </span>
               <span className="badge">
                 {timeline?.resolution ?? '1920x1080'} · {timeline?.fps ?? 24} fps ·{' '}
-                {qualityMode === 'hq_master' ? 'HQ' : 'PROXY'}
+                {qualityMode === 'hq_master' ? 'HQ' : 'PROXY'} ·{' '}
+                {fxPreviewEnabled ? 'FX ON' : 'FX OFF'}
               </span>
             </div>
           </div>
@@ -1315,6 +1235,17 @@ export function TimelinePanel({
             >
               {playing ? <Pause size={13} /> : <Play size={13} />}
               {playing ? 'Pause' : 'Lecture'}
+            </button>
+
+            <button
+              type="button"
+              className={`chip ${fxPreviewEnabled ? 'active' : ''}`}
+              onClick={() => setFxPreviewEnabled((v) => !v)}
+              title="Activer ou désactiver la prévisualisation temps réel caméra / Cinémascope / FX AMV"
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              <Sparkles size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} />
+              FX Preview {fxPreviewEnabled ? 'ON' : 'OFF'}
             </button>
 
             <input
@@ -1382,6 +1313,16 @@ export function TimelinePanel({
               <div className="section-label">
                 <span>Rendus Serveur FFmpeg</span>
                 <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={rendering}
+                    onClick={() => void handleStartRangePreview()}
+                    title="Rendu preview rapide de la plage autour du curseur (-5s à +10s) en réutilisant le cache"
+                    style={{ fontSize: 10.5 }}
+                  >
+                    <Zap size={11} /> Plage
+                  </button>
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"

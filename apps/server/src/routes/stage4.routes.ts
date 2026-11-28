@@ -4,6 +4,8 @@ import {
   AddTimelineClipInputSchema,
   NleExportFormatSchema,
   PatchTimelineClipInputSchema,
+  PatchTimelineClipsInputSchema,
+  RenderTimelineRangeInputSchema,
   SaveProjectSubtitlesInputSchema,
   SplitTimelineClipInputSchema,
   StartTimelineRenderInputSchema,
@@ -36,6 +38,29 @@ export function registerStage4Routes(app: FastifyInstance, stage4: Stage4Service
   );
 
   // --- Surgical CapCut Clip Editing Endpoints ---
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/timeline/patch',
+    async (request, reply) => {
+      const parsed = PatchTimelineClipsInputSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      try {
+        const res = await stage4.patchTimelineClips(
+          request.params.projectIdOrSlug,
+          parsed.data,
+          'user',
+        );
+        if (!res) return reply.code(404).send({ error: 'Project not found' });
+        return res;
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Failed to patch timeline clips',
+        });
+      }
+    },
+  );
 
   app.post<{ Params: { projectIdOrSlug: string } }>(
     '/api/projects/:projectIdOrSlug/timeline/clips',
@@ -184,6 +209,29 @@ export function registerStage4Routes(app: FastifyInstance, stage4: Stage4Service
       } catch (err) {
         return reply.code(400).send({
           error: err instanceof Error ? err.message : 'Failed to start render',
+        });
+      }
+    },
+  );
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/timeline/render-range',
+    async (request, reply) => {
+      const parsed = RenderTimelineRangeInputSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      try {
+        const res = await stage4.startRangeRender(
+          request.params.projectIdOrSlug,
+          parsed.data,
+          'user',
+        );
+        if (!res) return reply.code(404).send({ error: 'Project not found' });
+        return reply.code(202).send(res);
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Failed to start range preview render',
         });
       }
     },

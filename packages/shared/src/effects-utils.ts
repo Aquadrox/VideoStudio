@@ -2,7 +2,10 @@ import {
   DEFAULT_CLIP_COLOR_ADJUST,
   DEFAULT_CLIP_TRANSFORM,
   type ClipAppliedEffect,
+  type ClipCamera,
+  type ClipCinemascope,
   type ClipColorAdjust,
+  type ClipFx,
   type ClipKeyframe,
   type ClipTextOverlay,
   type ClipTransform,
@@ -10,7 +13,17 @@ import {
   type EffectParamValue,
   type VideoEffectDto,
 } from './effects-schemas.js';
-import type { TimelineClipDto, TimelineTransition } from './stage4-schemas.js';
+import {
+  evaluateCinemascopeBar,
+  evaluateClipCameraFrame,
+  evaluateFadeOutBlackAlpha,
+  evaluateFlashInState,
+  evaluateMangaBlinkState,
+  normalizeClipFx,
+  resolveClipCamera,
+} from './amv-engine.js';
+import type { TimelineClipDto, TimelineDto, TimelineTransition } from './stage4-schemas.js';
+import type { TimelineBeatMarker } from './timeline-v2-utils.js';
 
 // ============================================================================
 // CapCut-Grade Effects Compiler, Security Validator, Keyframe & Render Helpers
@@ -419,14 +432,22 @@ export function escapeDrawtext(text: string): string {
 }
 
 /**
- * Builds the FFmpeg `drawtext` filter string for a ClipTextOverlay.
+ * Builds the FFmpeg `drawtext` filter string(s) for a ClipTextOverlay (supporting subtitle, strokeColor, glowColor shadow & fadeIn/fadeOut).
  */
-export function buildDrawtextFilter(overlay: ClipTextOverlay, width: number, height: number): string {
+export function buildDrawtextFilter(
+  overlay: ClipTextOverlay,
+  width: number,
+  height: number,
+  clipDurationSec?: number,
+): string {
   const safeText = escapeDrawtext(overlay.text);
   const fontSize = Math.round(Math.max(12, Math.min(180, (overlay.fontSize * height) / 720)));
-  const xExpr = `(w*${formatNum(overlay.x / 100)}-text_w/2)`;
-  const yExpr = `(h*${formatNum(overlay.y / 100)}-text_h/2)`;
+  const xNorm = overlay.x > 0 && overlay.x <= 1 ? overlay.x : overlay.x / 100;
+  const yNorm = overlay.y > 0 && overlay.y <= 1 ? overlay.y : overlay.y / 100;
+  const xExpr = `(w*${formatNum(xNorm)}-text_w/2)`;
+  const yExpr = `(h*${formatNum(yNorm)}-text_h/2)`;
   const fontColor = overlay.color.replace('#', '0x');
+  const strokeHex = (overlay.strokeColor || '#000000').replace('#', '0x');
   const boxColor = `${overlay.bgColor.replace('#', '0x')}@${formatNum(overlay.bgOpacity)}`;
 
   const parts = [
@@ -436,14 +457,47 @@ export function buildDrawtextFilter(overlay: ClipTextOverlay, width: number, hei
     `x=${xExpr}`,
     `y=${yExpr}`,
     `borderw=2`,
-    `bordercolor=0x000000@0.65`,
+    `bordercolor=${strokeHex}@0.85`,
   ];
+
+  if (overlay.glowColor) {
+    parts.push(`shadowcolor=${overlay.glowColor.replace('#', '0x')}@0.75`, `shadowx=0`, `shadowy=0`);
+  }
 
   if (overlay.bgOpacity > 0.02) {
     parts.push(`box=1`, `boxcolor=${boxColor}`, `boxborderw=14`);
   }
 
-  return `drawtext=${parts.join(':')}`;
+  if (clipDurationSec && clipDurationSec > 0.1) {
+    const fadeIn = overlay.fadeInSec ?? 0;
+    const fadeOut = overlay.fadeOutSec ?? 0;
+    if (fadeIn > 0.02 || fadeOut > 0.02) {
+      const inExpr = fadeIn > 0.02 ? `min(1,t/${formatNum(fadeIn)})` : '1';
+      const outExpr =
+        fadeOut > 0.02
+          ? `min(1,max(0,(${formatNum(clipDurationSec)}-t)/${formatNum(fadeOut)}))`
+          : '1';
+      parts.push(`alpha='min(${inExpr},${outExpr})'`);
+    }
+  }
+
+  const mainDraw = `drawtext=${parts.join(':')}`;
+
+  if (overlay.subtitle && overlay.subtitle.trim().length > 0) {
+    const subSize = Math.max(12, Math.round(fontSize * 0.6));
+    const subParts = [
+      `text='${escapeDrawtext(overlay.subtitle.trim())}'`,
+      `fontsize=${subSize}`,
+      `fontcolor=${fontColor}@0.9`,
+      `x=(w*${formatNum(xNorm)}-text_w/2)`,
+      `y=(h*${formatNum(yNorm)}+${Math.round(fontSize * 0.65)})`,
+      `borderw=1`,
+      `bordercolor=${strokeHex}@0.8`,
+    ];
+    return `${mainDraw},drawtext=${subParts.join(':')}`;
+  }
+
+  return mainDraw;
 }
 
 export interface CompileClipVideoFilterOptions {
@@ -453,12 +507,255 @@ export interface CompileClipVideoFilterOptions {
   isImage: boolean;
   effectCatalog: Map<string, VideoEffectDto>;
   extraTextOverlays?: ClipTextOverlay[];
+  beatTimesInClip?: number[];
+}
+
+/**
+ * Extracts local downbeat/beat timestamps (relative to clip start: 0 .. clipDurationSec)
+ * from project audio beat markers so `camera.beatPulseAmp` pulses strictly on downbeats.
+ */
+export function extractDownbeatTimesForClip(
+  beatMarkers: TimelineBeatMarker[],
+  clipStartSec: number,
+  clipDurationSec: number,
+): number[] {
+  if (!beatMarkers || beatMarkers.length === 0 || clipDurationSec <= 0) return [];
+  const clipEnd = clipStartSec + clipDurationSec;
+  const raw = beatMarkers
+    .filter((m) => m.timeSec >= clipStartSec - 0.02 && m.timeSec <= clipEnd + 0.02)
+    .filter((m) => m.kind === 'beat' || /downbeat|drop|chorus|impact|beat/i.test(m.label))
+    .map((m) => Math.max(0, Math.round((m.timeSec - clipStartSec) * 1000) / 1000));
+
+  // Deduplicate within 80ms and cap to 16 pulses per clip for fast FFmpeg expression evaluation
+  const unique: number[] = [];
+  for (const t of raw.sort((a, b) => a - b)) {
+    if (unique.length === 0 || t - unique[unique.length - 1]! >= 0.08) {
+      unique.push(t);
+    }
+    if (unique.length >= 16) break;
+  }
+  return unique;
+}
+
+/**
+ * Resolves effective camera parameters from mode defaults + explicit overrides.
+ */
+export function normalizeClipCamera(camera?: Partial<ClipCamera> | null): ClipCamera | null {
+  return resolveClipCamera(camera);
+}
+
+/**
+ * Compiles native dynamic camera motion (`push`, `ease`, `pull_back`, `power_pullback`,
+ * `crash_zoom`, `p05_vertigo`, `pan`, `static` + `rotDeg` + `beatPulseAmp` + `shakeAmp` + `tremorAmp`)
+ * into a frame-accurate FFmpeg scale + crop + rotate + scale chain compatible with BOTH videos and looped images.
+ */
+export function compileCameraFilter(
+  camera: Partial<ClipCamera> | null | undefined,
+  durationSec: number,
+  width: number,
+  height: number,
+  beatTimesInClip: number[] = [],
+): string | null {
+  const cam = normalizeClipCamera(camera);
+  if (!cam) return null;
+
+  const hasMotion =
+    cam.mode !== 'static' ||
+    Math.abs(cam.z0 - 1) > 0.005 ||
+    Math.abs(cam.z1 - 1) > 0.005 ||
+    Math.abs(cam.cx0 - 0.5) > 0.005 ||
+    Math.abs(cam.cx1 - 0.5) > 0.005 ||
+    Math.abs(cam.cy0 - 0.5) > 0.005 ||
+    Math.abs(cam.cy1 - 0.5) > 0.005 ||
+    Math.abs(cam.rotDeg) > 0.05 ||
+    cam.beatPulseAmp > 0.005 ||
+    cam.shakeAmp > 0.005 ||
+    cam.tremorAmp > 0.005;
+
+  if (!hasMotion) return null;
+
+  const dur = Math.max(0.1, durationSec);
+  const pExpr = `min(1,max(0,t/${formatNum(dur)}))`;
+
+  // Progress shaping curve depending on camera mode
+  let curveExpr = pExpr;
+  if (cam.mode === 'crash_zoom') {
+    curveExpr = `pow(${pExpr},2.4)`;
+  } else if (cam.mode === 'power_pullback') {
+    curveExpr = `(1-pow(1-${pExpr},3))`;
+  } else if (
+    cam.mode === 'ease' ||
+    cam.mode === 'push' ||
+    cam.mode === 'pull_back' ||
+    cam.mode === 'pan' ||
+    cam.mode === 'p05_vertigo'
+  ) {
+    curveExpr = `(3*pow(${pExpr},2)-2*pow(${pExpr},3))`;
+  }
+
+  const extraSafetyZoom =
+    (cam.shakeAmp > 0.005 ? cam.shakeAmp * 0.08 : 0) +
+    (cam.tremorAmp > 0.005 ? cam.tremorAmp * 0.07 : 0);
+  const z0 = Math.max(1, cam.z0 + extraSafetyZoom);
+  const z1 = Math.max(1, cam.z1 + extraSafetyZoom);
+  let zoomExpr = `(${formatNum(z0)}+(${formatNum(z1 - z0)})*${curveExpr})`;
+
+  if (cam.mode === 'p05_vertigo') {
+    zoomExpr = `(${zoomExpr}+0.04*sin(t*3.14159))`;
+  }
+
+  // Beat pulse synchronized to downbeat timestamps from audio_tracks.markers
+  if (cam.beatPulseAmp > 0.005) {
+    if (beatTimesInClip.length > 0) {
+      const pulses = beatTimesInClip
+        .map((bt) => `(${formatNum(cam.beatPulseAmp)}*exp(-16*max(0,t-${formatNum(bt)}))*gte(t,${formatNum(bt)}))`)
+        .join('+');
+      zoomExpr = `(${zoomExpr}+${pulses})`;
+    } else {
+      zoomExpr = `(${zoomExpr}+${formatNum(cam.beatPulseAmp)}*exp(-14*mod(t,0.5)))`;
+    }
+  }
+
+  const maxZoom = Math.min(
+    4.5,
+    Math.max(1.15, Math.max(z0, z1) + cam.beatPulseAmp + (cam.mode === 'p05_vertigo' ? 0.06 : 0)),
+  );
+  const workW = Math.ceil((width * maxZoom) / 2) * 2;
+  const workH = Math.ceil((height * maxZoom) / 2) * 2;
+
+  let cxExpr = `(${formatNum(cam.cx0)}+(${formatNum(cam.cx1 - cam.cx0)})*${curveExpr})`;
+  let cyExpr = `(${formatNum(cam.cy0)}+(${formatNum(cam.cy1 - cam.cy0)})*${curveExpr})`;
+
+  if (cam.shakeAmp > 0.005) {
+    const sAmp = formatNum(cam.shakeAmp * 0.032);
+    cxExpr = `(${cxExpr}+${sAmp}*exp(-7*t)*sin(t*42))`;
+    cyExpr = `(${cyExpr}+${sAmp}*exp(-7*t)*cos(t*49))`;
+  }
+  if (cam.tremorAmp > 0.005) {
+    const tAmp = formatNum(cam.tremorAmp * 0.02);
+    cxExpr = `(${cxExpr}+${tAmp}*sin(t*76))`;
+    cyExpr = `(${cyExpr}+${tAmp}*cos(t*83))`;
+  }
+
+  const cropW = `min(iw,max(32,iw/(${zoomExpr})))`;
+  const cropH = `min(ih,max(32,ih/(${zoomExpr})))`;
+  const cropX = `clip(iw*${cxExpr}-(${cropW})/2,0,iw-(${cropW}))`;
+  const cropY = `clip(ih*${cyExpr}-(${cropH})/2,0,ih-(${cropH}))`;
+
+  const chain = [
+    `scale=${workW}:${workH}:flags=bicubic`,
+    `crop=w='${cropW}':h='${cropH}':x='${cropX}':y='${cropY}'`,
+    `scale=${width}:${height}:flags=bicubic`,
+  ];
+
+  if (Math.abs(cam.rotDeg) > 0.05) {
+    const rad = (cam.rotDeg * Math.PI) / 180;
+    const rotExpr =
+      cam.mode === 'p05_vertigo'
+        ? `${formatNum(rad)}*sin(${pExpr}*3.14159)`
+        : `${formatNum(rad)}*${curveExpr}`;
+    chain.push(`rotate='${rotExpr}':fillcolor=black@1`);
+  }
+
+  return chain.join(',');
+}
+
+/**
+ * Compiles Cinemascope letterbox bars (`bar0`, `bar1` = fraction of frame height top & bottom, e.g. 0.125 for 2.39:1, 0.25 for eye-slit).
+ * Uses ultra-fast `drawbox` when static, and smooth ease-in-out `geq` when animated (`bar0 !== bar1`).
+ */
+export function compileCinemascopeFilter(
+  cinemascope: Partial<ClipCinemascope> | null | undefined,
+  durationSec: number,
+  _width: number,
+  height: number,
+): string | null {
+  if (!cinemascope) return null;
+  const bar0 = Math.max(0, Math.min(0.45, cinemascope.bar0 ?? 0));
+  const bar1 = Math.max(0, Math.min(0.45, cinemascope.bar1 ?? bar0));
+  if (bar0 < 0.002 && bar1 < 0.002) return null;
+
+  if (Math.abs(bar0 - bar1) < 0.002) {
+    const barPx = Math.max(2, Math.round(height * bar0));
+    return [
+      `drawbox=x=0:y=0:w=iw:h=${barPx}:color=black:t=fill`,
+      `drawbox=x=0:y=ih-${barPx}:w=iw:h=${barPx}:color=black:t=fill`,
+    ].join(',');
+  }
+
+  const dur = Math.max(0.1, durationSec);
+  const p = `clip(T/${formatNum(dur)},0,1)`;
+  const ease = `(3*${p}*${p}-2*${p}*${p}*${p})`;
+  const barExpr = `(${formatNum(bar0)}+(${formatNum(bar1 - bar0)})*${ease})`;
+  return `format=rgb24,geq=r='if(lt(Y,H*${barExpr})+gt(Y,H*(1-${barExpr})),0,r(X,Y))':g='if(lt(Y,H*${barExpr})+gt(Y,H*(1-${barExpr})),0,g(X,Y))':b='if(lt(Y,H*${barExpr})+gt(Y,H*(1-${barExpr})),0,b(X,Y))'`;
+}
+
+/**
+ * Compiles native AMV FX (BOTH legacy tag arrays AND structured WYSIWYG FX objects) + `flashIn`
+ * into FFmpeg filter stages (used when Python Pillow/NumPy renderer is unavailable or bypassed).
+ */
+export function compileAmvFxFilters(
+  fx: ClipFx | null | undefined,
+  flashIn: number | undefined,
+  durationSec: number,
+  width: number,
+  height: number,
+  fps = 24,
+): string[] {
+  const out: string[] = [];
+  const nfx = normalizeClipFx(fx, flashIn);
+
+  if (nfx.legacyShakeAmp > 0) {
+    out.push(
+      `crop=w=iw*0.95:h=ih*0.95:x='clip((iw-ow)/2+sin(t*38)*8*exp(-7*t),0,iw-ow)':y='clip((ih-oh)/2+cos(t*43)*6*exp(-7*t),0,ih-oh)'`,
+      `scale=${width}:${height}`,
+    );
+  }
+  if (nfx.legacyTremorAmp > 0) {
+    out.push(
+      `crop=w=iw*0.91:h=ih*0.91:x='clip((iw-ow)/2+sin(t*72)*16,0,iw-ow)':y='clip((ih-oh)/2+cos(t*81)*14,0,ih-oh)'`,
+      `scale=${width}:${height}`,
+    );
+  }
+  if (nfx.mangaBlink) {
+    // High-contrast monochrome ink + invert every 2 frames
+    out.push(
+      'hue=s=0',
+      'eq=contrast=2.25:brightness=0.04',
+      "negate=enable='eq(mod(floor(n/2),2),1)'",
+    );
+  }
+  if (nfx.radialSpeedLines) {
+    out.push('unsharp=7:7:1.8:7:7:0.0', 'vignette=PI/2.6:eval=frame');
+  }
+  if (nfx.horizSpeedLines) {
+    out.push('boxblur=lr=5:lp=1:cr=1:cp=1', 'unsharp=5:5:1.35:5:5:0.0', 'noise=alls=10:allf=u');
+  }
+  if (nfx.particles) {
+    out.push(
+      'colorbalance=rs=0.14:gs=0.07:bs=-0.08:rh=0.18:gh=0.10:bh=-0.06',
+      'noise=alls=12:allf=t+u',
+    );
+  }
+  if (nfx.flashIn && nfx.flashIn.alpha > 0.02) {
+    const dur = Math.max(0.08, nfx.flashIn.frames / Math.max(1, fps));
+    const hexColor = nfx.flashIn.color.replace('#', '0x');
+    out.push(`fade=t=in:st=0:d=${formatNum(dur)}:color=${hexColor}`);
+  }
+  if (nfx.fadeOutBlack && nfx.fadeOutBlack.durationSec > 0.02) {
+    const d = Math.min(nfx.fadeOutBlack.durationSec, Math.max(0.1, durationSec));
+    const st = Math.max(0, durationSec - d);
+    out.push(`fade=t=out:st=${formatNum(st)}:d=${formatNum(d)}:color=black`);
+  }
+
+  return out;
 }
 
 /**
  * Compiles the full FFmpeg `-vf` filter chain for a single timeline clip:
- * speed (`setpts`), scale/pad, flip/transform/zoom, color adjustments (`eq`, `gblur`, `unsharp`, `vignette`),
- * custom/built-in applied video effects, fade-in/out, and text overlays (`drawtext`).
+ * speed (`setpts`), scale/pad, native camera motion (with beatPulseAmp/rotDeg/shake/tremor), flip/transform/zoom,
+ * color adjustments (`eq`, `gblur`, `unsharp`, `vignette`), native AMV FX, custom/built-in applied video effects,
+ * Cinemascope bars, fade-in/out, and text overlays (`drawtext`).
  */
 export function compileClipVideoFilterChain(
   clip: Pick<
@@ -471,11 +768,15 @@ export function compileClipVideoFilterChain(
     | 'colorAdjust'
     | 'effects'
     | 'textOverlay'
+    | 'camera'
+    | 'cinemascope'
+    | 'fx'
+    | 'flashIn'
   >,
   options: CompileClipVideoFilterOptions,
 ): string {
   const filters: string[] = [];
-  const { width, height, fps, isImage, effectCatalog } = options;
+  const { width, height, fps, isImage, effectCatalog, beatTimesInClip } = options;
 
   // 1. Speed (for video sources)
   const rawSpeed = clip.speed ?? 1;
@@ -489,6 +790,16 @@ export function compileClipVideoFilterChain(
     `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
     `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
   );
+
+  // 2b. Native Camera Motion
+  const cameraFilter = compileCameraFilter(
+    clip.camera,
+    clip.durationSec,
+    width,
+    height,
+    beatTimesInClip ?? [],
+  );
+  if (cameraFilter) filters.push(cameraFilter);
 
   // 3. Transform (flip, zoom/pan, rotation)
   const tr: ClipTransform = { ...DEFAULT_CLIP_TRANSFORM, ...(clip.transform ?? {}) };
@@ -539,6 +850,10 @@ export function compileClipVideoFilterChain(
     filters.push(`vignette=PI/${formatNum(angleDiv)}`);
   }
 
+  // 4b. Native AMV FX (tags or structured object) + flashIn
+  const amvFilters = compileAmvFxFilters(clip.fx, clip.flashIn, clip.durationSec, width, height, fps);
+  filters.push(...amvFilters);
+
   // 5. Applied Custom / Built-in Video Effects
   for (const applied of clip.effects ?? []) {
     if (!applied.enabled) continue;
@@ -563,13 +878,17 @@ export function compileClipVideoFilterChain(
 
   // 7. Text Overlays (inline on clip or extra overlays)
   if (clip.textOverlay && clip.textOverlay.text.trim().length > 0) {
-    filters.push(buildDrawtextFilter(clip.textOverlay, width, height));
+    filters.push(buildDrawtextFilter(clip.textOverlay, width, height, clip.durationSec));
   }
   for (const extra of options.extraTextOverlays ?? []) {
     if (extra.text.trim().length > 0) {
-      filters.push(buildDrawtextFilter(extra, width, height));
+      filters.push(buildDrawtextFilter(extra, width, height, clip.durationSec));
     }
   }
+
+  // 7b. Native Cinemascope Letterbox Bars drawn LAST on top of everything
+  const scopeFilter = compileCinemascopeFilter(clip.cinemascope, clip.durationSec, width, height);
+  if (scopeFilter) filters.push(scopeFilter);
 
   // 8. Normalize FPS & pixel format
   filters.push(`fps=${fps}`, 'format=yuv420p');
@@ -810,20 +1129,39 @@ export interface ClipCssPreviewStyle {
   transform: string;
   opacity: number;
   vignetteOpacity: number;
+  cinemascopeBarFraction: number;
+  flashOverlayColor: string;
+  flashOverlayOpacity: number;
 }
 
 /**
- * Computes real-time CSS preview styling for the browser monitor at `playheadSec`.
+ * Computes real-time CSS preview styling for the browser monitor at `playheadSec`,
+ * including keyframes, color grading, custom effects, native Camera motion (+ beatPulseAmp),
+ * animated Cinemascope bars, and AMV FX tags.
  */
 export function compileClipCssPreview(
   clip: Pick<
     TimelineClipDto,
-    'startSec' | 'durationSec' | 'fadeInSec' | 'fadeOutSec' | 'transform' | 'colorAdjust' | 'effects' | 'keyframes'
-  >,
+    | 'startSec'
+    | 'durationSec'
+    | 'fadeInSec'
+    | 'fadeOutSec'
+    | 'transform'
+    | 'colorAdjust'
+    | 'effects'
+    | 'keyframes'
+    | 'camera'
+    | 'cinemascope'
+    | 'fx'
+    | 'flashIn'
+  > & { id?: string },
   playheadSec: number,
   effectCatalog: Map<string, VideoEffectDto>,
+  beatTimesInClip: number[] = [],
+  fps = 24,
 ): ClipCssPreviewStyle {
   const localTime = Math.max(0, Math.min(clip.durationSec, playheadSec - clip.startSec));
+  const frameIndex = Math.max(0, Math.floor(localTime * fps + 1e-6));
   const tr = evaluateClipTransformAtTime(clip.transform, clip.keyframes, localTime);
   const color: ClipColorAdjust = { ...DEFAULT_CLIP_COLOR_ADJUST, ...(clip.colorAdjust ?? {}) };
 
@@ -853,27 +1191,54 @@ export function compileClipCssPreview(
     if (css.trim()) filterParts.push(css.trim());
   }
 
+  const nfx = normalizeClipFx(clip.fx, clip.flashIn);
+  const mangaState = evaluateMangaBlinkState(nfx, frameIndex);
+  if (mangaState.active) {
+    filterParts.push(
+      mangaState.inverted
+        ? 'grayscale(1) contrast(2.25) invert(1)'
+        : 'grayscale(1) contrast(2.25)',
+    );
+  }
+
+  const flashState = evaluateFlashInState(nfx, localTime, fps);
+  const camFrame = evaluateClipCameraFrame({
+    clipId: clip.id ?? 'preview',
+    camera: clip.camera,
+    fx: clip.fx,
+    legacyFlashIn: clip.flashIn,
+    localTimeSec: localTime,
+    durationSec: clip.durationSec,
+    fps,
+    beatTimesInClip,
+  });
+
+  const cinemascopeBarFraction = evaluateCinemascopeBar(clip.cinemascope, localTime, clip.durationSec);
+
   let opacity = Math.max(0, Math.min(1, tr.opacity));
   const cssFadeIn = clip.fadeInSec ?? 0;
-  const cssFadeOut = clip.fadeOutSec ?? 0;
   if (cssFadeIn > 0.02 && localTime < cssFadeIn) {
     opacity *= Math.max(0, localTime / cssFadeIn);
   }
-  if (cssFadeOut > 0.02 && localTime > clip.durationSec - cssFadeOut) {
-    opacity *= Math.max(0, (clip.durationSec - localTime) / cssFadeOut);
+  const fadeOutAlpha = evaluateFadeOutBlackAlpha(nfx, clip.fadeOutSec, localTime, clip.durationSec);
+  if (fadeOutAlpha > 0) {
+    opacity *= Math.max(0, 1 - fadeOutAlpha);
   }
 
+  const totalTx = tr.x * 50 + (0.5 - camFrame.cx) * 40 + camFrame.dx * 100;
+  const totalTy = tr.y * 50 + (0.5 - camFrame.cy) * 40 + camFrame.dy * 100;
   const transforms: string[] = [];
-  if (Math.abs(tr.x) > 0.001 || Math.abs(tr.y) > 0.001) {
-    transforms.push(`translate(${formatNum(tr.x * 50)}%, ${formatNum(tr.y * 50)}%)`);
+  if (Math.abs(totalTx) > 0.01 || Math.abs(totalTy) > 0.01) {
+    transforms.push(`translate(${formatNum(totalTx)}%, ${formatNum(totalTy)}%)`);
   }
-  const sx = tr.scale * (tr.flipH ? -1 : 1);
-  const sy = tr.scale * (tr.flipV ? -1 : 1);
+  const sx = tr.scale * camFrame.z * (tr.flipH ? -1 : 1);
+  const sy = tr.scale * camFrame.z * (tr.flipV ? -1 : 1);
   if (Math.abs(sx - 1) > 0.001 || Math.abs(sy - 1) > 0.001) {
     transforms.push(`scale(${formatNum(sx)}, ${formatNum(sy)})`);
   }
-  if (Math.abs(tr.rotation) > 0.1) {
-    transforms.push(`rotate(${formatNum(tr.rotation)}deg)`);
+  const totalRot = tr.rotation + camFrame.rotDeg;
+  if (Math.abs(totalRot) > 0.05) {
+    transforms.push(`rotate(${formatNum(totalRot)}deg)`);
   }
 
   return {
@@ -881,11 +1246,14 @@ export function compileClipCssPreview(
     transform: transforms.join(' ') || 'none',
     opacity: Math.round(opacity * 1000) / 1000,
     vignetteOpacity: Math.max(0, Math.min(1, color.vignette)),
+    cinemascopeBarFraction: Math.round(cinemascopeBarFraction * 10000) / 10000,
+    flashOverlayColor: flashState.color,
+    flashOverlayOpacity: Math.round(flashState.alpha * 1000) / 1000,
   };
 }
 
 // ============================================================================
-// CapCut Razor / Split Clip Helper & Incremental Render Cache Signature
+// CapCut Razor / Split Clip, Ripple & Range Slicing Helpers
 // ============================================================================
 
 export interface SplitClipResult<T> {
@@ -948,9 +1316,77 @@ export function splitClipAtTime<
 }
 
 /**
+ * Recalculates consecutive `startSec` values across an ordered list of clips (Ripple close gaps).
+ */
+export function rippleTrackClips<T extends { startSec: number; durationSec: number }>(
+  clips: T[],
+  initialStartSec = 0,
+): T[] {
+  let cursor = Math.max(0, initialStartSec);
+  return clips.map((clip) => {
+    const startSec = Math.round(cursor * 1000) / 1000;
+    cursor = startSec + Math.max(0.1, clip.durationSec);
+    return { ...clip, startSec };
+  });
+}
+
+/**
+ * Slices an entire multi-track timeline down to `[startSec, endSec]` for fast range previews (`render_timeline_range`).
+ * Clips completely inside the range preserve exact `inSec`/`durationSec`/FX so they hit the SHA-256 segment cache!
+ */
+export function sliceTimelineForRange(
+  timeline: TimelineDto,
+  startSec: number,
+  endSec: number,
+): TimelineDto {
+  const safeStart = Math.max(0, startSec);
+  const safeEnd = Math.max(safeStart + 0.2, endSec);
+  const rangeDur = Math.round((safeEnd - safeStart) * 1000) / 1000;
+
+  const slicedTracks = timeline.tracks.map((track) => {
+    const slicedClips: TimelineClipDto[] = [];
+    for (const clip of track.clips) {
+      const clipStart = clip.startSec;
+      const clipEnd = clip.startSec + clip.durationSec;
+      if (clipEnd <= safeStart + 0.01 || clipStart >= safeEnd - 0.01) continue;
+
+      const overlapStart = Math.max(clipStart, safeStart);
+      const overlapEnd = Math.min(clipEnd, safeEnd);
+      const leftTrim = Math.max(0, overlapStart - clipStart);
+      const newDur = Math.round((overlapEnd - overlapStart) * 1000) / 1000;
+      if (newDur < 0.05) continue;
+
+      const speed = Math.max(0.25, Math.min(4, clip.speed ?? 1));
+      const newInSec = Math.round((clip.inSec + leftTrim * speed) * 1000) / 1000;
+      const newStartSec = Math.round((overlapStart - safeStart) * 1000) / 1000;
+
+      slicedClips.push({
+        ...clip,
+        startSec: newStartSec,
+        durationSec: newDur,
+        inSec: newInSec,
+        outSec: leftTrim > 0 || overlapEnd < clipEnd ? Math.round((newInSec + newDur * speed) * 1000) / 1000 : clip.outSec,
+        transition: leftTrim > 0 ? 'cut' : clip.transition,
+        transitionDurationSec: leftTrim > 0 ? 0 : clip.transitionDurationSec,
+      });
+    }
+    return {
+      ...track,
+      clips: slicedClips,
+    };
+  });
+
+  return {
+    ...timeline,
+    totalDurationSec: rangeDur,
+    tracks: slicedTracks,
+  };
+}
+
+/**
  * Deterministic signature string for content-addressed per-clip segment caching.
- * Any change to source media, trim, speed, transform, color, effects, text, or render settings
- * invalidates ONLY that clip's cached segment!
+ * Depends strictly on `(assetId, assetUpdatedAt/sourceFingerprint, inSec, outSec, durationSec, speed,
+ * camera, cinemascope, fx, flashIn, transform, colorAdjust, effects, beatTimes, resolution, fps, qualityMode, renderEngine)`.
  */
 export function buildClipSegmentCacheSignature(params: {
   sourceFingerprint: string;
@@ -965,19 +1401,32 @@ export function buildClipSegmentCacheSignature(params: {
     | 'colorAdjust'
     | 'effects'
     | 'textOverlay'
-  >;
+    | 'camera'
+    | 'cinemascope'
+    | 'fx'
+    | 'flashIn'
+  > & { id?: string; outSec?: number | null };
   width: number;
   height: number;
   fps: number;
   qualityMode: string;
   compiledVideoFilter: string;
+  renderEngine?: 'ffmpeg' | 'amv_py';
+  beatTimesInClip?: number[];
 }): string {
   return JSON.stringify({
-    v: 1,
+    v: 3,
+    eng: params.renderEngine ?? 'ffmpeg',
     src: params.sourceFingerprint,
     in: Math.round(params.clip.inSec * 1000),
+    out: params.clip.outSec != null ? Math.round(params.clip.outSec * 1000) : null,
     dur: Math.round(params.clip.durationSec * 1000),
     spd: Math.round((params.clip.speed ?? 1) * 1000),
+    cam: params.clip.camera ?? null,
+    scope: params.clip.cinemascope ?? null,
+    fx: params.clip.fx ?? null,
+    flashIn: params.clip.flashIn ?? 0,
+    beats: params.beatTimesInClip ?? [],
     w: params.width,
     h: params.height,
     fps: params.fps,

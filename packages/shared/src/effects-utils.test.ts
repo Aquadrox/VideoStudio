@@ -5,14 +5,22 @@ import {
   DEFAULT_CLIP_TRANSFORM,
   buildAtempoChain,
   buildClipSegmentCacheSignature,
+  buildDrawtextFilter,
+  compileAmvFxFilters,
+  compileCameraFilter,
+  compileCinemascopeFilter,
   compileClipAudioFilterChain,
   compileClipCssPreview,
   compileClipVideoFilterChain,
   compileEffectFfmpegFilter,
   computeXfadeChainPlan,
   evaluateClipTransformAtTime,
+  extractDownbeatTimesForClip,
+  rippleTrackClips,
+  sliceTimelineForRange,
   splitClipAtTime,
   validateFfmpegFilterTemplate,
+  type TimelineDto,
   type VideoEffectDto,
 } from './index.js';
 
@@ -273,5 +281,301 @@ describe('effects-utils (CapCut engine & custom AI effects)', () => {
     });
     expect(sigA).toBe(sigB);
     expect(sigA).not.toBe(sigChanged);
+  });
+
+  it('blocks uppercase/file-reading bypasses while permitting legitimate nested filter expressions', () => {
+    expect(validateFfmpegFilterTemplate('MOVIE=/etc/shadow').valid).toBe(false);
+    expect(validateFfmpegFilterTemplate('amovie=secret.wav').valid).toBe(false);
+    expect(validateFfmpegFilterTemplate("drawtext=text='hi':fontfile=/etc/passwd").valid).toBe(false);
+    expect(validateFfmpegFilterTemplate("drawtext=textfile=/etc/hosts").valid).toBe(false);
+    expect(validateFfmpegFilterTemplate('frei0r=pixeliz0r').valid).toBe(false);
+    expect(validateFfmpegFilterTemplate('ladspa=f=evil').valid).toBe(false);
+    expect(validateFfmpegFilterTemplate('zmq=b=tcp://127.0.0.1:5555').valid).toBe(false);
+    expect(validateFfmpegFilterTemplate('eq=contrast=1'.repeat(120)).valid).toBe(false);
+
+    // Legitimate FFmpeg expressions with parentheses and commas inside expressions
+    expect(
+      validateFfmpegFilterTemplate('scale=iw/4:ih/4:flags=neighbor,scale=iw*4:ih*4:flags=neighbor').valid,
+    ).toBe(true);
+    expect(
+      validateFfmpegFilterTemplate("eq=brightness='if(gt(t,1),0.1,0)'").valid,
+    ).toBe(true);
+  });
+
+  it('handles zoom-out padding (scale < 1), flipV, ignores setpts on still images, and skips audio_fx on video chain', () => {
+    const catalog = new Map<string, VideoEffectDto>();
+    for (const seed of BUILTIN_VIDEO_EFFECTS) catalog.set(seed.slug, makeEffectDto(seed));
+
+    const vf = compileClipVideoFilterChain(
+      {
+        durationSec: 4,
+        speed: 2,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+        transform: { ...DEFAULT_CLIP_TRANSFORM, scale: 0.5, flipV: true },
+        colorAdjust: { ...DEFAULT_CLIP_COLOR_ADJUST },
+        effects: [{ effectSlug: 'audio-radio-voice', enabled: true, intensity: 1, params: {} }],
+        textOverlay: null,
+      },
+      { width: 1280, height: 720, fps: 24, isImage: true, effectCatalog: catalog },
+    );
+
+    expect(vf).not.toContain('setpts='); // still image must not apply setpts
+    expect(vf).toContain('vflip');
+    expect(vf).toContain('scale=640:360,pad=1280:720');
+    expect(vf).not.toContain('highpass'); // audio_fx must not bleed into -vf
+  });
+
+  it('interpolates ease_in, ease_out, ease_in_out keyframes and clamps before/after bounds', () => {
+    const kfs = [
+      { id: 'k1', timeOffsetSec: 1, property: 'opacity' as const, value: 0, easing: 'linear' as const },
+      { id: 'k2', timeOffsetSec: 3, property: 'opacity' as const, value: 1, easing: 'ease_in' as const },
+    ];
+    // Before first keyframe -> clamped to 0
+    expect(evaluateClipTransformAtTime(DEFAULT_CLIP_TRANSFORM, kfs, 0).opacity).toBe(0);
+    // Midpoint with ease_in (t=0.5 -> 0.5^2 = 0.25)
+    expect(evaluateClipTransformAtTime(DEFAULT_CLIP_TRANSFORM, kfs, 2).opacity).toBeCloseTo(0.25, 3);
+    // After last keyframe -> clamped to 1
+    expect(evaluateClipTransformAtTime(DEFAULT_CLIP_TRANSFORM, kfs, 5).opacity).toBe(1);
+  });
+
+  it('avoids duplicate (2) suffixes and clears internal fades on repeated splits', () => {
+    const split = splitClipAtTime(
+      {
+        title: 'Plan A (2)',
+        startSec: 0,
+        durationSec: 4,
+        inSec: 0,
+        outSec: null,
+        speed: 1,
+        fadeInSec: 1,
+        fadeOutSec: 1,
+        transition: 'fade_black' as const,
+        transitionDurationSec: 0.5,
+        keyframes: [],
+      },
+      2,
+    );
+    expect(split).not.toBeNull();
+    expect(split!.right.title).toBe('Plan A (2)');
+    expect(split!.left.fadeInSec).toBe(1);
+    expect(split!.left.fadeOutSec).toBe(0);
+    expect(split!.right.fadeInSec).toBe(0);
+    expect(split!.right.fadeOutSec).toBe(1);
+  });
+
+  it('compiles camera modes (power_pullback, crash_zoom, p05_vertigo) with downbeat beatPulseAmp, rotDeg, shakeAmp & tremorAmp', () => {
+    const vf = compileCameraFilter(
+      {
+        mode: 'power_pullback',
+        z0: 1.34,
+        z1: 1.0,
+        rotDeg: 3.5,
+        beatPulseAmp: 0.04,
+        shakeAmp: 0.5,
+        tremorAmp: 0.3,
+      },
+      4,
+      1280,
+      720,
+      [0.5, 1.5, 2.5],
+    );
+    expect(vf).not.toBeNull();
+    expect(vf!).toContain('gte(t,0.5)');
+    expect(vf!).toContain('gte(t,1.5)');
+    expect(vf!).toContain('exp(-7*t)');
+    expect(vf!).toContain('rotate=');
+
+    const staticNull = compileCameraFilter({ mode: 'static', z0: 1, z1: 1 }, 4, 1280, 720);
+    expect(staticNull).toBeNull();
+  });
+
+  it('compiles static Cinemascope bars via fast drawbox and animated bars via ease-in-out geq', () => {
+    const staticScope = compileCinemascopeFilter({ bar0: 0.125, bar1: 0.125 }, 4, 1280, 720);
+    expect(staticScope).toContain('drawbox=x=0:y=0:w=iw:h=90:color=black:t=fill');
+    expect(staticScope).toContain('drawbox=x=0:y=ih-90:w=iw:h=90:color=black:t=fill');
+
+    const animScope = compileCinemascopeFilter({ bar0: 0.25, bar1: 0.125 }, 4, 1280, 720);
+    expect(animScope).toContain('geq=');
+    expect(animScope).toContain('0.25');
+  });
+
+  it('compiles both legacy AMV tag arrays and structured ClipAmvFxObject into FFmpeg filters & rich drawtext', () => {
+    const fromTags = compileAmvFxFilters(['shake', 'manga_ink_blink', 'flash_gold'], 0.8, 4, 1280, 720, 24);
+    expect(fromTags.some((f) => f.includes('negate=enable='))).toBe(true);
+    expect(fromTags.some((f) => f.includes('0xF5B942'))).toBe(true);
+
+    const fromObj = compileAmvFxFilters(
+      {
+        mangaBlink: true,
+        radialSpeedLines: { color: '#FFFFFF', intensity: 0.9, count: 48 },
+        particles: { color: '#F5B942', count: 32, intensity: 0.85 },
+        flashIn: { alpha: 0.9, color: '#FFFFFF', frames: 6 },
+        fadeOutBlack: { durationSec: 0.75 },
+      },
+      0,
+      4,
+      1280,
+      720,
+      24,
+    );
+    expect(fromObj.some((f) => f.includes('negate=enable='))).toBe(true);
+    expect(fromObj.some((f) => f.includes('fade=t=in:st=0:d=0.25:color=0xFFFFFF'))).toBe(true);
+    expect(fromObj.some((f) => f.includes('fade=t=out:st=3.25:d=0.75:color=black'))).toBe(true);
+
+    const txt = buildDrawtextFilter(
+      {
+        text: 'ACTE I',
+        subtitle: 'Le Réveil',
+        fontSize: 60,
+        color: '#FFFFFF',
+        strokeColor: '#111111',
+        glowColor: '#F5B942',
+        bgColor: '#000000',
+        bgOpacity: 0,
+        x: 50,
+        y: 50,
+        bold: true,
+        fadeInSec: 0.3,
+        fadeOutSec: 0.4,
+        animation: 'fade',
+      },
+      1280,
+      720,
+      4,
+    );
+    expect(txt).toContain("text='ACTE I'");
+    expect(txt).toContain("text='Le Réveil'");
+    expect(txt).toContain('bordercolor=0x111111@0.85');
+    expect(txt).toContain('shadowcolor=0xF5B942@0.75');
+    expect(txt).toContain("alpha='min(");
+  });
+
+  it('extracts deduplicated local downbeats, ripples track startSec, and slices range preserving interior cache hits', () => {
+    const beats = extractDownbeatTimesForClip(
+      [
+        { timeSec: 9.5, label: 'Beat', kind: 'beat' },
+        { timeSec: 10.5, label: 'Downbeat 1', kind: 'beat' },
+        { timeSec: 10.52, label: 'Duplicate', kind: 'beat' },
+        { timeSec: 12.0, label: 'Drop Impact', kind: 'marker' },
+        { timeSec: 15.0, label: 'Outside', kind: 'beat' },
+      ],
+      10,
+      4,
+    );
+    expect(beats).toEqual([0.5, 2]);
+
+    const rippled = rippleTrackClips([
+      { id: 'a', startSec: 12, durationSec: 3.5 },
+      { id: 'b', startSec: 99, durationSec: 2.25 },
+      { id: 'c', startSec: 0, durationSec: 4 },
+    ]);
+    expect(rippled.map((c) => c.startSec)).toEqual([0, 3.5, 5.75]);
+
+    const tl: TimelineDto = {
+      projectId: 'p1',
+      projectSlug: 'demo',
+      fps: 24,
+      resolution: '1280x720',
+      qualityMode: 'draft_proxy',
+      totalDurationSec: 12,
+      renders: [],
+      tracks: [
+        {
+          id: 't1',
+          projectId: 'p1',
+          name: 'V1',
+          type: 'video',
+          muted: false,
+          locked: false,
+          volume: 1,
+          sortOrder: 0,
+          clips: [
+            {
+              id: 'c1',
+              trackId: 't1',
+              projectId: 'p1',
+              assetId: 'a1',
+              assetRef: '@vid-001',
+              assetTitle: 'C1',
+              assetType: 'video',
+              assetQualityTier: 'draft_lowres',
+              title: 'C1',
+              startSec: 0,
+              durationSec: 4,
+              inSec: 0,
+              outSec: 4,
+              speed: 1,
+              transition: 'cut',
+              transitionDurationSec: 0,
+              volume: 1,
+              muted: false,
+              notes: '',
+              sortOrder: 0,
+            },
+            {
+              id: 'c2',
+              trackId: 't1',
+              projectId: 'p1',
+              assetId: 'a2',
+              assetRef: '@vid-002',
+              assetTitle: 'C2',
+              assetType: 'video',
+              assetQualityTier: 'draft_lowres',
+              title: 'C2',
+              startSec: 4,
+              durationSec: 4,
+              inSec: 1,
+              outSec: 5,
+              speed: 1,
+              transition: 'crossfade',
+              transitionDurationSec: 0.5,
+              volume: 1,
+              muted: false,
+              notes: '',
+              sortOrder: 1,
+            },
+            {
+              id: 'c3',
+              trackId: 't1',
+              projectId: 'p1',
+              assetId: 'a3',
+              assetRef: '@vid-003',
+              assetTitle: 'C3',
+              assetType: 'video',
+              assetQualityTier: 'draft_lowres',
+              title: 'C3',
+              startSec: 8,
+              durationSec: 4,
+              inSec: 0,
+              outSec: 4,
+              speed: 1,
+              transition: 'cut',
+              transitionDurationSec: 0,
+              volume: 1,
+              muted: false,
+              notes: '',
+              sortOrder: 2,
+            },
+          ],
+        },
+      ],
+    };
+
+    const sliced = sliceTimelineForRange(tl, 2, 10);
+    const clips = sliced.tracks[0]!.clips;
+    expect(clips).toHaveLength(3);
+    // Edge clip c1 trimmed from 2..4 -> inSec=2, dur=2, startSec=0
+    expect(clips[0]!.startSec).toBe(0);
+    expect(clips[0]!.inSec).toBe(2);
+    expect(clips[0]!.durationSec).toBe(2);
+    // Interior clip c2 keeps EXACT inSec=1, outSec=5, durationSec=4 -> 100% cache hit!
+    expect(clips[1]!.startSec).toBe(2);
+    expect(clips[1]!.inSec).toBe(1);
+    expect(clips[1]!.outSec).toBe(5);
+    expect(clips[1]!.durationSec).toBe(4);
+    // Edge clip c3 trimmed from 8..10 -> inSec=0, dur=2, startSec=6
+    expect(clips[2]!.startSec).toBe(6);
+    expect(clips[2]!.durationSec).toBe(2);
   });
 });

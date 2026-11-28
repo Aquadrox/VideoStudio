@@ -138,11 +138,23 @@ export type TextOverlayAnimation = z.infer<typeof TextOverlayAnimationSchema>;
 
 export const ClipTextOverlaySchema = z.object({
   text: z.string().min(1).max(500),
+  subtitle: z.string().max(500).optional(),
+  fontFamily: z.string().trim().max(120).optional(),
   fontSize: z.number().min(12).max(180).default(48),
   color: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
     .default('#FFFFFF'),
+  strokeColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .nullable()
+    .optional(),
+  glowColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .nullable()
+    .optional(),
   bgColor: z
     .string()
     .regex(/^#[0-9a-fA-F]{6}$/)
@@ -151,6 +163,8 @@ export const ClipTextOverlaySchema = z.object({
   x: z.number().min(0).max(100).default(50),
   y: z.number().min(0).max(100).default(82),
   bold: z.boolean().default(true),
+  fadeInSec: z.number().min(0).max(15).optional(),
+  fadeOutSec: z.number().min(0).max(15).optional(),
   animation: TextOverlayAnimationSchema.default('fade'),
 });
 export type ClipTextOverlay = z.infer<typeof ClipTextOverlaySchema>;
@@ -177,12 +191,143 @@ export const DEFAULT_CLIP_COLOR_ADJUST: ClipColorAdjust = {
 
 export const DEFAULT_TEXT_OVERLAY: ClipTextOverlay = {
   text: 'Nouveau titre',
+  subtitle: '',
+  fontFamily: 'Inter, system-ui, sans-serif',
   fontSize: 48,
   color: '#FFFFFF',
+  strokeColor: '#000000',
+  glowColor: null,
   bgColor: '#000000',
   bgOpacity: 0.45,
   x: 50,
   y: 82,
   bold: true,
+  fadeInSec: 0.25,
+  fadeOutSec: 0.25,
   animation: 'fade',
 };
+
+// --- Native Camera Motion, Cinemascope Bars & AMV FX (WYSIWYG Web Canvas + Server Render) ---
+
+export const ClipCameraModeSchema = z.enum([
+  'static',
+  'push',
+  'ease',
+  'pull_back',
+  'power_pullback',
+  'crash_zoom',
+  'p05_vertigo',
+  'pan',
+]);
+export type ClipCameraMode = z.infer<typeof ClipCameraModeSchema>;
+
+export const ClipCameraSchema = z.object({
+  mode: ClipCameraModeSchema.default('static'),
+  z0: z.number().min(0.5).max(4).default(1),
+  z1: z.number().min(0.5).max(4).default(1),
+  cx0: z.number().min(0).max(1).default(0.5),
+  cx1: z.number().min(0).max(1).default(0.5),
+  cy0: z.number().min(0).max(1).default(0.5),
+  cy1: z.number().min(0).max(1).default(0.5),
+  rotDeg: z.number().min(-45).max(45).default(0),
+  beatPulseAmp: z.number().min(0).max(0.35).default(0),
+  shakeAmp: z.number().min(0).max(1).default(0),
+  tremorAmp: z.number().min(0).max(1).default(0),
+});
+export type ClipCamera = z.infer<typeof ClipCameraSchema>;
+
+export const ClipCinemascopeSchema = z.object({
+  bar0: z.number().min(0).max(0.45).default(0),
+  bar1: z.number().min(0).max(0.45).default(0),
+});
+export type ClipCinemascope = z.infer<typeof ClipCinemascopeSchema>;
+
+export const AmvFxTagSchema = z.enum([
+  'shake',
+  'power_tremor',
+  'manga_ink_blink',
+  'radial_speed_lines',
+  'horiz_speed_lines',
+  'flash_white',
+  'flash_gold',
+  'particles_gold',
+]);
+export type AmvFxTag = z.infer<typeof AmvFxTagSchema>;
+
+const FxHexColorSchema = z
+  .string()
+  .trim()
+  .regex(/^#[0-9a-fA-F]{3,8}$/, 'Color must be a hex color like #FFFFFF');
+
+export const RadialSpeedLinesFxSchema = z.object({
+  color: FxHexColorSchema.default('#FFFFFF'),
+  intensity: z.number().min(0).max(2).default(0.75),
+  count: z.number().int().min(4).max(200).default(48),
+});
+export type RadialSpeedLinesFx = z.infer<typeof RadialSpeedLinesFxSchema>;
+
+export const HorizSpeedLinesDirectionSchema = z.enum(['left', 'right', 'diag_up', 'vert_down']);
+export type HorizSpeedLinesDirection = z.infer<typeof HorizSpeedLinesDirectionSchema>;
+
+export const HorizSpeedLinesFxSchema = z.object({
+  color: FxHexColorSchema.default('#FFFFFF'),
+  direction: HorizSpeedLinesDirectionSchema.default('left'),
+  intensity: z.number().min(0).max(2).default(0.75),
+});
+export type HorizSpeedLinesFx = z.infer<typeof HorizSpeedLinesFxSchema>;
+
+export const ParticlesFxSchema = z.object({
+  color: FxHexColorSchema.default('#F5B942'),
+  count: z.number().int().min(1).max(200).default(32),
+  intensity: z.number().min(0).max(2).default(0.85),
+});
+export type ParticlesFx = z.infer<typeof ParticlesFxSchema>;
+
+export const FlashInFxSchema = z.object({
+  alpha: z.number().min(0).max(1).default(0.85),
+  color: FxHexColorSchema.default('#FFFFFF'),
+  frames: z.number().int().min(1).max(60).default(6),
+});
+export type FlashInFx = z.infer<typeof FlashInFxSchema>;
+
+export const FadeOutBlackFxSchema = z.object({
+  durationSec: z.number().min(0).max(15).default(0.6),
+});
+export type FadeOutBlackFx = z.infer<typeof FadeOutBlackFxSchema>;
+
+export const ClipAmvFxObjectSchema = z.object({
+  mangaBlink: z.boolean().optional(),
+  radialSpeedLines: RadialSpeedLinesFxSchema.nullable().optional(),
+  horizSpeedLines: HorizSpeedLinesFxSchema.nullable().optional(),
+  particles: ParticlesFxSchema.nullable().optional(),
+  flashIn: FlashInFxSchema.nullable().optional(),
+  fadeOutBlack: FadeOutBlackFxSchema.nullable().optional(),
+});
+export type ClipAmvFxObject = z.infer<typeof ClipAmvFxObjectSchema>;
+
+/**
+ * Supports BOTH legacy compact AMV FX tag arrays (`["shake", "manga_ink_blink", "flash_gold"]`)
+ * AND the full structured WYSIWYG AMV FX object (`{ mangaBlink, radialSpeedLines, horizSpeedLines, particles, flashIn, fadeOutBlack }`).
+ */
+export const ClipFxSchema = z.union([z.array(AmvFxTagSchema).max(16), ClipAmvFxObjectSchema]);
+export type ClipFx = z.infer<typeof ClipFxSchema>;
+
+export const DEFAULT_CLIP_CAMERA: ClipCamera = {
+  mode: 'static',
+  z0: 1,
+  z1: 1,
+  cx0: 0.5,
+  cx1: 0.5,
+  cy0: 0.5,
+  cy1: 0.5,
+  rotDeg: 0,
+  beatPulseAmp: 0,
+  shakeAmp: 0,
+  tremorAmp: 0,
+};
+
+export const DEFAULT_CLIP_CINEMASCOPE: ClipCinemascope = {
+  bar0: 0,
+  bar1: 0,
+};
+

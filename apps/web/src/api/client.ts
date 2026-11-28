@@ -31,6 +31,7 @@ import type {
   MediaFolderDto,
   NleExportFormat,
   PatchTimelineClipInput,
+  PatchTimelineClipsInput,
   ProductionDossierOptions,
   ProjectDto,
   ProjectPlaybookDto,
@@ -41,6 +42,7 @@ import type {
   PromptTemplateDto,
   RecordQcInput,
   RenderedPromptResult,
+  RenderTimelineRangeInput,
   ReorderSketchBoardInput,
   RulebookDto,
   RuleDto,
@@ -919,6 +921,39 @@ export const api = {
   async clearTimelineRenderCache(projectId: string): Promise<{ clearedFiles: number }> {
     return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/render-cache`, {
       method: 'DELETE',
+    });
+  },
+
+  async patchTimelineClips(
+    projectId: string,
+    input: PatchTimelineClipsInput,
+  ): Promise<{
+    timeline: TimelineDto;
+    appliedCount: number;
+    modifiedClipIds: string[];
+    summary: string[];
+  }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/patch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async startTimelineRangeRender(
+    projectId: string,
+    input: Partial<RenderTimelineRangeInput> & { startSec: number; endSec: number },
+  ): Promise<{
+    render: TimelineRenderDto;
+    jobId: string;
+    startSec: number;
+    endSec: number;
+    clipCount: number;
+  }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/render-range`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
     });
   },
 

@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import {
   ClipAppliedEffectSchema,
+  ClipCameraSchema,
+  ClipCinemascopeSchema,
   ClipColorAdjustSchema,
+  ClipFxSchema,
   ClipKeyframeSchema,
   ClipTextOverlaySchema,
   ClipTransformSchema,
-  DEFAULT_CLIP_COLOR_ADJUST,
-  DEFAULT_CLIP_TRANSFORM,
 } from './effects-schemas.js';
 
 // ============================================================================
@@ -66,6 +67,10 @@ export const TimelineClipDtoSchema = z.object({
   effects: z.array(ClipAppliedEffectSchema).optional(),
   keyframes: z.array(ClipKeyframeSchema).optional(),
   textOverlay: ClipTextOverlaySchema.nullable().optional(),
+  camera: ClipCameraSchema.nullable().optional(),
+  cinemascope: ClipCinemascopeSchema.nullable().optional(),
+  fx: ClipFxSchema.nullable().optional(),
+  flashIn: z.number().min(0).max(1).optional(),
   notes: z.string(),
   sortOrder: z.number().int(),
 });
@@ -136,6 +141,10 @@ export const UpsertTimelineClipInputSchema = z.object({
   effects: z.array(ClipAppliedEffectSchema).max(20).optional(),
   keyframes: z.array(ClipKeyframeSchema).max(60).optional(),
   textOverlay: ClipTextOverlaySchema.nullable().optional(),
+  camera: ClipCameraSchema.partial().nullable().optional(),
+  cinemascope: ClipCinemascopeSchema.partial().nullable().optional(),
+  fx: ClipFxSchema.nullable().optional(),
+  flashIn: z.number().min(0).max(1).default(0),
   notes: z.string().max(1000).default(''),
 });
 export type UpsertTimelineClipInput = z.infer<typeof UpsertTimelineClipInputSchema>;
@@ -188,6 +197,10 @@ export const PatchTimelineClipInputSchema = z.object({
   effects: z.array(ClipAppliedEffectSchema).max(20).optional(),
   keyframes: z.array(ClipKeyframeSchema).max(60).optional(),
   textOverlay: ClipTextOverlaySchema.nullable().optional(),
+  camera: ClipCameraSchema.partial().nullable().optional(),
+  cinemascope: ClipCinemascopeSchema.partial().nullable().optional(),
+  fx: ClipFxSchema.nullable().optional(),
+  flashIn: z.number().min(0).max(1).optional(),
   notes: z.string().max(1000).optional(),
 });
 export type PatchTimelineClipInput = z.infer<typeof PatchTimelineClipInputSchema>;
@@ -196,6 +209,72 @@ export const SplitTimelineClipInputSchema = z.object({
   splitAtSec: z.number().min(0),
 });
 export type SplitTimelineClipInput = z.infer<typeof SplitTimelineClipInputSchema>;
+
+// --- Batch Surgical Patch Operations (`patch_timeline_clips`) ---
+
+export const TimelinePatchOperationSchema = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('replace_asset'),
+    clipId: z.string().uuid().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    trackId: z.string().uuid().optional(),
+    assetId: z.string().uuid().nullable().optional(),
+    assetRef: z.string().trim().max(120).nullable().optional(),
+    newTitle: z.string().trim().min(1).max(200).optional(),
+  }),
+  z.object({
+    op: z.literal('update'),
+    clipId: z.string().uuid().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    trackId: z.string().uuid().optional(),
+    patch: PatchTimelineClipInputSchema,
+    ripple: z.boolean().optional(),
+  }),
+  z.object({
+    op: z.literal('move'),
+    clipId: z.string().uuid().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    trackId: z.string().uuid().optional(),
+    targetTrackId: z.string().uuid().optional(),
+    targetStartSec: z.number().min(0).optional(),
+    targetIndex: z.number().int().min(0).optional(),
+    ripple: z.boolean().optional(),
+  }),
+  z.object({
+    op: z.literal('reorder'),
+    trackId: z.string().uuid().optional(),
+    trackType: TimelineTrackTypeSchema.optional(),
+    clipIds: z.array(z.string().uuid()).optional(),
+    titles: z.array(z.string().trim().min(1).max(200)).optional(),
+    ripple: z.boolean().default(true),
+  }),
+  z.object({
+    op: z.literal('insert'),
+    trackId: z.string().uuid().optional(),
+    trackType: TimelineTrackTypeSchema.default('video'),
+    trackName: z.string().trim().min(1).max(120).optional(),
+    afterClipId: z.string().uuid().optional(),
+    afterTitle: z.string().trim().min(1).max(200).optional(),
+    atIndex: z.number().int().min(0).optional(),
+    ripple: z.boolean().default(true),
+    clip: AddTimelineClipInputSchema,
+  }),
+  z.object({
+    op: z.literal('delete'),
+    clipId: z.string().uuid().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    trackId: z.string().uuid().optional(),
+    ripple: z.boolean().default(false),
+  }),
+]);
+export type TimelinePatchOperation = z.infer<typeof TimelinePatchOperationSchema>;
+
+export const PatchTimelineClipsInputSchema = z.object({
+  operations: z.array(TimelinePatchOperationSchema).min(1).max(100),
+});
+export type PatchTimelineClipsInput = z.infer<typeof PatchTimelineClipsInputSchema>;
+
+// --- Render Inputs (Full Timeline & Fast Range Preview) ---
 
 export const StartTimelineRenderInputSchema = z.object({
   qualityMode: TimelineQualityModeSchema.optional(),
@@ -206,3 +285,15 @@ export const StartTimelineRenderInputSchema = z.object({
   bypassCache: z.boolean().optional(),
 });
 export type StartTimelineRenderInput = z.infer<typeof StartTimelineRenderInputSchema>;
+
+export const RenderTimelineRangeInputSchema = z.object({
+  startSec: z.number().min(0),
+  endSec: z.number().positive(),
+  qualityMode: TimelineQualityModeSchema.optional(),
+  resolution: z.string().trim().regex(/^\d{3,5}x\d{3,5}$/).default('1280x720'),
+  fps: z.number().int().min(1).max(120).optional(),
+  title: z.string().trim().max(180).optional(),
+  burnSubtitles: z.boolean().optional(),
+  bypassCache: z.boolean().optional(),
+});
+export type RenderTimelineRangeInput = z.infer<typeof RenderTimelineRangeInputSchema>;

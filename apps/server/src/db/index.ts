@@ -611,6 +611,10 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
     ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS effects jsonb NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS keyframes jsonb NOT NULL DEFAULT '[]'::jsonb;
     ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS text_overlay jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS camera jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS cinemascope jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS fx jsonb NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS flash_in double precision NOT NULL DEFAULT 0;
 
     CREATE TABLE IF NOT EXISTS video_effects (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

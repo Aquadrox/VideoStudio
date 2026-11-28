@@ -7,19 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-28
+
+### Added
+- **Lecteur Temps Réel WYSIWYG `<TimelinePreviewCanvas>` (`apps/web/src/components/TimelinePreviewCanvas.tsx`, `packages/shared/src/amv-engine.ts`)** :
+  - Moniteur `<canvas>` 16:9 synchronisé sur le temps `t` de la piste audio à 60 fps (`requestAnimationFrame`), exécutant exactement la même logique déterministe (PRNG FNV-1a + Mulberry32 basé sur `clipId + frameIndex`) que le moteur de rendu serveur.
+  - Rendu temps réel de la caméra dynamique (`static`, `push`, `ease`, `pull_back`, `power_pullback`, `crash_zoom`, `p05_vertigo`, `pan`, `z0/z1`, `cx/cy`, `rotDeg`, `beatPulseAmp` sur les downbeats audio, `shakeAmp`, `tremorAmp`), `fx.mangaBlink` (encre N&B contrastée + inversion 1 frame sur 2), `radialSpeedLines`, `horizSpeedLines` (`left/right/diag_up/vert_down`), `particles` (orbes lumineux en mode additif `lighter`), `flashIn`, `fadeOutBlack`, pistes `text` enrichies (`subtitle`, `fontFamily`, `strokeColor`, `glowColor`, `fadeInSec/fadeOutSec`), couches PiP/overlays et bandes noires **Cinémascope** (`bar0 → bar1` en `easeInOutCubic`) dessinées par-dessus tout.
+  - Toggle **« FX Preview ON/OFF »** dans la barre du lecteur + inspecteurs visuels caméra / Cinémascope / FX AMV structurés / textes enrichis dans `CapCutClipInspector`.
+- **Édition chirurgicale batch `patch_timeline_clips` & Aperçu rapide de plage `render_timeline_range` (total : 97 outils MCP)** :
+  - **`patch_timeline_clips`** (`POST /api/projects/:id/timeline/patch`) : modifier 1 à N clips précis par `clipId` ou `title` sans ré-envoyer toute la timeline (`replace_asset`, `update`, `move`, `reorder` avec `ripple: true`, `insert`, `delete`).
+  - **`render_timeline_range`** (`POST /api/projects/:id/timeline/render-range` + bouton **Plage** dans l'UI) : rend uniquement l'extrait `[startSec, endSec]` avec audio synchronisé en réutilisant le cache de segments et archive dans `renders/previews`.
+- **Moteur Serveur Identique (`render_amv_segment.py` + fallback FFmpeg) & Cache par Segment SHA-256** :
+  - Script serveur Python Pillow + NumPy (`apps/server/scripts/render_amv_segment.py`, `python3-pil`/`python3-numpy` dans `docker/Dockerfile.server`) partageant exactement le même PRNG et les mêmes équations caméra/Cinémascope/FX que le Canvas Web, avec repli FFmpeg automatique.
+  - Stockage du cache par segment dans **`projects/<slug>/cache/timeline_segments/<sha256>.mp4`** (invalidation sur `assetId`, `assetUpdatedAt`, `inSec`, `outSec`, `durationSec`, `camera`, `cinemascope`, `fx`, `flashIn`, `beatTimes`, `resolution`, `fps`, `renderEngine`).
+- **Couverture de tests de non-régression étendue (44 fichiers, 152 tests)** : ajout de `amv-engine.test.ts`, `stage4.service.test.ts`, `effects.service.test.ts`, `capcut-preview.test.ts`, et extension de `effects-utils.test.ts`, `nle-export.test.ts`, `stage4.routes.test.ts`, `mcp.routes.test.ts`.
+
 ## [0.11.0] - 2026-11-28
 
 ### Added
 - **Studio de Montage Vidéo complet façon CapCut (`TimelinePanel`, `EffectsLibraryDrawer`, `CapCutClipInspector`, `Stage4Service`, `effects-schemas.ts`, `effects-utils.ts`)** :
-  - **Architecture Studio 3 colonnes** : panneau **Ressources CapCut** à gauche (`Médias`, `Effets`, `Transitions`, `Textes`), **Moniteur de compositing temps réel** au centre (rendu live CSS des effets, étalonnage couleur, transform/zoom/flip, images-clés animées, couches **Overlay / PiP** et **Textes** + sous-titres) et **Inspecteur de clip à onglets** à droite (`Base / Transform / Vitesse`, `Couleur`, `FX`, `Audio`, `Texte`, `Keyframes`).
-  - **Multi-pistes avancé & outils CapCut** : pistes **Vidéo (`V1+`)**, **Overlay / PiP (`OV`)**, **Textes (`T`)**, **Audio multi-pistes (`A1+`)** et **Sous-titres (`S1`)** ; outil **Couper / Razor (`S`)** au curseur (préservant `inSec` et keyframes), **Dupliquer**, **Ripple Delete**, **Undo / Redo (`Ctrl+Z` / `Ctrl+Shift+Z`)**, **Vitesse (`0.25×`–`4×`)**, **Transform** (échelle, X/Y, rotation, opacité, miroirs H/V), **Étalonnage couleur** (luminosité, contraste, saturation, gamma, flou, netteté, vignette), **11 transitions FFmpeg `xfade`** (`crossfade`, `fade_black`, `fade_white`, `wipe_left/right`, `slide_left/right`, `zoom_in`, `circle_open`, `dissolve`), **Keyframes** et **mixage multi-pistes audio** (`adelay` + `afade` + `volume` + `amix`).
-- **Bibliothèque d'Effets Custom Partagée IA & Utilisateur (`video_effects`, `EffectsService`, `effects.routes.ts`)** :
-  - **12 effets pro intégrés** (Cinéma Teal & Orange, Film Noir N&B, VHS Rétro & Grain, Glitch RGB, Rêve / Soft Glow, Vignette Dramatique, Golden Hour Doré, Néon Cyberpunk, Netteté Pro 4K, Flash Impact, Voix Radio, Écho Cathédrale).
-  - **Création d'effets par l'IA (MCP) ET par l'utilisateur (Studio Effets UI)** : chaque effet définit une chaîne FFmpeg paramétrable sécurisée (`{{param}}`, validée contre toute injection/accès fichier), un aperçu CSS temps réel et des sliders configurables, immédiatement utilisable sur tous les projets par l'IA comme par l'utilisateur.
-- **Rendu FFmpeg Incrémental ultra-rapide par Cache de Segments SHA-256** :
-  - Chaque segment vidéo est mis en cache par empreinte SHA-256 dans `.render-cache/<projectId>/` : lors d'une retouche chirurgicale d'un seul extrait (ou d'un changement d'effet), **seul le clip modifié est ré-encodé**, les autres sont réutilisés instantanément (`⚡ X/Y segments du cache`), avec nettoyage LRU automatique et bouton **Vider cache**.
-- **9 nouveaux outils MCP (total : 95 outils)** + ressource `studio://effects` : **`add_timeline_clip`**, **`update_timeline_clip`**, **`split_timeline_clip`**, **`delete_timeline_clip`**, **`clear_timeline_render_cache`**, **`list_video_effects`**, **`create_video_effect`**, **`update_video_effect`**, **`delete_video_effect`** (plus `bypassCache` sur `render_timeline`).
-- Ajout de `fonts-dejavu-core` dans `docker/Dockerfile.server` pour un rendu `drawtext` et sous-titres burn-in garanti en production.
+  - **Architecture Studio 3 colonnes** : panneau **Ressources CapCut** à gauche (`Médias`, `Effets`, `Transitions`, `Textes`), **Moniteur de compositing temps réel** au centre et **Inspecteur de clip à onglets** à droite (`Base / Transform / Vitesse`, `Couleur`, `FX`, `Audio`, `Texte`, `Keyframes`).
+  - **Multi-pistes avancé & outils CapCut** : pistes **Vidéo (`V1+`)**, **Overlay / PiP (`OV`)**, **Textes (`T`)**, **Audio multi-pistes (`A1+`)** et **Sous-titres (`S1`)** ; outil **Couper / Razor (`S`)**, **Dupliquer**, **Ripple Delete**, **Undo / Redo**, **Vitesse (`0.25×`–`4×`)**, **Transform**, **Étalonnage couleur**, **11 transitions FFmpeg `xfade`**, **Keyframes** et **mixage multi-pistes audio**.
+- **Bibliothèque d'Effets Custom Partagée IA & Utilisateur (`video_effects`, `EffectsService`, `effects.routes.ts`)** : 12 effets pro intégrés + création d'effets par l'IA (MCP) ou l'utilisateur (UI) avec validation anti-injection FFmpeg.
+- **9 nouveaux outils MCP (total : 95 outils)** + ressource `studio://effects` et `fonts-dejavu-core` dans `docker/Dockerfile.server`.
 
 ## [0.10.0] - 2026-11-28
 
