@@ -4,14 +4,26 @@ import path from 'node:path';
 import { asc, desc, eq } from 'drizzle-orm';
 import {
   buildAssetHandle,
+  buildFfmpegSubtitleFilter,
+  cuesFromLrc,
+  DEFAULT_SUBTITLE_STYLE,
   generateEdl,
   generateFcpxml,
   generateOtio,
+  normalizeSubtitleCues,
+  parseSrtOrVtt,
+  serializeSrt,
+  serializeVtt,
   type Actor,
+  type AssetDto,
   type AssetType,
   type NleExportFormat,
+  type ProjectSubtitlesDto,
   type QualityTier,
+  type SaveProjectSubtitlesInput,
   type StartTimelineRenderInput,
+  type SubtitleCue,
+  type SubtitleStyle,
   type TimelineClipDto,
   type TimelineDto,
   type TimelineQualityMode,
@@ -27,6 +39,7 @@ import type { Database } from '../db/index.js';
 import {
   assets,
   projects,
+  projectSubtitles,
   timelineClips,
   timelineRenders,
   timelineTracks,
@@ -556,6 +569,7 @@ export class Stage4Service {
       resolution,
       fps,
       title: input.title,
+      burnSubtitles: Boolean(input.burnSubtitles),
       actor,
     });
 
@@ -590,6 +604,7 @@ export class Stage4Service {
     resolution: string;
     fps: number;
     title?: string;
+    burnSubtitles?: boolean;
     actor: Actor;
   }): Promise<void> {
     const tmpDir = resolveSafePath(
@@ -714,14 +729,33 @@ export class Stage4Service {
         : null;
 
       const finalOutPath = path.join(tmpDir, 'render-final.mp4');
+      let subtitleBurnFilter: string | null = null;
+      if (params.burnSubtitles) {
+        const subs = await this.getSubtitles(params.projectId);
+        if (subs && subs.cues.length > 0) {
+          const srtContent = serializeSrt(subs.cues);
+          if (srtContent.trim()) {
+            const srtPath = path.join(tmpDir, 'subtitles.srt');
+            await fs.writeFile(srtPath, srtContent, 'utf8');
+            subtitleBurnFilter = buildFfmpegSubtitleFilter(srtPath, subs.style);
+          }
+        }
+      }
+
       await this.studio.updateJob(params.jobId, {
         status: 'running',
         progress: 96,
         stepCurrent: params.videoClips.length,
         stepTotal: totalSteps,
-        message: 'Assemblage final MP4 + mixage audio...',
-        etaSeconds: 3,
+        message: subtitleBurnFilter
+          ? 'Assemblage final MP4 + incrustation sous-titres (burn-in)...'
+          : 'Assemblage final MP4 + mixage audio...',
+        etaSeconds: subtitleBurnFilter ? 8 : 3,
       });
+
+      const videoEncodeArgs = subtitleBurnFilter
+        ? ['-vf', subtitleBurnFilter, '-c:v', 'libx264', '-preset', preset, '-crf', crf, '-pix_fmt', 'yuv420p']
+        : ['-c:v', 'copy'];
 
       if (audioAsset) {
         const audioAbs = this.media.resolveMediaFile(audioAsset.raw.filePath);
@@ -735,8 +769,7 @@ export class Stage4Service {
           concatListPath,
           '-i',
           audioAbs,
-          '-c:v',
-          'copy',
+          ...videoEncodeArgs,
           '-c:a',
           'aac',
           '-b:a',
@@ -755,8 +788,7 @@ export class Stage4Service {
           '0',
           '-i',
           concatListPath,
-          '-c:v',
-          'copy',
+          ...videoEncodeArgs,
           '-movflags',
           '+faststart',
           finalOutPath,
@@ -776,10 +808,10 @@ export class Stage4Service {
         folderPath: 'renders',
         title:
           params.title?.trim() ||
-          `Rendu ${params.qualityMode === 'hq_master' ? 'HQ MASTER' : 'DRAFT'} (${params.resolution})`,
+          `Rendu ${params.qualityMode === 'hq_master' ? 'HQ MASTER' : 'DRAFT'} (${params.resolution})${subtitleBurnFilter ? ' · ST' : ''}`,
         qualityTier: params.qualityMode === 'hq_master' ? 'final_master' : 'draft_lowres',
-        tags: ['render', 'timeline', params.qualityMode],
-        notes: `Rendu serveur FFmpeg (${params.resolution} @ ${params.fps}fps, ${segmentPaths.length} clips)`,
+        tags: ['render', 'timeline', params.qualityMode, ...(subtitleBurnFilter ? ['subtitled'] : [])],
+        notes: `Rendu serveur FFmpeg (${params.resolution} @ ${params.fps}fps, ${segmentPaths.length} clips${subtitleBurnFilter ? ', sous-titres incrustés' : ''})`,
         createdBy: params.actor,
       });
 
@@ -844,5 +876,216 @@ export class Stage4Service {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  // ============================================================================
+  // Synchronized Subtitles (SRT / VTT / LRC & FFmpeg Burn-in)
+  // ============================================================================
+
+  async getSubtitles(projectIdOrSlug: string): Promise<ProjectSubtitlesDto | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const [row] = await this.db
+      .select()
+      .from(projectSubtitles)
+      .where(eq(projectSubtitles.projectId, project.id))
+      .limit(1);
+
+    if (!row) {
+      return {
+        projectId: project.id,
+        language: 'fr',
+        cues: [],
+        style: { ...DEFAULT_SUBTITLE_STYLE },
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    return {
+      projectId: row.projectId,
+      language: row.language,
+      cues: Array.isArray(row.cues) ? row.cues : [],
+      style: { ...DEFAULT_SUBTITLE_STYLE, ...(row.style ?? {}) },
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }
+
+  async saveSubtitles(
+    projectIdOrSlug: string,
+    input: SaveProjectSubtitlesInput,
+    actor: Actor = 'user',
+  ): Promise<ProjectSubtitlesDto | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const existing = await this.getSubtitles(project.id);
+    const language = input.language?.trim() || existing?.language || 'fr';
+    const cues = normalizeSubtitleCues(input.cues);
+    const style: SubtitleStyle = {
+      ...DEFAULT_SUBTITLE_STYLE,
+      ...(existing?.style ?? {}),
+      ...(input.style ?? {}),
+    };
+    const now = new Date();
+
+    await this.db
+      .insert(projectSubtitles)
+      .values({
+        projectId: project.id,
+        language,
+        cues,
+        style,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: projectSubtitles.projectId,
+        set: { language, cues, style, updatedAt: now },
+      });
+
+    this.realtime.broadcast({
+      type: 'timeline.changed',
+      payload: { projectId: project.id },
+    });
+
+    await this.studio.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'subtitles.saved',
+      summary: `Sous-titres mis à jour (${cues.length} réplique(s) · ${language.toUpperCase()})`,
+      entityType: 'project',
+      entityId: project.id,
+      entityRef: `@proj-${project.slug}`,
+    });
+
+    return {
+      projectId: project.id,
+      language,
+      cues,
+      style,
+      updatedAt: now.toISOString(),
+    };
+  }
+
+  async importSubtitles(
+    projectIdOrSlug: string,
+    input: {
+      source: 'raw' | 'audio_track' | 'storyboard';
+      content?: string;
+      audioTrackId?: string;
+      replace?: boolean;
+    },
+    actor: Actor = 'user',
+  ): Promise<{ subtitles: ProjectSubtitlesDto; importedCount: number } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const existing = await this.getSubtitles(project.id);
+    let parsedCues: SubtitleCue[] = [];
+
+    if (input.source === 'raw') {
+      const raw = input.content ?? '';
+      parsedCues = raw.includes('-->') ? parseSrtOrVtt(raw) : cuesFromLrc(raw);
+    } else if (input.source === 'audio_track') {
+      const tracks = await this.stage3.listAudioTracks(project.id);
+      const track = input.audioTrackId
+        ? tracks.find((t) => t.id === input.audioTrackId)
+        : tracks.find((t) => t.lrcContent.trim() || t.srtContent.trim());
+      if (track) {
+        if (track.lrcContent.trim()) {
+          parsedCues = cuesFromLrc(track.lrcContent);
+        } else if (track.srtContent.trim()) {
+          parsedCues = parseSrtOrVtt(track.srtContent);
+        }
+      }
+    } else if (input.source === 'storyboard') {
+      const scenes = await this.stage3.getStoryboard(project.id);
+      let cursorSec = 0;
+      let idx = 0;
+      for (const scene of scenes) {
+        for (const shot of scene.shots) {
+          const start = shot.startSec >= 0 ? shot.startSec : cursorSec;
+          const dur = Math.max(0.5, shot.durationSec || 3);
+          const text = (shot.dialogue || shot.visualDescription || shot.title).trim();
+          if (text) {
+            parsedCues.push({
+              id: `sb-cue-${++idx}`,
+              startSec: Math.round(start * 1000) / 1000,
+              endSec: Math.round((start + dur - 0.1) * 1000) / 1000,
+              text: text.slice(0, 220),
+              speaker: '',
+            });
+          }
+          cursorSec = start + dur;
+        }
+      }
+    }
+
+    const merged =
+      input.replace === false && existing ? [...existing.cues, ...parsedCues] : parsedCues;
+    const saved = await this.saveSubtitles(
+      project.id,
+      {
+        language: existing?.language ?? 'fr',
+        cues: merged,
+        style: existing?.style,
+      },
+      actor,
+    );
+    if (!saved) return null;
+
+    return { subtitles: saved, importedCount: parsedCues.length };
+  }
+
+  async exportSubtitles(
+    projectIdOrSlug: string,
+    format: 'srt' | 'vtt' = 'srt',
+  ): Promise<{ filename: string; mimeType: string; content: string } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+    const subs = await this.getSubtitles(project.id);
+    if (!subs) return null;
+
+    if (format === 'vtt') {
+      return {
+        filename: `${project.slug}-${subs.language}.vtt`,
+        mimeType: 'text/vtt; charset=utf-8',
+        content: serializeVtt(subs.cues),
+      };
+    }
+
+    return {
+      filename: `${project.slug}-${subs.language}.srt`,
+      mimeType: 'application/x-subrip; charset=utf-8',
+      content: serializeSrt(subs.cues),
+    };
+  }
+
+  async saveSubtitlesAsset(
+    projectIdOrSlug: string,
+    format: 'srt' | 'vtt' = 'srt',
+    actor: Actor = 'user',
+  ): Promise<{ asset: AssetDto; filename: string } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+    const exported = await this.exportSubtitles(project.id, format);
+    if (!exported) return null;
+
+    const asset = await this.studio.ingestAssetFromBuffer({
+      projectIdOrSlug: project.id,
+      buffer: Buffer.from(exported.content, 'utf8'),
+      filename: exported.filename,
+      mimeType: 'text/plain',
+      explicitType: 'document',
+      folderPath: 'subtitles',
+      title: `Sous-titres (${format.toUpperCase()}) — ${project.name}`,
+      qualityTier: 'final_master',
+      tags: ['subtitles', format],
+      notes: `Export sous-titres synchronisés depuis Timeline NLE.`,
+      createdBy: actor,
+    });
+
+    return { asset, filename: exported.filename };
   }
 }

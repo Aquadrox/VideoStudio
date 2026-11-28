@@ -123,5 +123,6 @@ export const StartTimelineRenderInputSchema = z.object({
   resolution: z.string().trim().regex(/^\d{3,5}x\d{3,5}$/).optional(),
   fps: z.number().int().min(1).max(120).optional(),
   title: z.string().trim().max(180).optional(),
+  burnSubtitles: z.boolean().optional(),
 });
 export type StartTimelineRenderInput = z.infer<typeof StartTimelineRenderInputSchema>;

@@ -148,4 +148,90 @@ describe('Stage 4 Timeline & NLE Export REST routes', () => {
 
     await app.close();
   });
+
+  it('supports synchronized subtitles get, save, import, export, and burnSubtitles render flag', async () => {
+    const app = Fastify({ logger: false });
+    const sampleSubs = {
+      projectId: SAMPLE_TIMELINE.projectId,
+      language: 'fr',
+      cues: [{ id: 'c1', startSec: 1, endSec: 3.5, text: 'Bonjour la taverne', speaker: 'Elara' }],
+      style: {
+        fontSize: 24,
+        position: 'bottom' as const,
+        color: '#FFFFFF',
+        outlineColor: '#000000',
+        backgroundOpacity: 0.55,
+      },
+      updatedAt: '2026-11-28T10:00:00.000Z',
+    };
+
+    const stage4Mock = {
+      getSubtitles: vi.fn().mockResolvedValue(sampleSubs),
+      saveSubtitles: vi.fn().mockResolvedValue(sampleSubs),
+      importSubtitles: vi.fn().mockResolvedValue({ subtitles: sampleSubs, importedCount: 1 }),
+      exportSubtitles: vi.fn().mockResolvedValue({
+        filename: 'demo-film-fr.srt',
+        mimeType: 'application/x-subrip; charset=utf-8',
+        content: '1\n00:00:01,000 --> 00:00:03,500\nElara: Bonjour la taverne',
+      }),
+      saveSubtitlesAsset: vi.fn().mockResolvedValue({
+        filename: 'demo-film-fr.srt',
+        asset: { id: 'a-sub', handle: '@doc-005' },
+      }),
+      startServerRender: vi.fn().mockResolvedValue({
+        render: SAMPLE_RENDER,
+        jobId: '00000000-0000-4000-8000-000000000602',
+      }),
+    } as unknown as Stage4Service;
+
+    registerStage4Routes(app, stage4Mock);
+
+    const getRes = await app.inject({ method: 'GET', url: '/api/projects/demo-film/subtitles' });
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes.json().subtitles.cues).toHaveLength(1);
+
+    const putRes = await app.inject({
+      method: 'PUT',
+      url: '/api/projects/demo-film/subtitles',
+      payload: { language: 'fr', cues: sampleSubs.cues },
+    });
+    expect(putRes.statusCode).toBe(200);
+
+    const importRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/subtitles/import',
+      payload: { source: 'storyboard', replace: true },
+    });
+    expect(importRes.statusCode).toBe(201);
+    expect(importRes.json().importedCount).toBe(1);
+
+    const exportRes = await app.inject({
+      method: 'GET',
+      url: '/api/projects/demo-film/subtitles/export?format=srt&download=1',
+    });
+    expect(exportRes.statusCode).toBe(200);
+    expect(exportRes.body).toContain('00:00:01,000 --> 00:00:03,500');
+
+    const saveAssetRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/subtitles/save-asset',
+      payload: { format: 'srt' },
+    });
+    expect(saveAssetRes.statusCode).toBe(201);
+    expect(saveAssetRes.json().asset.handle).toBe('@doc-005');
+
+    const burnRenderRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/timeline/render',
+      payload: { qualityMode: 'hq_master', burnSubtitles: true },
+    });
+    expect(burnRenderRes.statusCode).toBe(202);
+    expect(stage4Mock.startServerRender).toHaveBeenCalledWith(
+      'demo-film',
+      { qualityMode: 'hq_master', burnSubtitles: true },
+      'user',
+    );
+
+    await app.close();
+  });
 });

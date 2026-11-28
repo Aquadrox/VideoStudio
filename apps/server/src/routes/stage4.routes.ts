@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   NleExportFormatSchema,
+  SaveProjectSubtitlesInputSchema,
   StartTimelineRenderInputSchema,
   TimelineQualityModeSchema,
   UpsertTimelineInputSchema,
@@ -116,4 +117,89 @@ export function registerStage4Routes(app: FastifyInstance, stage4: Stage4Service
       content: exported.content,
     };
   });
+
+  // --- Synchronized Subtitles (SRT / VTT / LRC & Burn-in) ---
+
+  app.get<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/subtitles',
+    async (request, reply) => {
+      const subtitles = await stage4.getSubtitles(request.params.projectIdOrSlug);
+      if (!subtitles) return reply.code(404).send({ error: 'Project not found' });
+      return { subtitles };
+    },
+  );
+
+  app.put<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/subtitles',
+    async (request, reply) => {
+      const parsed = SaveProjectSubtitlesInputSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      const subtitles = await stage4.saveSubtitles(request.params.projectIdOrSlug, parsed.data, 'user');
+      if (!subtitles) return reply.code(404).send({ error: 'Project not found' });
+      return { subtitles };
+    },
+  );
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/subtitles/import',
+    async (request, reply) => {
+      const parsed = z
+        .object({
+          source: z.enum(['raw', 'audio_track', 'storyboard']),
+          content: z.string().max(1_000_000).optional(),
+          audioTrackId: z.string().uuid().optional(),
+          replace: z.boolean().default(true),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      const res = await stage4.importSubtitles(request.params.projectIdOrSlug, parsed.data, 'user');
+      if (!res) return reply.code(404).send({ error: 'Project not found' });
+      return reply.code(201).send(res);
+    },
+  );
+
+  app.get<{
+    Params: { projectIdOrSlug: string };
+    Querystring: { format?: string; download?: string };
+  }>('/api/projects/:projectIdOrSlug/subtitles/export', async (request, reply) => {
+    const fmt = request.query.format === 'vtt' ? 'vtt' : 'srt';
+    const exported = await stage4.exportSubtitles(request.params.projectIdOrSlug, fmt);
+    if (!exported) return reply.code(404).send({ error: 'Project not found' });
+
+    if (request.query.download === '1' || request.query.download === 'true') {
+      return reply
+        .header('Content-Disposition', `attachment; filename="${exported.filename}"`)
+        .type(exported.mimeType)
+        .send(exported.content);
+    }
+
+    return {
+      format: fmt,
+      filename: exported.filename,
+      content: exported.content,
+    };
+  });
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/subtitles/save-asset',
+    async (request, reply) => {
+      const parsed = z
+        .object({ format: z.enum(['srt', 'vtt']).default('srt') })
+        .safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      const saved = await stage4.saveSubtitlesAsset(
+        request.params.projectIdOrSlug,
+        parsed.data.format,
+        'user',
+      );
+      if (!saved) return reply.code(404).send({ error: 'Project not found' });
+      return reply.code(201).send(saved);
+    },
+  );
 }

@@ -2829,12 +2829,17 @@ textarea {
 }
 
 .timeline-clip-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
   font-size: 10px;
   font-family: var(--font-mono);
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
 @media (max-width: 980px) {
@@ -4830,6 +4835,428 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================================
+   v0.9.0 — Production Dossier Modal, Timeline NLE v2 & Synchronized Subtitles
+   ============================================================================ */
+
+.dossier-modal-shell {
+  width: min(1220px, 95vw);
+  height: min(860px, 92vh);
+  max-width: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dossier-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+
+.dossier-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+}
+
+.dossier-config-col {
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dossier-config-group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.dossier-config-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dossier-layout-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.dossier-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.dossier-check input {
+  accent-color: var(--accent-amber);
+}
+
+.dossier-preview-col {
+  background: #1a1f2b;
+  position: relative;
+  min-height: 0;
+}
+
+.dossier-preview-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #f3f4f6;
+}
+
+/* --- Timeline NLE v2: Direct Drag, Trim, Waveforms, Beat Markers & Transitions --- */
+
+.timeline-burn-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.timeline-burn-toggle input {
+  accent-color: var(--accent-amber);
+}
+
+.timeline-transition-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.timeline-black-fade-overlay {
+  position: absolute;
+  inset: 0;
+  background: #000000;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.timeline-subtitle-overlay {
+  position: absolute;
+  left: 5%;
+  right: 5%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.timeline-subtitle-overlay.pos-bottom {
+  bottom: 38px;
+}
+
+.timeline-subtitle-overlay.pos-middle {
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.timeline-subtitle-overlay.pos-top {
+  top: 14px;
+}
+
+.timeline-subtitle-pill {
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-weight: 600;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  max-width: 92%;
+  white-space: pre-wrap;
+  line-height: 1.35;
+}
+
+.timeline-clip-block {
+  cursor: grab;
+  user-select: none;
+}
+
+.timeline-clip-block:active {
+  cursor: grabbing;
+}
+
+.timeline-trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: ew-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.timeline-trim-handle.left {
+  left: 0;
+  border-radius: 5px 0 0 5px;
+}
+
+.timeline-trim-handle.right {
+  right: 0;
+  border-radius: 0 5px 5px 0;
+}
+
+.timeline-clip-block:hover .timeline-trim-handle,
+.timeline-subtitle-block:hover .timeline-trim-handle {
+  background: rgba(229, 160, 56, 0.35);
+}
+
+.timeline-trim-handle:hover {
+  background: rgba(229, 160, 56, 0.85) !important;
+}
+
+.timeline-waveform-canvas {
+  position: absolute;
+  inset: 4px 6px;
+  width: calc(100% - 12px) !important;
+  pointer-events: none;
+  opacity: 0.7;
+  z-index: 0;
+}
+
+.timeline-clip-block.audio .timeline-clip-meta {
+  position: relative;
+  z-index: 1;
+}
+
+.timeline-beat-pin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.timeline-beat-pin.kind-beat {
+  background: rgba(52, 211, 153, 0.5);
+  height: 10px;
+  top: auto;
+}
+
+.timeline-beat-pin.kind-lyric {
+  background: var(--accent-amber);
+  width: 3px;
+}
+
+.timeline-beat-pin.kind-marker {
+  background: #38bdf8;
+  width: 3px;
+}
+
+.timeline-beat-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(52, 211, 153, 0.08);
+  pointer-events: none;
+}
+
+.timeline-snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #f5b84b;
+  box-shadow: 0 0 8px rgba(245, 184, 75, 0.75);
+  pointer-events: none;
+  z-index: 12;
+}
+
+/* --- Subtitle Track S1 & Synchronized Subtitle Editor --- */
+
+.timeline-track-row.subtitle-track .timeline-track-lane {
+  min-height: 44px;
+}
+
+.timeline-subtitle-block {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.16);
+  color: #e0f2fe;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  cursor: grab;
+  user-select: none;
+  overflow: hidden;
+}
+
+.timeline-subtitle-block.selected {
+  border-color: var(--accent-amber);
+  background: rgba(229, 160, 56, 0.24);
+  color: #fffbeb;
+}
+
+.timeline-subtitle-block-text {
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.subtitle-editor-shell {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.subtitle-editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.subtitle-style-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+}
+
+.subtitle-style-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.subtitle-import-box {
+  padding: 10px;
+  border-radius: 7px;
+  background: var(--bg-panel);
+  border: 1px solid rgba(229, 160, 56, 0.4);
+}
+
+.subtitle-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+}
+
+.subtitle-cue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.subtitle-cue-row {
+  display: grid;
+  grid-template-columns: 32px 168px 128px minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  cursor: pointer;
+}
+
+.subtitle-cue-row.active {
+  border-color: rgba(56, 189, 248, 0.65);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.subtitle-cue-row.selected {
+  border-color: var(--accent-amber);
+}
+
+.subtitle-cue-index {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.subtitle-cue-times {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.subtitle-time-pair {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.subtitle-num {
+  width: 72px;
+  padding: 3px 6px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+}
+
+.subtitle-speaker-input {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.subtitle-text-input {
+  min-height: 44px;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  resize: vertical;
+}
+
+@media (max-width: 900px) {
+  .dossier-modal-body {
+    grid-template-columns: 1fr;
+  }
+  .subtitle-cue-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 
 

@@ -565,6 +565,15 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
     ALTER TABLE sketches ADD COLUMN IF NOT EXISTS caption text NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS sketches_project_updated_idx ON sketches (project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS sketches_asset_idx ON sketches (asset_id);
+
+    -- Synchronized Subtitles (SRT / VTT / FFmpeg Burn-in)
+    CREATE TABLE IF NOT EXISTS project_subtitles (
+      project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+      language text NOT NULL DEFAULT 'fr',
+      cues jsonb NOT NULL DEFAULT '[]'::jsonb,
+      style jsonb NOT NULL DEFAULT '{"fontSize":24,"position":"bottom","color":"#FFFFFF","outlineColor":"#000000","backgroundOpacity":0.55}'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
   `);
 
   // Seed one default reusable Rulebook if none exist yet

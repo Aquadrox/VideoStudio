@@ -11,6 +11,7 @@ import {
   ComfyWorkflowCategorySchema,
   JobStatusSchema,
   NleExportFormatSchema,
+  ProductionDossierLayoutSchema,
   ProjectStatusSchema,
   ProjectTypeSchema,
   PromptCategorySchema,
@@ -25,6 +26,8 @@ import {
   SkillScopeSchema,
   sortSketchesForBoard,
   StorageModeSchema,
+  SubtitleCueSchema,
+  SubtitleStyleSchema,
   SyncAgentTaskItemSchema,
   TimelineQualityModeSchema,
   UpsertStoryboardInputSchema,
@@ -32,6 +35,7 @@ import {
   WebhookEventTypeSchema,
   YouTubeChapterSchema,
 } from '@videostudio/shared';
+import type { DossierService } from '../services/dossier.service.js';
 import type { MediaService } from '../services/media.service.js';
 import type { OpsService } from '../services/ops.service.js';
 import type { SketchService } from '../services/sketch.service.js';
@@ -59,10 +63,11 @@ export function createVideoStudioMcpServer(
   stage4: Stage4Service,
   stage5?: Stage5McpDeps,
   sketches?: SketchService,
+  dossier?: DossierService,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.8.2',
+    version: '0.9.0',
   });
 
   // --- MCP Resources ---
@@ -2230,6 +2235,10 @@ export function createVideoStudioMcpServer(
       resolution: z.string().optional().describe('Optional override e.g. "1280x720" or "1920x1080"'),
       fps: z.number().int().min(1).max(120).optional(),
       title: z.string().optional(),
+      burnSubtitles: z
+        .boolean()
+        .optional()
+        .describe('If true, burn project synchronized subtitles (.srt) into the rendered MP4 video'),
     },
     async ({ project, ...input }) => {
       try {
@@ -2702,6 +2711,119 @@ export function createVideoStudioMcpServer(
       }
     },
   );
+
+  // --- Synchronized Subtitles & Production Dossier MCP Tools (v0.9.0) ---
+
+  server.tool(
+    'get_subtitles',
+    'Read synchronized subtitle cues and styling for a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+    },
+    async ({ project }) => {
+      const subtitles = await stage4.getSubtitles(project);
+      if (!subtitles) {
+        return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ subtitles }, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'save_subtitles',
+    'Create or update synchronized subtitle cues (SRT/VTT/burn-in ready) and subtitle overlay styling for a project.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      language: z.string().min(1).max(16).optional(),
+      cues: z.array(SubtitleCueSchema).max(2000),
+      style: SubtitleStyleSchema.partial().optional(),
+    },
+    async ({ project, language, cues, style }) => {
+      const subtitles = await stage4.saveSubtitles(project, { language, cues, style }, 'claude');
+      if (!subtitles) {
+        return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ subtitles }, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'export_subtitles_srt',
+    'Export project subtitles as .srt or .vtt text and optionally save them as an asset in Media (/subtitles).',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      format: z.enum(['srt', 'vtt']).default('srt'),
+      saveToMedia: z.boolean().default(false),
+    },
+    async ({ project, format, saveToMedia }) => {
+      if (saveToMedia) {
+        const saved = await stage4.saveSubtitlesAsset(project, format, 'claude');
+        if (!saved) {
+          return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+      }
+      const exported = await stage4.exportSubtitles(project, format);
+      if (!exported) {
+        return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(exported, null, 2) }] };
+    },
+  );
+
+  if (dossier) {
+    server.tool(
+      'export_production_dossier',
+      'Generate a complete Production Dossier or Landscape Pitch Deck (Script + Continuity Bible + Sketch Storyboard + Technical Shot List) as Markdown or print-ready HTML/PDF, and optionally archive it into Media (/exports).',
+      {
+        project: z.string().min(1).describe('Project slug or UUID'),
+        format: z.enum(['markdown', 'html']).default('markdown'),
+        layout: ProductionDossierLayoutSchema.default('dossier'),
+        includeScript: z.boolean().default(true),
+        includeBible: z.boolean().default(true),
+        includeSketchBoard: z.boolean().default(true),
+        includeStoryboard: z.boolean().default(true),
+        includePrompts: z.boolean().default(true),
+        includeBriefs: z.boolean().default(true),
+        subtitle: z.string().max(200).optional(),
+        director: z.string().max(120).optional(),
+        saveToMedia: z.boolean().default(false),
+      },
+      async ({ project, format, saveToMedia, ...options }) => {
+        if (saveToMedia) {
+          const saved = await dossier.saveDossierAsAsset(project, format, options, 'claude');
+          if (!saved) {
+            return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(saved, null, 2) }] };
+        }
+        const generated = await dossier.generateDossier(project, format, options, false);
+        if (!generated) {
+          return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  filename: generated.filename,
+                  mimeType: generated.mimeType,
+                  length: generated.content.length,
+                  content:
+                    format === 'markdown'
+                      ? generated.content
+                      : `${generated.content.slice(0, 2000)}\n<!-- truncated (${generated.content.length} chars) -->`,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      },
+    );
+  }
 
   return server;
 }
