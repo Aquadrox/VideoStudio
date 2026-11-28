@@ -1,5 +1,6 @@
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
+import { BUILTIN_VIDEO_EFFECTS } from '@videostudio/shared';
 import * as schema from './schema.js';
 
 export type Database = NodePgDatabase<typeof schema>;
@@ -600,6 +601,37 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS studio_knowledge_kind_idx ON studio_knowledge (kind);
     CREATE INDEX IF NOT EXISTS studio_knowledge_updated_idx ON studio_knowledge (updated_at DESC);
+
+    -- CapCut-Grade Timeline Clip Compositing Columns & Custom Video/Audio Effects (v0.11.0)
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS speed double precision NOT NULL DEFAULT 1;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS fade_in_sec double precision NOT NULL DEFAULT 0;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS fade_out_sec double precision NOT NULL DEFAULT 0;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS transform jsonb NOT NULL DEFAULT '{"x":0,"y":0,"scale":1,"rotation":0,"opacity":1,"flipH":false,"flipV":false}'::jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS color_adjust jsonb NOT NULL DEFAULT '{"brightness":0,"contrast":1,"saturation":1,"gamma":1,"blur":0,"vignette":0,"sharpen":0}'::jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS effects jsonb NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS keyframes jsonb NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE timeline_clips ADD COLUMN IF NOT EXISTS text_overlay jsonb;
+
+    CREATE TABLE IF NOT EXISTS video_effects (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      slug text NOT NULL UNIQUE,
+      name text NOT NULL,
+      category text NOT NULL DEFAULT 'video_fx',
+      description text NOT NULL DEFAULT '',
+      icon text NOT NULL DEFAULT '✨',
+      ffmpeg_filter_template text NOT NULL,
+      css_preview_filter text NOT NULL DEFAULT '',
+      params_schema jsonb NOT NULL DEFAULT '[]'::jsonb,
+      default_params jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_by text NOT NULL DEFAULT 'user',
+      is_builtin boolean NOT NULL DEFAULT false,
+      tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+      usage_count integer NOT NULL DEFAULT 0,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS video_effects_category_idx ON video_effects (category);
+    CREATE INDEX IF NOT EXISTS video_effects_updated_idx ON video_effects (updated_at DESC);
   `);
 
   // Seed one default reusable Rulebook if none exist yet
@@ -641,5 +673,30 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
           'Avant de générer les keyframes, définir chaque personnage récurrent dans la Bible de continuité (LoRA + prompt visuel constant) et bloquer les scènes de dialogue dans Croquis & Plans avec la ligne des 180°.',
           'consistent character design, cinematic lighting continuity', 'inconsistent face, changing outfit, extra limbs', '', '["animation","bible","continuity"]'::jsonb, 'system', true, false)`,
     );
+  }
+
+  // Seed curated CapCut-style built-in video & audio effects if table is empty
+  const existingEffects = await pool.query('SELECT count(*)::int AS count FROM video_effects');
+  const fxCount = (existingEffects.rows[0] as { count?: number } | undefined)?.count ?? 0;
+  if (fxCount === 0) {
+    for (const fx of BUILTIN_VIDEO_EFFECTS) {
+      await pool.query(
+        `INSERT INTO video_effects (slug, name, category, description, icon, ffmpeg_filter_template, css_preview_filter, params_schema, default_params, created_by, is_builtin, tags)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'system', true, $10::jsonb)
+         ON CONFLICT (slug) DO NOTHING`,
+        [
+          fx.slug,
+          fx.name,
+          fx.category ?? 'video_fx',
+          fx.description ?? '',
+          fx.icon ?? '✨',
+          fx.ffmpegFilterTemplate,
+          fx.cssPreviewFilter ?? '',
+          JSON.stringify(fx.paramsSchema ?? []),
+          JSON.stringify(fx.defaultParams ?? {}),
+          JSON.stringify(fx.tags ?? []),
+        ],
+      );
+    }
   }
 }

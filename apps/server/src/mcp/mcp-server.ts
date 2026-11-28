@@ -8,7 +8,14 @@ import {
   AudioCategorySchema,
   AudioMarkerSchema,
   BibleEntityTypeSchema,
+  ClipAppliedEffectSchema,
+  ClipColorAdjustSchema,
+  ClipKeyframeSchema,
+  ClipTextOverlaySchema,
+  ClipTransformSchema,
   ComfyWorkflowCategorySchema,
+  EffectParamSpecSchema,
+  EffectParamValueSchema,
   JobStatusSchema,
   KnowledgeKindSchema,
   KnowledgePrioritySchema,
@@ -33,12 +40,16 @@ import {
   SubtitleStyleSchema,
   SyncAgentTaskItemSchema,
   TimelineQualityModeSchema,
+  TimelineTrackTypeSchema,
+  TimelineTransitionSchema,
   UpsertStoryboardInputSchema,
   UpsertTimelineInputSchema,
+  VideoEffectCategorySchema,
   WebhookEventTypeSchema,
   YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { DossierService } from '../services/dossier.service.js';
+import type { EffectsService } from '../services/effects.service.js';
 import type { KnowledgeService } from '../services/knowledge.service.js';
 import type { MediaService } from '../services/media.service.js';
 import type { OpsService } from '../services/ops.service.js';
@@ -69,10 +80,11 @@ export function createVideoStudioMcpServer(
   sketches?: SketchService,
   dossier?: DossierService,
   knowledge?: KnowledgeService,
+  effects?: EffectsService,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.10.0',
+    version: '0.11.0',
   });
 
   // --- MCP Resources ---
@@ -2257,7 +2269,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'render_timeline',
-    'Start a server-side FFmpeg MP4 render of the project timeline (animatic draft_proxy or hq_master) with live Job progress + ETA and automatic registration in /renders.',
+    'Start a server-side CapCut-grade FFmpeg MP4 render of the project timeline with incremental per-segment caching (unchanged clips are reused instantly so editing 1 clip re-renders in seconds!), custom video/audio effects, xfade transitions, overlays, text titles, multi-track audio mix, and optional subtitle burn-in.',
     {
       project: z.string().min(1),
       qualityMode: TimelineQualityModeSchema.default('draft_proxy'),
@@ -2268,6 +2280,10 @@ export function createVideoStudioMcpServer(
         .boolean()
         .optional()
         .describe('If true, burn project synchronized subtitles (.srt) into the rendered MP4 video'),
+      bypassCache: z
+        .boolean()
+        .optional()
+        .describe('If true, force re-encoding every segment instead of reusing cached segments'),
     },
     async ({ project, ...input }) => {
       try {
@@ -3014,6 +3030,243 @@ export function createVideoStudioMcpServer(
           return { isError: true, content: [{ type: 'text', text: `Knowledge entry not found: ${idOrSlug}` }] };
         }
         return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, idOrSlug }) }] };
+      },
+    );
+  }
+
+  // --- CapCut-Grade Surgical Montage & Custom AI Video/Audio Effects (v0.11.0) ---
+
+  server.tool(
+    'add_timeline_clip',
+    'Drop a single video, image, audio, overlay (PiP), or text title clip onto a project timeline track without rewriting the whole timeline. Automatically creates the track if missing and appends after the last clip if startSec is omitted.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      trackId: z.string().uuid().optional().describe('Optional existing track UUID'),
+      trackType: TimelineTrackTypeSchema.default('video').describe('video | audio | overlay | text | effect'),
+      trackName: z.string().max(120).optional(),
+      assetId: z.string().uuid().nullable().optional(),
+      assetRef: z.string().max(120).nullable().optional().describe('Asset @ref handle e.g. @vid-001, @img-002, @aud-001'),
+      title: z.string().min(1).max(200),
+      startSec: z.number().min(0).optional().describe('Start time in seconds (omit to append at end of track)'),
+      durationSec: z.number().min(0.1).max(7200).default(4),
+      inSec: z.number().min(0).default(0),
+      outSec: z.number().positive().nullable().optional(),
+      speed: z.number().min(0.25).max(4).default(1),
+      transition: TimelineTransitionSchema.default('cut'),
+      transitionDurationSec: z.number().min(0).max(5).default(0),
+      volume: z.number().min(0).max(2).default(1),
+      fadeInSec: z.number().min(0).max(15).default(0),
+      fadeOutSec: z.number().min(0).max(15).default(0),
+      muted: z.boolean().default(false),
+      transform: ClipTransformSchema.partial().optional(),
+      colorAdjust: ClipColorAdjustSchema.partial().optional(),
+      effects: z.array(ClipAppliedEffectSchema).max(20).optional(),
+      keyframes: z.array(ClipKeyframeSchema).max(60).optional(),
+      textOverlay: ClipTextOverlaySchema.nullable().optional(),
+      notes: z.string().max(1000).default(''),
+    },
+    async ({ project, ...input }) => {
+      try {
+        const res = await stage4.addClip(project, input, 'claude');
+        if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+      }
+    },
+  );
+
+  server.tool(
+    'update_timeline_clip',
+    'Surgically patch a single clip on the timeline (swap assetRef, adjust timing/trim/speed, add custom effects, tweak color grading, transform, audio volume/fades, or text overlay). Unchanged clips stay cached for ultra-fast re-render!',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      clipId: z.string().uuid().describe('UUID of the timeline clip to patch'),
+      trackId: z.string().uuid().optional(),
+      assetId: z.string().uuid().nullable().optional(),
+      assetRef: z.string().max(120).nullable().optional(),
+      title: z.string().min(1).max(200).optional(),
+      startSec: z.number().min(0).optional(),
+      durationSec: z.number().min(0.1).max(7200).optional(),
+      inSec: z.number().min(0).optional(),
+      outSec: z.number().positive().nullable().optional(),
+      speed: z.number().min(0.25).max(4).optional(),
+      transition: TimelineTransitionSchema.optional(),
+      transitionDurationSec: z.number().min(0).max(5).optional(),
+      volume: z.number().min(0).max(2).optional(),
+      fadeInSec: z.number().min(0).max(15).optional(),
+      fadeOutSec: z.number().min(0).max(15).optional(),
+      muted: z.boolean().optional(),
+      transform: ClipTransformSchema.partial().optional(),
+      colorAdjust: ClipColorAdjustSchema.partial().optional(),
+      effects: z.array(ClipAppliedEffectSchema).max(20).optional(),
+      keyframes: z.array(ClipKeyframeSchema).max(60).optional(),
+      textOverlay: ClipTextOverlaySchema.nullable().optional(),
+      notes: z.string().max(1000).optional(),
+    },
+    async ({ project, clipId, ...patch }) => {
+      try {
+        const res = await stage4.updateClip(project, clipId, patch, 'claude');
+        if (!res) return { isError: true, content: [{ type: 'text', text: `Clip or project not found: ${clipId}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+      }
+    },
+  );
+
+  server.tool(
+    'split_timeline_clip',
+    'CapCut Razor/Split: split a timeline clip into two clips at `splitAtSec` (timeline seconds), automatically advancing `inSec` proportionally to clip speed and splitting keyframes cleanly.',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      clipId: z.string().uuid(),
+      splitAtSec: z.number().min(0).describe('Exact timeline timestamp (seconds) where to cut the clip'),
+    },
+    async ({ project, clipId, splitAtSec }) => {
+      try {
+        const res = await stage4.splitClip(project, clipId, splitAtSec, 'claude');
+        if (!res) return { isError: true, content: [{ type: 'text', text: `Clip or project not found: ${clipId}` }] };
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+      }
+    },
+  );
+
+  server.tool(
+    'delete_timeline_clip',
+    'Delete a single clip from the timeline. Set `ripple: true` to automatically shift all following clips on that track left to close the gap.',
+    {
+      project: z.string().min(1),
+      clipId: z.string().uuid(),
+      ripple: z.boolean().default(false).describe('If true, close gap by shifting subsequent clips left'),
+    },
+    async ({ project, clipId, ripple }) => {
+      const res = await stage4.deleteClip(project, clipId, { ripple }, 'claude');
+      if (!res) return { isError: true, content: [{ type: 'text', text: `Clip or project not found: ${clipId}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'clear_timeline_render_cache',
+    'Clear cached per-clip FFmpeg segments for a project so the next render re-encodes everything cleanly from scratch.',
+    {
+      project: z.string().min(1),
+    },
+    async ({ project }) => {
+      const res = await stage4.clearRenderCache(project);
+      if (!res) return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+      return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+    },
+  );
+
+  if (effects) {
+    server.resource('studio-video-effects', 'studio://effects', async (uri) => {
+      const list = await effects.listEffects();
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(list, null, 2),
+          },
+        ],
+      };
+    });
+
+    server.tool(
+      'list_video_effects',
+      'List all available CapCut-style built-in and custom AI/user video & audio effects (with their slugs, parameter schemas, FFmpeg templates, and CSS preview filters).',
+      {
+        category: VideoEffectCategorySchema.optional(),
+        query: z.string().optional(),
+        createdBy: z.enum(['system', 'claude', 'user']).optional(),
+      },
+      async (filter) => {
+        const list = await effects.listEffects(filter);
+        return { content: [{ type: 'text', text: JSON.stringify({ effects: list }, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'create_video_effect',
+      'Create a brand-new reusable custom video or audio effect (validated FFmpeg filter chain with {{param}} placeholders + optional CSS preview filter + UI parameter sliders). Immediately available to both Claude and the user in the Web UI Effects Library across all projects!',
+      {
+        slug: z.string().regex(/^[a-z0-9-]+$/).min(2).max(80).optional(),
+        name: z.string().min(2).max(120),
+        category: VideoEffectCategorySchema.default('video_fx'),
+        description: z.string().max(600).default(''),
+        icon: z.string().max(16).default('✨'),
+        ffmpegFilterTemplate: z
+          .string()
+          .min(1)
+          .max(1000)
+          .describe('Safe FFmpeg filter chain with optional {{param}} placeholders, e.g. "rgbashift=rh={{shift}}:bh=-{{shift}},eq=contrast={{contrast}}"'),
+        cssPreviewFilter: z
+          .string()
+          .max(400)
+          .default('')
+          .describe('Optional real-time browser CSS filter preview, e.g. "contrast({{contrast}}) saturate(1.3)"'),
+        paramsSchema: z.array(EffectParamSpecSchema).max(12).default([]),
+        defaultParams: z.record(z.string(), EffectParamValueSchema).default({}),
+        tags: z.array(z.string()).max(12).default([]),
+      },
+      async (args) => {
+        try {
+          const effect = await effects.createEffect(args, 'claude');
+          return { content: [{ type: 'text', text: JSON.stringify({ effect }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+        }
+      },
+    );
+
+    server.tool(
+      'update_video_effect',
+      'Update an existing custom video/audio effect definition (name, FFmpeg filter template, CSS preview filter, parameter schema, defaults, or tags).',
+      {
+        idOrSlug: z.string().min(1),
+        name: z.string().min(2).max(120).optional(),
+        category: VideoEffectCategorySchema.optional(),
+        description: z.string().max(600).optional(),
+        icon: z.string().max(16).optional(),
+        ffmpegFilterTemplate: z.string().min(1).max(1000).optional(),
+        cssPreviewFilter: z.string().max(400).optional(),
+        paramsSchema: z.array(EffectParamSpecSchema).max(12).optional(),
+        defaultParams: z.record(z.string(), EffectParamValueSchema).optional(),
+        tags: z.array(z.string()).max(12).optional(),
+      },
+      async ({ idOrSlug, ...patch }) => {
+        try {
+          const effect = await effects.updateEffect(idOrSlug, patch, 'claude');
+          if (!effect) {
+            return { isError: true, content: [{ type: 'text', text: `Effect not found: ${idOrSlug}` }] };
+          }
+          return { content: [{ type: 'text', text: JSON.stringify({ effect }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+        }
+      },
+    );
+
+    server.tool(
+      'delete_video_effect',
+      'Delete a custom user/AI-created video effect by UUID or slug (built-in system effects are protected).',
+      {
+        idOrSlug: z.string().min(1),
+      },
+      async ({ idOrSlug }) => {
+        try {
+          const deleted = await effects.deleteEffect(idOrSlug, 'claude');
+          if (!deleted) {
+            return { isError: true, content: [{ type: 'text', text: `Effect not found: ${idOrSlug}` }] };
+          }
+          return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, idOrSlug }) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }] };
+        }
       },
     );
   }

@@ -1,5 +1,6 @@
 import type {
   ActivityDto,
+  AddTimelineClipInput,
   AgentTaskDto,
   AnnotationDto,
   AssetDto,
@@ -19,6 +20,7 @@ import type {
   CreateRuleInput,
   CreateSceneInput,
   CreateShotInput,
+  CreateVideoEffectInput,
   CreateWatchFolderInput,
   CreateWebhookInput,
   DiskUsageSummaryDto,
@@ -28,6 +30,7 @@ import type {
   LinkSketchToShotInput,
   MediaFolderDto,
   NleExportFormat,
+  PatchTimelineClipInput,
   ProductionDossierOptions,
   ProjectDto,
   ProjectPlaybookDto,
@@ -52,6 +55,7 @@ import type {
   StudioKnowledgeEntryDto,
   SyncSketchBoardToStoryboardInput,
   SystemMetricsDto,
+  TimelineClipDto,
   TimelineDto,
   TimelineQualityMode,
   TimelineRenderDto,
@@ -62,7 +66,9 @@ import type {
   UpdateScriptInput,
   UpdateShotInput,
   UpdateStudioKnowledgeInput,
+  UpdateVideoEffectInput,
   UpdateWatchFolderInput,
+  VideoEffectDto,
   UpdateWebhookInput,
   UpdateYouTubePackageInput,
   UploadYouTubeDraftInput,
@@ -854,6 +860,107 @@ export const api = {
 
   getTimelineExportUrl(projectId: string, format: NleExportFormat): string {
     return `/api/projects/${encodeURIComponent(projectId)}/timeline/export?format=${format}&download=1`;
+  },
+
+  // --- CapCut Surgical Clip Editing & Render Cache (v0.11.0) ---
+
+  async addTimelineClip(
+    projectId: string,
+    input: Partial<AddTimelineClipInput> & { title: string; durationSec: number },
+  ): Promise<{ timeline: TimelineDto; clip: TimelineClipDto }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/clips`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async updateTimelineClip(
+    projectId: string,
+    clipId: string,
+    patch: PatchTimelineClipInput,
+  ): Promise<{ timeline: TimelineDto; clip: TimelineClipDto }> {
+    return apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline/clips/${encodeURIComponent(clipId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      },
+    );
+  },
+
+  async splitTimelineClip(
+    projectId: string,
+    clipId: string,
+    splitAtSec: number,
+  ): Promise<{ timeline: TimelineDto; leftClip: TimelineClipDto; rightClip: TimelineClipDto }> {
+    return apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline/clips/${encodeURIComponent(clipId)}/split`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ splitAtSec }),
+      },
+    );
+  },
+
+  async deleteTimelineClip(
+    projectId: string,
+    clipId: string,
+    ripple = false,
+  ): Promise<{ timeline: TimelineDto; deletedClipId: string }> {
+    return apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/timeline/clips/${encodeURIComponent(clipId)}${ripple ? '?ripple=true' : ''}`,
+      { method: 'DELETE' },
+    );
+  },
+
+  async clearTimelineRenderCache(projectId: string): Promise<{ clearedFiles: number }> {
+    return apiFetch(`/api/projects/${encodeURIComponent(projectId)}/timeline/render-cache`, {
+      method: 'DELETE',
+    });
+  },
+
+  // --- Custom AI & User Video/Audio Effects Library (v0.11.0) ---
+
+  async listEffects(filter?: {
+    category?: string;
+    q?: string;
+    createdBy?: string;
+  }): Promise<VideoEffectDto[]> {
+    const qs = new URLSearchParams();
+    if (filter?.category && filter.category !== 'all') qs.set('category', filter.category);
+    if (filter?.q?.trim()) qs.set('q', filter.q.trim());
+    if (filter?.createdBy && filter.createdBy !== 'all') qs.set('createdBy', filter.createdBy);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await apiFetch<{ effects: VideoEffectDto[] }>(`/api/effects${suffix}`);
+    return res.effects;
+  },
+
+  async createEffect(input: CreateVideoEffectInput): Promise<VideoEffectDto> {
+    const res = await apiFetch<{ effect: VideoEffectDto }>('/api/effects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.effect;
+  },
+
+  async updateEffect(idOrSlug: string, patch: UpdateVideoEffectInput): Promise<VideoEffectDto> {
+    const res = await apiFetch<{ effect: VideoEffectDto }>(
+      `/api/effects/${encodeURIComponent(idOrSlug)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      },
+    );
+    return res.effect;
+  },
+
+  async deleteEffect(idOrSlug: string): Promise<void> {
+    await apiFetch(`/api/effects/${encodeURIComponent(idOrSlug)}`, { method: 'DELETE' });
   },
 
   // --- Synchronized Subtitles (SRT / VTT / LRC & Burn-in) ---

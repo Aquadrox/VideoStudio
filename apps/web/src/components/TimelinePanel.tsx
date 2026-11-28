@@ -3,44 +3,59 @@ import {
   Captions,
   Clapperboard,
   Download,
-  Film,
   Layers,
   Loader2,
+  Lock,
   Magnet,
   Music,
   Pause,
   Play,
   Plus,
+  Redo2,
   RefreshCw,
-  Save,
+  Scissors,
   Sparkles,
   Trash2,
+  Type,
+  Undo2,
+  Unlock,
   Volume2,
   VolumeX,
   Wand2,
+  Zap,
 } from 'lucide-react';
 import {
   applyClipDragMove,
   applyClipTrimLeft,
   applyClipTrimRight,
   collectTimelineSnapPoints,
+  compileClipCssPreview,
+  DEFAULT_CLIP_COLOR_ADJUST,
+  DEFAULT_CLIP_TRANSFORM,
   DEFAULT_SUBTITLE_STYLE,
   evaluateTimelineTransitionFrame,
   extractTimelineBeatMarkers,
   findActiveSubtitleCues,
   secondsToSmpte,
   selectTimelinePlaybackUrl,
+  TIMELINE_TRANSITION_META,
   type AssetDto,
   type AudioTrackDto,
+  type ClipTextOverlay,
   type ProjectSubtitlesDto,
   type SubtitleCue,
   type TimelineClipDto,
   type TimelineDto,
   type TimelineQualityMode,
   type TimelineTrackDto,
+  type TimelineTrackType,
+  type TimelineTransition,
+  type VideoEffectDto,
 } from '@videostudio/shared';
 import { api } from '../api/client';
 import { formatDuration } from '../utils/format';
+import { CapCutClipInspector } from './CapCutClipInspector';
+import { EffectsLibraryDrawer } from './EffectsLibraryDrawer';
 import { SubtitleEditorPanel } from './SubtitleEditorPanel';
 import { TimelineWaveform } from './TimelineWaveform';
 
@@ -70,6 +85,7 @@ type CueDragAction = {
 };
 
 const PX_PER_SEC_DEFAULT = 36;
+const MAX_HISTORY = 30;
 
 export function TimelinePanel({
   projectId,
@@ -79,6 +95,7 @@ export function TimelinePanel({
   onOpenAssetId,
 }: TimelinePanelProps) {
   const [timeline, setTimeline] = useState<TimelineDto | null>(null);
+  const [effects, setEffects] = useState<VideoEffectDto[]>([]);
   const [audioTracks, setAudioTracks] = useState<AudioTrackDto[]>([]);
   const [subtitles, setSubtitles] = useState<ProjectSubtitlesDto>({
     projectId,
@@ -94,16 +111,21 @@ export function TimelinePanel({
   const [buildingAnimatic, setBuildingAnimatic] = useState(false);
   const [zoomPxPerSec, setZoomPxPerSec] = useState(PX_PER_SEC_DEFAULT);
 
-  // NLE v2 + Subtitles options
+  // Undo / Redo snapshots of tracks
+  const [undoStack, setUndoStack] = useState<TimelineTrackDto[][]>([]);
+  const [redoStack, setRedoStack] = useState<TimelineTrackDto[][]>([]);
+
+  // CapCut NLE options
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [showBeatMarkers, setShowBeatMarkers] = useState(true);
   const [showSubtitlesPreview, setShowSubtitlesPreview] = useState(true);
   const [burnSubtitlesOnRender, setBurnSubtitlesOnRender] = useState(false);
   const [bottomTab, setBottomTab] = useState<'tracks' | 'subtitles'>('tracks');
+  const [rightMode, setRightMode] = useState<'inspector' | 'renders'>('inspector');
   const [snapGuideSec, setSnapGuideSec] = useState<number | null>(null);
   const [selectedCueId, setSelectedCueId] = useState<string | null>(null);
 
-  // Playback state for live Animatic / Timeline preview
+  // Playback state for live CapCut Preview Monitor
   const [playheadSec, setPlayheadSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
@@ -126,16 +148,28 @@ export function TimelinePanel({
   }, [subtitles]);
 
   const assetMap = useMemo(() => new Map(assets.map((a) => [a.id, a])), [assets]);
+  const effectCatalog = useMemo(() => new Map(effects.map((fx) => [fx.slug, fx])), [effects]);
+
+  const loadEffects = useCallback(async () => {
+    try {
+      const fxList = await api.listEffects();
+      setEffects(fxList);
+    } catch {
+      // Ignore
+    }
+  }, []);
 
   const loadAll = useCallback(async () => {
     try {
-      const [tl, aud, subs] = await Promise.all([
+      const [tl, aud, subs, fxList] = await Promise.all([
         api.getTimeline(projectId),
         api.listAudioTracks(projectId).catch(() => [] as AudioTrackDto[]),
         api.getSubtitles(projectId).catch(() => null),
+        api.listEffects().catch(() => [] as VideoEffectDto[]),
       ]);
       setTimeline(tl);
       setAudioTracks(aud);
+      setEffects(fxList);
       if (subs) setSubtitles(subs);
     } catch {
       setTimeline(null);
@@ -167,7 +201,7 @@ export function TimelinePanel({
     [audioTracks, totalDuration, showBeatMarkers],
   );
 
-  // Advance playhead smoothly at ~30-60fps when playing animatic preview
+  // Advance playhead smoothly when playing preview
   useEffect(() => {
     if (!playing) return;
     let last = performance.now();
@@ -191,7 +225,7 @@ export function TimelinePanel({
     return () => window.cancelAnimationFrame(rafId);
   }, [playing, totalDuration]);
 
-  // All non-muted video clips sorted for transition preview evaluation
+  // Active video clips for main track compositing
   const activeVideoClips = useMemo(() => {
     if (!timeline) return [];
     return timeline.tracks
@@ -207,6 +241,53 @@ export function TimelinePanel({
 
   const activeVideoClip = transitionFrame.activeClip;
   const outgoingVideoClip = transitionFrame.outgoingClip;
+
+  // Live CSS preview style for active video clip (effects + color grading + transform + keyframes!)
+  const activeClipCss = useMemo(() => {
+    if (!activeVideoClip) {
+      return { filter: 'none', transform: 'none', opacity: 1, vignetteOpacity: 0 };
+    }
+    return compileClipCssPreview(activeVideoClip, playheadSec, effectCatalog);
+  }, [activeVideoClip, playheadSec, effectCatalog]);
+
+  // Active Overlay / PiP clips at playhead
+  const activeOverlayClips = useMemo(() => {
+    if (!timeline) return [];
+    return timeline.tracks
+      .filter((t) => t.type === 'overlay' && !t.muted)
+      .flatMap((t) => t.clips)
+      .filter(
+        (c) =>
+          !c.muted &&
+          c.assetId &&
+          playheadSec >= c.startSec &&
+          playheadSec <= c.startSec + c.durationSec,
+      );
+  }, [timeline, playheadSec]);
+
+  // Active Text track clips + inline clip textOverlay at playhead
+  const activeTextOverlays = useMemo(() => {
+    const items: Array<{ id: string; overlay: ClipTextOverlay }> = [];
+    if (activeVideoClip?.textOverlay?.text?.trim()) {
+      items.push({ id: `inline-${activeVideoClip.id}`, overlay: activeVideoClip.textOverlay });
+    }
+    if (timeline) {
+      for (const tr of timeline.tracks) {
+        if (tr.type !== 'text' || tr.muted) continue;
+        for (const c of tr.clips) {
+          if (
+            !c.muted &&
+            c.textOverlay?.text?.trim() &&
+            playheadSec >= c.startSec &&
+            playheadSec <= c.startSec + c.durationSec
+          ) {
+            items.push({ id: c.id, overlay: c.textOverlay });
+          }
+        }
+      }
+    }
+    return items;
+  }, [timeline, activeVideoClip, playheadSec]);
 
   // Primary audio clip for synchronized playback
   const activeAudioClip = useMemo<TimelineClipDto | null>(() => {
@@ -234,7 +315,12 @@ export function TimelinePanel({
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !activeAudioAsset || !activeAudioClip) return;
-    const targetAudioTime = Math.max(0, playheadSec - activeAudioClip.startSec + activeAudioClip.inSec);
+    const targetAudioTime = Math.max(
+      0,
+      (playheadSec - activeAudioClip.startSec) * (activeAudioClip.speed ?? 1) + activeAudioClip.inSec,
+    );
+    audio.volume = Math.max(0, Math.min(1, activeAudioClip.volume));
+    audio.playbackRate = Math.max(0.25, Math.min(4, activeAudioClip.speed ?? 1));
     if (playing) {
       if (Math.abs(audio.currentTime - targetAudioTime) > 0.35) {
         audio.currentTime = targetAudioTime;
@@ -256,8 +342,21 @@ export function TimelinePanel({
     return null;
   }, [timeline, selectedClipId]);
 
+  const pushUndoSnapshot = useCallback((tracks: TimelineTrackDto[]) => {
+    setUndoStack((prev) => [...prev.slice(-(MAX_HISTORY - 1)), structuredClone(tracks)]);
+    setRedoStack([]);
+  }, []);
+
   const persistTracks = useCallback(
-    async (nextTracks: TimelineTrackDto[], qualityMode?: TimelineQualityMode, silent = false) => {
+    async (
+      nextTracks: TimelineTrackDto[],
+      qualityMode?: TimelineQualityMode,
+      silent = false,
+      recordUndo = true,
+    ) => {
+      if (recordUndo && timelineRef.current) {
+        pushUndoSnapshot(timelineRef.current.tracks);
+      }
       setSaving(true);
       try {
         const saved = await api.saveTimeline(projectId, {
@@ -277,10 +376,18 @@ export function TimelinePanel({
               durationSec: c.durationSec,
               inSec: c.inSec,
               outSec: c.outSec,
+              speed: c.speed ?? 1,
               transition: c.transition,
               transitionDurationSec: c.transitionDurationSec,
               volume: c.volume,
+              fadeInSec: c.fadeInSec ?? 0,
+              fadeOutSec: c.fadeOutSec ?? 0,
               muted: c.muted,
+              transform: c.transform ?? DEFAULT_CLIP_TRANSFORM,
+              colorAdjust: c.colorAdjust ?? DEFAULT_CLIP_COLOR_ADJUST,
+              effects: c.effects ?? [],
+              keyframes: c.keyframes ?? [],
+              textOverlay: c.textOverlay ?? null,
               notes: c.notes,
             })),
           })),
@@ -293,8 +400,26 @@ export function TimelinePanel({
         setSaving(false);
       }
     },
-    [projectId, onNotify],
+    [projectId, onNotify, pushUndoSnapshot],
   );
+
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0 || !timelineRef.current) return;
+    const prev = undoStack[undoStack.length - 1]!;
+    setUndoStack((s) => s.slice(0, -1));
+    setRedoStack((r) => [...r, structuredClone(timelineRef.current!.tracks)]);
+    void persistTracks(prev, undefined, true, false);
+    onNotify('Annulé (Undo)');
+  }, [undoStack, persistTracks, onNotify]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0 || !timelineRef.current) return;
+    const next = redoStack[redoStack.length - 1]!;
+    setRedoStack((r) => r.slice(0, -1));
+    setUndoStack((s) => [...s, structuredClone(timelineRef.current!.tracks)]);
+    void persistTracks(next, undefined, true, false);
+    onNotify('Rétabli (Redo)');
+  }, [redoStack, persistTracks, onNotify]);
 
   const persistSubtitles = useCallback(
     async (nextSubs: ProjectSubtitlesDto, silent = false) => {
@@ -316,12 +441,84 @@ export function TimelinePanel({
     [projectId, onNotify],
   );
 
+  // Surgical CapCut Split at Playhead (Razor Tool)
+  const handleSplitAtPlayhead = useCallback(
+    async (explicitClipId?: string) => {
+      const tl = timelineRef.current;
+      if (!tl) return;
+      const targetClip = explicitClipId
+        ? tl.tracks.flatMap((t) => t.clips).find((c) => c.id === explicitClipId)
+        : (selectedClipId
+            ? tl.tracks.flatMap((t) => t.clips).find((c) => c.id === selectedClipId)
+            : null) ??
+          tl.tracks
+            .flatMap((t) => t.clips)
+            .find((c) => playheadSec > c.startSec + 0.15 && playheadSec < c.startSec + c.durationSec - 0.15);
+
+      if (!targetClip) {
+        onNotify('Place la tête de lecture sur un clip pour le couper (S).');
+        return;
+      }
+
+      try {
+        pushUndoSnapshot(tl.tracks);
+        const res = await api.splitTimelineClip(projectId, targetClip.id, playheadSec);
+        setTimeline(res.timeline);
+        setSelectedClipId(res.rightClip.id);
+        onNotify(`Clip coupé à ${playheadSec.toFixed(2)}s ✂️`);
+      } catch (err) {
+        onNotify(err instanceof Error ? err.message : 'Impossible de couper à cette position');
+      }
+    },
+    [projectId, playheadSec, selectedClipId, pushUndoSnapshot, onNotify],
+  );
+
+  const handleDeleteClip = useCallback(
+    async (clipId: string, ripple = false) => {
+      if (!timelineRef.current) return;
+      try {
+        pushUndoSnapshot(timelineRef.current.tracks);
+        const res = await api.deleteTimelineClip(projectId, clipId, ripple);
+        setTimeline(res.timeline);
+        setSelectedClipId(null);
+        onNotify(ripple ? 'Clip supprimé (Ripple)' : 'Clip supprimé');
+      } catch (err) {
+        onNotify(err instanceof Error ? err.message : 'Erreur suppression clip');
+      }
+    },
+    [projectId, pushUndoSnapshot, onNotify],
+  );
+
+  // CapCut Keyboard Shortcuts (Space = Play/Pause, S = Split, Ctrl+Z/Shift+Z = Undo/Redo, Delete = Delete clip)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setPlaying((p) => !p);
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
+      } else if (e.key.toLowerCase() === 's' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        void handleSplitAtPlayhead();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipId) {
+        e.preventDefault();
+        void handleDeleteClip(selectedClipId, e.shiftKey);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUndo, handleRedo, handleSplitAtPlayhead, handleDeleteClip, selectedClipId]);
+
   // Global pointer handlers for direct Clip Drag/Trim, Subtitle Cue Drag/Trim, and Ruler Scrubbing
   useEffect(() => {
     const snapThresholdSec = Math.max(0.12, 10 / Math.max(14, zoomPxPerSec));
 
     const onPointerMove = (e: PointerEvent) => {
-      // 1. Ruler scrubbing
       if (rulerScrubRef.current?.active) {
         const rect = rulerScrubRef.current.laneEl.getBoundingClientRect();
         const x = Math.max(0, e.clientX - rect.left);
@@ -330,7 +527,6 @@ export function TimelinePanel({
         return;
       }
 
-      // 2. Clip drag / trim
       const drag = clipDragRef.current;
       if (drag && timelineRef.current) {
         const dxPx = e.clientX - drag.originClientX;
@@ -379,7 +575,6 @@ export function TimelinePanel({
         return;
       }
 
-      // 3. Subtitle cue drag / trim on track S1
       const cDrag = cueDragRef.current;
       if (cDrag) {
         const dxPx = e.clientX - cDrag.originClientX;
@@ -412,7 +607,6 @@ export function TimelinePanel({
       if (rulerScrubRef.current?.active) {
         rulerScrubRef.current = null;
       }
-
       if (clipDragRef.current) {
         const wasMoved = clipDragRef.current.moved;
         clipDragRef.current = null;
@@ -421,7 +615,6 @@ export function TimelinePanel({
           void persistTracks(timelineRef.current.tracks, undefined, true);
         }
       }
-
       if (cueDragRef.current) {
         const wasMoved = cueDragRef.current.moved;
         cueDragRef.current = null;
@@ -449,6 +642,7 @@ export function TimelinePanel({
     e.stopPropagation();
     e.preventDefault();
     setSelectedClipId(clip.id);
+    setRightMode('inspector');
     clipDragRef.current = {
       kind,
       clipId: clip.id,
@@ -521,8 +715,9 @@ export function TimelinePanel({
         qualityMode: mode,
         burnSubtitles: burnSubtitlesOnRender,
       });
+      setRightMode('renders');
       onNotify(
-        `Rendu FFmpeg ${mode === 'hq_master' ? 'HQ Master' : 'Draft'}${burnSubtitlesOnRender ? ' + Sous-titres incrustés' : ''} lancé !`,
+        `Rendu incrémental FFmpeg ${mode === 'hq_master' ? 'HQ Master' : 'Draft'} lancé !`,
       );
       await loadAll();
     } catch (err) {
@@ -532,13 +727,29 @@ export function TimelinePanel({
     }
   };
 
-  const handleAddTrack = (type: 'video' | 'audio') => {
+  const handleClearRenderCache = async () => {
+    try {
+      const res = await api.clearTimelineRenderCache(projectId);
+      onNotify(`Cache rendu vidé (${res.clearedFiles} segment(s) supprimés)`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur nettoyage cache');
+    }
+  };
+
+  const handleAddTrack = (type: TimelineTrackType) => {
     if (!timeline) return;
     const count = timeline.tracks.filter((t) => t.type === type).length + 1;
+    const labelMap: Record<TimelineTrackType, string> = {
+      video: `V${count} · Vidéo`,
+      overlay: `OV${count} · Overlay / PiP`,
+      text: `T${count} · Textes`,
+      effect: `FX${count} · Effets`,
+      audio: `A${count} · Audio`,
+    };
     const newTrack: TimelineTrackDto = {
       id: crypto.randomUUID(),
       projectId,
-      name: type === 'video' ? `V${count} · Vidéo` : `A${count} · Audio`,
+      name: labelMap[type],
       type,
       muted: false,
       locked: false,
@@ -547,6 +758,135 @@ export function TimelinePanel({
       clips: [],
     };
     void persistTracks([...timeline.tracks, newTrack]);
+  };
+
+  // Drop media from CapCut Left Resource Drawer
+  const handleDropAssetToTrack = async (
+    asset: AssetDto,
+    trackType: 'video' | 'overlay' | 'audio',
+  ) => {
+    try {
+      if (timeline) pushUndoSnapshot(timeline.tracks);
+      const dur = asset.durationSec && asset.durationSec > 0 ? Math.round(asset.durationSec * 100) / 100 : 4;
+      const res = await api.addTimelineClip(projectId, {
+        trackType,
+        assetId: asset.id,
+        title: asset.title,
+        startSec: trackType === 'overlay' ? Math.round(playheadSec * 100) / 100 : undefined,
+        durationSec: dur,
+        transform: trackType === 'overlay' ? { scale: 0.45, x: 0.45, y: -0.35 } : undefined,
+      });
+      setTimeline(res.timeline);
+      setSelectedClipId(res.clip.id);
+      setRightMode('inspector');
+      onNotify(`"${asset.title}" ajouté sur ${trackType.toUpperCase()}`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur ajout média');
+    }
+  };
+
+  // Drop text preset from Left Resource Drawer onto track T1 at playhead
+  const handleDropTextPreset = async (title: string, overlay: ClipTextOverlay) => {
+    try {
+      if (timeline) pushUndoSnapshot(timeline.tracks);
+      const res = await api.addTimelineClip(projectId, {
+        trackType: 'text',
+        title,
+        startSec: Math.round(playheadSec * 100) / 100,
+        durationSec: 3.5,
+        textOverlay: overlay,
+      });
+      setTimeline(res.timeline);
+      setSelectedClipId(res.clip.id);
+      setRightMode('inspector');
+      onNotify(`Texte « ${title} » ajouté à ${playheadSec.toFixed(1)}s`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur ajout texte');
+    }
+  };
+
+  // Apply effect from Effects Library to selected clip
+  const handleApplyEffectToClip = async (effect: VideoEffectDto) => {
+    if (!selectedClip) {
+      onNotify('Sélectionne d’abord un clip sur la timeline.');
+      return;
+    }
+    const existing = selectedClip.clip.effects ?? [];
+    const nextEffects = [
+      ...existing,
+      {
+        id: crypto.randomUUID(),
+        effectSlug: effect.slug,
+        enabled: true,
+        intensity: 1,
+        params: { ...(effect.defaultParams ?? {}) },
+      },
+    ];
+    try {
+      if (timeline) pushUndoSnapshot(timeline.tracks);
+      const res = await api.updateTimelineClip(projectId, selectedClip.clip.id, {
+        effects: nextEffects,
+      });
+      setTimeline(res.timeline);
+      setRightMode('inspector');
+      onNotify(`Effet ${effect.icon} ${effect.name} appliqué sur "${selectedClip.clip.title}"`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur application effet');
+    }
+  };
+
+  // Apply transition from Transitions Drawer to selected clip
+  const handleApplyTransitionToClip = async (transition: TimelineTransition) => {
+    if (!selectedClip) {
+      onNotify('Sélectionne d’abord un clip sur la timeline.');
+      return;
+    }
+    try {
+      if (timeline) pushUndoSnapshot(timeline.tracks);
+      const res = await api.updateTimelineClip(projectId, selectedClip.clip.id, {
+        transition,
+        transitionDurationSec: transition === 'cut' ? 0 : selectedClip.clip.transitionDurationSec || 0.6,
+      });
+      setTimeline(res.timeline);
+      onNotify(`Transition ${TIMELINE_TRANSITION_META[transition].label} appliquée`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur application transition');
+    }
+  };
+
+  const handleDuplicateClip = async () => {
+    if (!selectedClip || !timeline) return;
+    const c = selectedClip.clip;
+    try {
+      pushUndoSnapshot(timeline.tracks);
+      const res = await api.addTimelineClip(projectId, {
+        trackId: selectedClip.track.id,
+        trackType: selectedClip.track.type,
+        assetId: c.assetId,
+        title: `${c.title} (copie)`,
+        startSec: Math.round((c.startSec + c.durationSec) * 100) / 100,
+        durationSec: c.durationSec,
+        inSec: c.inSec,
+        outSec: c.outSec,
+        speed: c.speed ?? 1,
+        transition: c.transition,
+        transitionDurationSec: c.transitionDurationSec,
+        volume: c.volume,
+        fadeInSec: c.fadeInSec ?? 0,
+        fadeOutSec: c.fadeOutSec ?? 0,
+        transform: c.transform,
+        colorAdjust: c.colorAdjust,
+        effects: c.effects,
+        keyframes: c.keyframes,
+        textOverlay: c.textOverlay,
+        notes: c.notes,
+      });
+      setTimeline(res.timeline);
+      setSelectedClipId(res.clip.id);
+      onNotify(`Clip dupliqué : "${res.clip.title}"`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur duplication clip');
+    }
   };
 
   const handleAppendAssetToTrack = (trackId: string, assetId: string) => {
@@ -572,10 +912,18 @@ export function TimelinePanel({
         durationSec: dur,
         inSec: 0,
         outSec: null,
+        speed: 1,
         transition: 'cut',
         transitionDurationSec: 0,
         volume: 1,
+        fadeInSec: 0,
+        fadeOutSec: 0,
         muted: false,
+        transform: { ...DEFAULT_CLIP_TRANSFORM },
+        colorAdjust: { ...DEFAULT_CLIP_COLOR_ADJUST },
+        effects: [],
+        keyframes: [],
+        textOverlay: null,
         notes: '',
         sortOrder: tr.clips.length,
       };
@@ -585,30 +933,17 @@ export function TimelinePanel({
     void persistTracks(nextTracks);
   };
 
-  const handleUpdateClipField = (
-    clipId: string,
-    patch: Partial<
-      Pick<TimelineClipDto, 'title' | 'startSec' | 'durationSec' | 'inSec' | 'transition' | 'transitionDurationSec'>
-    >,
-  ) => {
-    if (!timeline) return;
-    setTimeline({
-      ...timeline,
-      tracks: timeline.tracks.map((tr) => ({
-        ...tr,
-        clips: tr.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)),
-      })),
+  const handlePatchLocalClip = (clipId: string, patch: Partial<TimelineClipDto>) => {
+    setTimeline((curr) => {
+      if (!curr) return curr;
+      return {
+        ...curr,
+        tracks: curr.tracks.map((tr) => ({
+          ...tr,
+          clips: tr.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)),
+        })),
+      };
     });
-  };
-
-  const handleDeleteClip = (clipId: string) => {
-    if (!timeline) return;
-    const nextTracks = timeline.tracks.map((tr) => ({
-      ...tr,
-      clips: tr.clips.filter((c) => c.id !== clipId),
-    }));
-    setSelectedClipId(null);
-    void persistTracks(nextTracks);
   };
 
   const handleToggleTrackMute = (trackId: string) => {
@@ -619,11 +954,19 @@ export function TimelinePanel({
     void persistTracks(nextTracks);
   };
 
+  const handleToggleTrackLock = (trackId: string) => {
+    if (!timeline) return;
+    const nextTracks = timeline.tracks.map((tr) =>
+      tr.id === trackId ? { ...tr, locked: !tr.locked } : tr,
+    );
+    void persistTracks(nextTracks, undefined, true);
+  };
+
   if (loading && !timeline) {
     return (
       <div className="empty-state">
         <Loader2 size={28} className="task-spin" color="var(--accent-amber)" />
-        <p>Chargement de la timeline NLE...</p>
+        <p>Chargement du studio de montage...</p>
       </div>
     );
   }
@@ -644,10 +987,10 @@ export function TimelinePanel({
   );
 
   return (
-    <div className="timeline-workspace">
-      {/* Top Toolbar */}
+    <div className="timeline-workspace capcut-studio">
+      {/* Top CapCut Studio Toolbar */}
       <div className="timeline-toolbar">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <button
             type="button"
             className="btn btn-primary btn-sm"
@@ -656,7 +999,37 @@ export function TimelinePanel({
             title="Convertir automatiquement les plans du Storyboard + Audio en piste V1 / A1"
           >
             <Wand2 size={13} />
-            {buildingAnimatic ? 'Génération...' : 'Animatique depuis Storyboard'}
+            {buildingAnimatic ? 'Génération...' : 'Animatique'}
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => void handleSplitAtPlayhead()}
+            title="Couper le clip au niveau de la tête de lecture (Raccourci : S)"
+          >
+            <Scissors size={12} /> Couper (S)
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={handleUndo}
+            disabled={undoStack.length === 0}
+            title="Annuler (Ctrl+Z)"
+            style={{ padding: '4px 7px' }}
+          >
+            <Undo2 size={13} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={handleRedo}
+            disabled={redoStack.length === 0}
+            title="Rétablir (Ctrl+Shift+Z)"
+            style={{ padding: '4px 7px' }}
+          >
+            <Redo2 size={13} />
           </button>
 
           <div className="quality-toggle-group" role="group" aria-label="Mode de lecture Draft / HQ">
@@ -665,15 +1038,15 @@ export function TimelinePanel({
               className={`chip ${qualityMode === 'draft_proxy' ? 'active' : ''}`}
               onClick={() => void handleSwitchQuality('draft_proxy')}
             >
-              Draft Proxy
+              Draft
             </button>
             <button
               type="button"
               className={`chip ${qualityMode === 'hq_master' ? 'active' : ''}`}
               onClick={() => void handleSwitchQuality('hq_master')}
             >
-              <Sparkles size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-              HQ Master
+              <Sparkles size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} />
+              HQ
             </button>
           </div>
 
@@ -681,9 +1054,9 @@ export function TimelinePanel({
             type="button"
             className={`chip ${snapEnabled ? 'active' : ''}`}
             onClick={() => setSnapEnabled((v) => !v)}
-            title="Aimantation sur les clips, le curseur et les beats (maintenir Alt pour désactiver ponctuellement)"
+            title="Aimantation (maintenir Alt pour désactiver ponctuellement)"
           >
-            <Magnet size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+            <Magnet size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} />
             Snap
           </button>
 
@@ -691,19 +1064,17 @@ export function TimelinePanel({
             type="button"
             className={`chip ${showBeatMarkers ? 'active' : ''}`}
             onClick={() => setShowBeatMarkers((v) => !v)}
-            title="Afficher les repères BPM & paroles Suno/LRC sur la règle"
           >
-            <Music size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-            Beats / LRC ({beatMarkers.length})
+            <Music size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} />
+            Beats ({beatMarkers.length})
           </button>
 
           <button
             type="button"
             className={`chip ${showSubtitlesPreview ? 'active' : ''}`}
             onClick={() => setShowSubtitlesPreview((v) => !v)}
-            title="Afficher les sous-titres en direct sur le moniteur"
           >
-            <Captions size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+            <Captions size={11} style={{ marginRight: 3, verticalAlign: 'middle' }} />
             ST ({subtitles.cues.length})
           </button>
         </div>
@@ -711,7 +1082,7 @@ export function TimelinePanel({
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <label
             className="timeline-burn-toggle"
-            title="Incruster les sous-titres (Burn-in FFmpeg) directement dans la vidéo MP4 rendue"
+            title="Incruster les sous-titres directement dans la vidéo MP4 rendue"
           >
             <input
               type="checkbox"
@@ -724,13 +1095,13 @@ export function TimelinePanel({
 
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className="btn btn-primary btn-sm"
             onClick={() => void handleStartRender(qualityMode)}
             disabled={rendering}
-            title="Lancer un rendu vidéo MP4 FFmpeg côté serveur (enregistré dans /renders)"
+            title="Rendu vidéo FFmpeg incrémental : seuls les clips modifiés sont ré-encodés !"
           >
-            {rendering ? <Loader2 size={13} className="task-spin" /> : <Film size={13} />}
-            Rendu MP4 ({qualityMode === 'hq_master' ? 'HQ' : 'Draft'})
+            {rendering ? <Loader2 size={13} className="task-spin" /> : <Zap size={13} />}
+            Rendu Rapide MP4 ({qualityMode === 'hq_master' ? 'HQ' : 'Draft'})
           </button>
 
           <a
@@ -738,36 +1109,48 @@ export function TimelinePanel({
             download
             className="btn btn-ghost btn-sm"
             style={{ textDecoration: 'none' }}
-            title="Exporter en OpenTimelineIO (.otio) pour DaVinci Resolve"
           >
-            <Download size={12} /> .otio
+            <Download size={11} /> .otio
           </a>
           <a
             href={api.getTimelineExportUrl(projectId, 'fcpxml')}
             download
             className="btn btn-ghost btn-sm"
             style={{ textDecoration: 'none' }}
-            title="Exporter en Final Cut Pro XML (.fcpxml)"
           >
-            <Download size={12} /> .fcpxml
+            <Download size={11} /> .fcpxml
           </a>
           <a
             href={api.getTimelineExportUrl(projectId, 'edl')}
             download
             className="btn btn-ghost btn-sm"
             style={{ textDecoration: 'none' }}
-            title="Exporter en CMX 3600 EDL (.edl)"
           >
-            <Download size={12} /> .edl
+            <Download size={11} /> .edl
           </a>
         </div>
       </div>
 
-      {/* Preview Monitor + Transport + Selected Clip Inspector */}
-      <div className="timeline-top-grid">
+      {/* CapCut 3-Column Studio Top Deck: Resources | Compositing Monitor | Tabbed Inspector */}
+      <div className="capcut-top-deck">
+        {/* LEFT: CapCut Resource Browser (Media, Effects + Custom Creator, Transitions, Text) */}
+        <EffectsLibraryDrawer
+          assets={assets}
+          effects={effects}
+          selectedClipId={selectedClip?.clip.id ?? null}
+          selectedClipTitle={selectedClip?.clip.title ?? null}
+          onDropAssetToTrack={(asset, type) => void handleDropAssetToTrack(asset, type)}
+          onApplyEffectToClip={(fx) => void handleApplyEffectToClip(fx)}
+          onApplyTransitionToClip={(tr) => void handleApplyTransitionToClip(tr)}
+          onDropTextPreset={(title, ov) => void handleDropTextPreset(title, ov)}
+          onEffectsChanged={() => void loadEffects()}
+          onNotify={onNotify}
+        />
+
+        {/* CENTER: Live Multi-Layer Compositing Preview Monitor */}
         <div className="timeline-monitor-card">
           <div className="timeline-monitor-stage">
-            {/* Outgoing clip layer for live Crossfade transition preview */}
+            {/* Outgoing clip layer for transition preview */}
             {outgoingVideoAsset && outgoingPlaybackUrl && transitionFrame.outgoingOpacity > 0.01 && (
               <img
                 src={outgoingVideoAsset.urls.thumbnail || outgoingPlaybackUrl}
@@ -777,6 +1160,7 @@ export function TimelinePanel({
               />
             )}
 
+            {/* Main Video / Image Layer with live CapCut CSS FX, Color Grading, Transform & Keyframes */}
             {activeVideoAsset && playbackUrl ? (
               activeVideoAsset.type === 'video' ? (
                 <video
@@ -786,13 +1170,21 @@ export function TimelinePanel({
                   muted
                   playsInline
                   autoPlay={playing}
-                  style={{ opacity: transitionFrame.activeOpacity }}
+                  style={{
+                    opacity: transitionFrame.activeOpacity * activeClipCss.opacity,
+                    filter: activeClipCss.filter,
+                    transform: activeClipCss.transform,
+                  }}
                 />
               ) : (
                 <img
                   src={playbackUrl}
                   alt={activeVideoAsset.title}
-                  style={{ opacity: transitionFrame.activeOpacity }}
+                  style={{
+                    opacity: transitionFrame.activeOpacity * activeClipCss.opacity,
+                    filter: activeClipCss.filter,
+                    transform: activeClipCss.transform,
+                  }}
                 />
               )
             ) : (
@@ -801,12 +1193,76 @@ export function TimelinePanel({
                 <span>
                   {activeVideoClip
                     ? `${activeVideoClip.title} (aucun média lié)`
-                    : 'Clique sur « Animatique depuis Storyboard » ou ajoute des clips'}
+                    : 'Dépose des médias depuis le panneau gauche ou génère l’Animatique'}
                 </span>
               </div>
             )}
 
-            {/* Live Fade-to-Black Transition Overlay */}
+            {/* Radial Vignette Preview */}
+            {activeClipCss.vignetteOpacity > 0.01 && (
+              <div
+                className="capcut-vignette-overlay"
+                style={{
+                  background: `radial-gradient(circle, transparent 42%, rgba(0,0,0,${Math.min(0.92, activeClipCss.vignetteOpacity * 0.9)}))`,
+                }}
+                aria-hidden="true"
+              />
+            )}
+
+            {/* Live Overlay / PiP Layers (V2+) */}
+            {activeOverlayClips.map((ovClip) => {
+              const ovAsset = ovClip.assetId ? assetMap.get(ovClip.assetId) : null;
+              if (!ovAsset) return null;
+              const ovUrl = selectTimelinePlaybackUrl(ovAsset.urls, ovAsset.type, qualityMode);
+              if (!ovUrl) return null;
+              const ovCss = compileClipCssPreview(ovClip, playheadSec, effectCatalog);
+              const tr = { ...DEFAULT_CLIP_TRANSFORM, ...(ovClip.transform ?? {}) };
+              return (
+                <div
+                  key={ovClip.id}
+                  className="capcut-pip-layer"
+                  style={{
+                    left: `${50 + tr.x * 50}%`,
+                    top: `${50 + tr.y * 50}%`,
+                    width: `${Math.max(12, Math.min(95, tr.scale * 45))}%`,
+                    opacity: ovCss.opacity,
+                    filter: ovCss.filter,
+                    transform: `translate(-50%, -50%) rotate(${tr.rotation}deg)`,
+                  }}
+                >
+                  {ovAsset.type === 'video' ? (
+                    <video src={ovUrl} muted playsInline autoPlay={playing} />
+                  ) : (
+                    <img src={ovUrl} alt={ovClip.title} />
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Live Text Track & Inline Text Overlays */}
+            {activeTextOverlays.map(({ id, overlay }) => (
+              <div
+                key={id}
+                className="capcut-text-layer"
+                style={{
+                  left: `${overlay.x}%`,
+                  top: `${overlay.y}%`,
+                  fontSize: `${Math.max(12, Math.round(overlay.fontSize * 0.56))}px`,
+                  fontWeight: overlay.bold ? 700 : 400,
+                  color: overlay.color,
+                  backgroundColor:
+                    overlay.bgOpacity > 0.02
+                      ? `${overlay.bgColor}${Math.round(overlay.bgOpacity * 255)
+                          .toString(16)
+                          .padStart(2, '0')}`
+                      : 'transparent',
+                }}
+              >
+                {overlay.text}
+              </div>
+            ))}
+
+            {/* Fade-to-Black Transition Overlay */}
             {transitionFrame.blackOverlayOpacity > 0.01 && (
               <div
                 className="timeline-black-fade-overlay"
@@ -858,7 +1314,7 @@ export function TimelinePanel({
               onClick={() => setPlaying((p) => !p)}
             >
               {playing ? <Pause size={13} /> : <Play size={13} />}
-              {playing ? 'Pause' : 'Lecture Animatique'}
+              {playing ? 'Pause' : 'Lecture'}
             </button>
 
             <input
@@ -883,148 +1339,74 @@ export function TimelinePanel({
                 max={96}
                 value={zoomPxPerSec}
                 onChange={(e) => setZoomPxPerSec(Number(e.target.value))}
-                style={{ width: 78, accentColor: 'var(--accent-amber)' }}
+                style={{ width: 70, accentColor: 'var(--accent-amber)' }}
               />
             </label>
           </div>
         </div>
 
-        {/* Right Side: Selected Clip Inspector OR Server Renders History */}
-        <div className="timeline-inspector-card">
-          {selectedClip ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div className="section-label">
-                <span>Clip sélectionné</span>
-                <button
-                  type="button"
-                  className="btn btn-danger btn-sm"
-                  onClick={() => handleDeleteClip(selectedClip.clip.id)}
-                >
-                  <Trash2 size={12} /> Supprimer
-                </button>
-              </div>
-              <div className="field">
-                <label>Titre</label>
-                <input
-                  className="input"
-                  value={selectedClip.clip.title}
-                  onChange={(e) =>
-                    handleUpdateClipField(selectedClip.clip.id, { title: e.target.value })
-                  }
-                />
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                <div className="field">
-                  <label>Début (s)</label>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={selectedClip.clip.startSec}
-                    onChange={(e) =>
-                      handleUpdateClipField(selectedClip.clip.id, {
-                        startSec: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                  />
-                </div>
-                <div className="field">
-                  <label>Durée (s)</label>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0.2}
-                    step={0.1}
-                    value={selectedClip.clip.durationSec}
-                    onChange={(e) =>
-                      handleUpdateClipField(selectedClip.clip.id, {
-                        durationSec: Math.max(0.2, Number(e.target.value) || 0.2),
-                      })
-                    }
-                  />
-                </div>
-                <div className="field">
-                  <label>In (s)</label>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={selectedClip.clip.inSec}
-                    onChange={(e) =>
-                      handleUpdateClipField(selectedClip.clip.id, {
-                        inSec: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                  />
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div className="field">
-                  <label>Transition</label>
-                  <select
-                    className="select"
-                    value={selectedClip.clip.transition}
-                    onChange={(e) => {
-                      const nextTrans = e.target.value as TimelineClipDto['transition'];
-                      handleUpdateClipField(selectedClip.clip.id, {
-                        transition: nextTrans,
-                        transitionDurationSec:
-                          nextTrans === 'cut'
-                            ? 0
-                            : selectedClip.clip.transitionDurationSec || 0.6,
-                      });
-                    }}
-                  >
-                    <option value="cut">Cut</option>
-                    <option value="crossfade">Crossfade</option>
-                    <option value="fade_black">Fondu au noir</option>
-                  </select>
-                </div>
-                <div className="field">
-                  <label>Durée trans. (s)</label>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    max={5}
-                    step={0.1}
-                    disabled={selectedClip.clip.transition === 'cut'}
-                    value={selectedClip.clip.transitionDurationSec}
-                    onChange={(e) =>
-                      handleUpdateClipField(selectedClip.clip.id, {
-                        transitionDurationSec: Math.max(0, Math.min(5, Number(e.target.value) || 0)),
-                      })
-                    }
-                  />
-                </div>
-              </div>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={saving}
-                onClick={() => timeline && void persistTracks(timeline.tracks)}
-              >
-                <Save size={12} /> {saving ? 'Enregistrement...' : 'Appliquer'}
-              </button>
-            </div>
+        {/* RIGHT: CapCut Clip Inspector OR Server Renders & Incremental Cache History */}
+        <div className="timeline-inspector-card capcut-right-panel">
+          <div className="capcut-right-switcher">
+            <button
+              type="button"
+              className={`chip ${rightMode === 'inspector' ? 'active' : ''}`}
+              onClick={() => setRightMode('inspector')}
+            >
+              Inspecteur Clip
+            </button>
+            <button
+              type="button"
+              className={`chip ${rightMode === 'renders' ? 'active' : ''}`}
+              onClick={() => setRightMode('renders')}
+            >
+              Rendus ({timeline?.renders.length ?? 0})
+            </button>
+          </div>
+
+          {rightMode === 'inspector' && selectedClip ? (
+            <CapCutClipInspector
+              track={selectedClip.track}
+              clip={selectedClip.clip}
+              playheadSec={playheadSec}
+              effectCatalog={effectCatalog}
+              saving={saving}
+              onPatchClip={(patch) => handlePatchLocalClip(selectedClip.clip.id, patch)}
+              onCommit={() => timeline && void persistTracks(timeline.tracks)}
+              onSplitAtPlayhead={() => void handleSplitAtPlayhead(selectedClip.clip.id)}
+              onDuplicateClip={() => void handleDuplicateClip()}
+              onDeleteClip={(ripple) => void handleDeleteClip(selectedClip.clip.id, ripple)}
+            />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 8 }}>
               <div className="section-label">
                 <span>Rendus Serveur FFmpeg</span>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => void loadAll()}
-                  title="Actualiser"
-                >
-                  <RefreshCw size={12} />
-                </button>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => void handleClearRenderCache()}
+                    title="Vider le cache des segments FFmpeg pour forcer un ré-encodage complet"
+                    style={{ fontSize: 10.5 }}
+                  >
+                    <Trash2 size={11} /> Cache
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => void loadAll()}
+                    title="Actualiser"
+                  >
+                    <RefreshCw size={12} />
+                  </button>
+                </div>
+              </div>
+              <div className="capcut-hint-banner">
+                ⚡ <strong>Cache incrémental actif</strong> : si tu modifies 1 seul extrait, les autres segments sont réutilisés instantanément.
               </div>
               {timeline && timeline.renders.length > 0 ? (
                 <div className="timeline-render-list">
-                  {timeline.renders.slice(0, 6).map((r) => (
+                  {timeline.renders.slice(0, 8).map((r) => (
                     <div key={r.id} className="timeline-render-row">
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 500 }}>
@@ -1052,8 +1434,7 @@ export function TimelinePanel({
                 </div>
               ) : (
                 <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
-                  Aucun rendu MP4 encore généré. Glisse ou redimensionne tes clips directement sur la
-                  timeline, puis clique sur « Rendu MP4 ».
+                  Aucun rendu MP4 encore généré. Clique sur un clip pour l’inspecter, ou lance « Rendu Rapide MP4 ».
                 </p>
               )}
             </div>
@@ -1061,7 +1442,7 @@ export function TimelinePanel({
         </div>
       </div>
 
-      {/* Bottom Workspace Switcher: Multi-Track NLE OR Synchronized Subtitles Editor */}
+      {/* Bottom Workspace: Multi-Track CapCut Timeline OR Synchronized Subtitles Editor */}
       <div className="timeline-tracks-panel">
         <div className="timeline-tracks-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1079,27 +1460,41 @@ export function TimelinePanel({
               onClick={() => setBottomTab('subtitles')}
             >
               <Captions size={12} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-              Éditeur Sous-titres SRT ({subtitles.cues.length})
+              Sous-titres SRT ({subtitles.cues.length})
             </button>
             <span className="muted" style={{ fontSize: 11 }}>
-              Glisse un clip pour déplacer · tire ses bords gauche/droite pour rogner (Trim)
+              Glisser = déplacer · Bords = Trim · <strong>S</strong> = couper · <strong>Espace</strong> = lecture · <strong>Ctrl+Z</strong> = annuler
             </span>
           </div>
           {bottomTab === 'tracks' && (
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
                 onClick={() => handleAddTrack('video')}
               >
-                <Plus size={12} /> Piste Vidéo
+                <Plus size={11} /> Vidéo
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => handleAddTrack('overlay')}
+              >
+                <Plus size={11} /> Overlay
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => handleAddTrack('text')}
+              >
+                <Type size={11} /> Texte
               </button>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
                 onClick={() => handleAddTrack('audio')}
               >
-                <Plus size={12} /> Piste Audio
+                <Plus size={11} /> Audio
               </button>
             </div>
           )}
@@ -1143,7 +1538,6 @@ export function TimelinePanel({
                   </div>
                 ))}
 
-                {/* Suno / LRC Beat & Lyric Markers on Ruler */}
                 {beatMarkers.map((m, i) => (
                   <div
                     key={`${m.kind}-${m.timeSec}-${i}`}
@@ -1179,33 +1573,44 @@ export function TimelinePanel({
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => handleToggleTrackMute(track.id)}
-                        title={track.muted ? 'Réactiver la piste' : 'Couper le son / masquer la piste'}
+                        title={track.muted ? 'Réactiver la piste' : 'Couper / masquer la piste'}
+                        style={{ padding: '2px 5px' }}
                       >
                         {track.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}
                       </button>
-                      <select
-                        className="select timeline-add-clip-select"
-                        aria-label={`Ajouter média sur ${track.name}`}
-                        defaultValue=""
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            handleAppendAssetToTrack(track.id, e.target.value);
-                            e.target.value = '';
-                          }
-                        }}
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => handleToggleTrackLock(track.id)}
+                        title={track.locked ? 'Déverrouiller la piste' : 'Verrouiller la piste'}
+                        style={{ padding: '2px 5px' }}
                       >
-                        <option value="">+ Ajouter média...</option>
-                        {selectableAssets.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.handle} · {a.title.slice(0, 28)}
-                          </option>
-                        ))}
-                      </select>
+                        {track.locked ? <Lock size={11} color="var(--accent-amber)" /> : <Unlock size={11} />}
+                      </button>
+                      {track.type !== 'text' && track.type !== 'effect' && (
+                        <select
+                          className="select timeline-add-clip-select"
+                          aria-label={`Ajouter média sur ${track.name}`}
+                          defaultValue=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAppendAssetToTrack(track.id, e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                        >
+                          <option value="">+ Média...</option>
+                          {selectableAssets.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.handle} · {a.title.slice(0, 24)}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                   </div>
 
                   <div className="timeline-track-lane" style={{ width: timelineWidthPx }}>
-                    {/* Beat grid vertical hairlines */}
                     {beatMarkers
                       .filter((m) => m.kind === 'beat')
                       .map((m, i) => (
@@ -1229,8 +1634,12 @@ export function TimelinePanel({
 
                     {track.clips.map((clip) => {
                       const asset = clip.assetId ? assetMap.get(clip.assetId) : null;
-                      const widthPx = Math.max(36, clip.durationSec * zoomPxPerSec);
+                      const widthPx = Math.max(38, clip.durationSec * zoomPxPerSec);
                       const isAudio = track.type === 'audio';
+                      const fxCount = (clip.effects ?? []).filter((e) => e.enabled).length;
+                      const kfCount = (clip.keyframes ?? []).length;
+                      const spd = clip.speed ?? 1;
+                      const transMeta = TIMELINE_TRANSITION_META[clip.transition];
                       return (
                         <div
                           key={clip.id}
@@ -1245,29 +1654,31 @@ export function TimelinePanel({
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedClipId(clip.id);
+                            setRightMode('inspector');
                           }}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') setSelectedClipId(clip.id);
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              setSelectedClipId(clip.id);
+                              setRightMode('inspector');
+                            }
                           }}
-                          title={`${clip.title} (${clip.startSec.toFixed(1)}s → ${(clip.startSec + clip.durationSec).toFixed(1)}s) — Glisser pour déplacer, bords pour trim`}
+                          title={`${clip.title} (${clip.startSec.toFixed(1)}s · ${clip.durationSec.toFixed(1)}s · ${spd}×)`}
                         >
-                          {/* Left Trim Handle */}
                           <div
                             className="timeline-trim-handle left"
+                            title="Tirer pour rogner le début (In)"
                             onPointerDown={(e) => startClipDrag(e, track, clip, 'trim_left')}
-                            title="Tirer pour rogner le début (Trim In)"
                           />
 
-                          {isAudio && (
+                          {isAudio && asset?.urls.original && (
                             <TimelineWaveform
-                              audioUrl={asset?.urls.original ?? null}
-                              widthPx={widthPx}
-                              heightPx={34}
-                              seedKey={clip.id}
+                              audioUrl={asset.urls.original}
+                              widthPx={Math.max(40, widthPx - 8)}
+                              heightPx={36}
                             />
                           )}
 
-                          {asset?.urls.thumbnail && !isAudio && (
+                          {!isAudio && asset?.urls.thumbnail && (
                             <img
                               src={asset.urls.thumbnail}
                               alt=""
@@ -1278,20 +1689,23 @@ export function TimelinePanel({
 
                           <div className="timeline-clip-meta">
                             <span className="timeline-clip-title">
-                              {isAudio && <Music size={10} style={{ marginRight: 3 }} />}
-                              {clip.title}
+                              {track.type === 'text' && clip.textOverlay?.text
+                                ? `T · ${clip.textOverlay.text}`
+                                : clip.title}
                             </span>
                             <span className="timeline-clip-sub">
-                              {clip.assetRef ?? 'sans média'} · {clip.durationSec.toFixed(1)}s
-                              {clip.transition !== 'cut' ? ` · ${clip.transition === 'crossfade' ? 'FX' : 'FB'}` : ''}
+                              {clip.durationSec.toFixed(1)}s
+                              {Math.abs(spd - 1) > 0.02 ? ` · ${spd.toFixed(1)}×` : ''}
+                              {clip.transition !== 'cut' ? ` · ${transMeta?.icon ?? '✨'}` : ''}
+                              {fxCount > 0 ? ` · ✨${fxCount}` : ''}
+                              {kfCount > 0 ? ` · ◆${kfCount}` : ''}
                             </span>
                           </div>
 
-                          {/* Right Trim Handle */}
                           <div
                             className="timeline-trim-handle right"
+                            title="Tirer pour ajuster la durée (Out)"
                             onPointerDown={(e) => startClipDrag(e, track, clip, 'trim_right')}
-                            title="Tirer pour ajuster la durée (Trim Out)"
                           />
                         </div>
                       );
@@ -1301,57 +1715,64 @@ export function TimelinePanel({
               );
             })}
 
-            {/* Dedicated Subtitle Track S1 */}
-            <div className={`timeline-track-row subtitle-track ${!showSubtitlesPreview ? 'muted' : ''}`}>
+            {/* Synchronized Subtitles Track S1 */}
+            <div className="timeline-track-row subtitle-track">
               <div className="timeline-track-label-col">
                 <div className="timeline-track-name" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   <Captions size={12} color="var(--accent-amber)" />
-                  S1 · Sous-titres ({subtitles.language.toUpperCase()})
+                  S1 · Sous-titres ({subtitles.cues.length})
                 </div>
                 <div className="timeline-track-actions">
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
                     onClick={() => setBottomTab('subtitles')}
-                    title="Ouvrir l'éditeur complet de sous-titres SRT"
+                    style={{ fontSize: 10.5 }}
                   >
-                    Éditer ({subtitles.cues.length})
+                    Éditer SRT
                   </button>
                 </div>
               </div>
+
               <div className="timeline-track-lane" style={{ width: timelineWidthPx }}>
                 <div
                   className="timeline-playhead-line"
                   style={{ left: `${playheadSec * zoomPxPerSec}px` }}
                 />
                 {subtitles.cues.map((cue) => {
-                  const dur = Math.max(0.2, cue.endSec - cue.startSec);
-                  const wPx = Math.max(28, dur * zoomPxPerSec);
+                  const widthPx = Math.max(26, (cue.endSec - cue.startSec) * zoomPxPerSec);
                   return (
                     <div
                       key={cue.id}
-                      className={`timeline-subtitle-block ${selectedCueId === cue.id ? 'selected' : ''}`}
+                      role="button"
+                      tabIndex={0}
+                      className={`timeline-clip-block subtitle ${selectedCueId === cue.id ? 'selected' : ''}`}
                       style={{
                         left: `${cue.startSec * zoomPxPerSec}px`,
-                        width: `${wPx}px`,
+                        width: `${widthPx}px`,
                       }}
                       onPointerDown={(e) => startCueDrag(e, cue, 'move')}
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedCueId(cue.id);
-                        setPlayheadSec(cue.startSec + 0.01);
+                        setPlayheadSec(cue.startSec);
                       }}
-                      onDoubleClick={() => setBottomTab('subtitles')}
-                      title={`${cue.speaker ? `${cue.speaker}: ` : ''}${cue.text} (${cue.startSec.toFixed(1)}s → ${cue.endSec.toFixed(1)}s)`}
+                      onDoubleClick={() => {
+                        setSelectedCueId(cue.id);
+                        setBottomTab('subtitles');
+                      }}
+                      title={`${cue.speaker ? `${cue.speaker}: ` : ''}${cue.text} (${cue.startSec.toFixed(2)}s -> ${cue.endSec.toFixed(2)}s)`}
                     >
                       <div
                         className="timeline-trim-handle left"
                         onPointerDown={(e) => startCueDrag(e, cue, 'trim_left')}
                       />
-                      <span className="timeline-subtitle-block-text">
-                        {cue.speaker ? `${cue.speaker}: ` : ''}
-                        {cue.text}
-                      </span>
+                      <div className="timeline-clip-meta">
+                        <span className="timeline-clip-title">
+                          {cue.speaker ? `${cue.speaker}: ` : ''}
+                          {cue.text}
+                        </span>
+                      </div>
                       <div
                         className="timeline-trim-handle right"
                         onPointerDown={(e) => startCueDrag(e, cue, 'trim_right')}

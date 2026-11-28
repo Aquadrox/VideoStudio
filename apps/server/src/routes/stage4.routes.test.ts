@@ -234,4 +234,80 @@ describe('Stage 4 Timeline & NLE Export REST routes', () => {
 
     await app.close();
   });
+
+  it('supports CapCut surgical clip add, patch, split, ripple delete, and render cache clear', async () => {
+    const app = Fastify({ logger: false });
+    const sampleClip = SAMPLE_TIMELINE.tracks[0]!.clips[0]!;
+    const stage4Mock = {
+      addClip: vi.fn().mockResolvedValue({ timeline: SAMPLE_TIMELINE, clip: sampleClip }),
+      updateClip: vi.fn().mockResolvedValue({
+        timeline: SAMPLE_TIMELINE,
+        clip: { ...sampleClip, speed: 1.5, transition: 'wipe_left' },
+      }),
+      splitClip: vi.fn().mockResolvedValue({
+        timeline: SAMPLE_TIMELINE,
+        leftClip: { ...sampleClip, durationSec: 2 },
+        rightClip: { ...sampleClip, id: '00000000-0000-4000-8000-000000000302', startSec: 2, durationSec: 2 },
+      }),
+      deleteClip: vi.fn().mockResolvedValue({
+        timeline: SAMPLE_TIMELINE,
+        deletedClipId: sampleClip.id,
+      }),
+      clearRenderCache: vi.fn().mockResolvedValue({ clearedFiles: 5 }),
+    } as unknown as Stage4Service;
+
+    registerStage4Routes(app, stage4Mock);
+
+    const addRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/timeline/clips',
+      payload: {
+        trackType: 'video',
+        assetRef: '@img-001',
+        title: 'S01 · Ouverture',
+        durationSec: 4,
+        effects: [{ effectSlug: 'cinema-teal-orange', enabled: true, intensity: 1, params: {} }],
+      },
+    });
+    expect(addRes.statusCode).toBe(201);
+    expect(addRes.json().clip.title).toBe('S01 · Ouverture');
+
+    const patchRes = await app.inject({
+      method: 'PATCH',
+      url: `/api/projects/demo-film/timeline/clips/${sampleClip.id}`,
+      payload: { speed: 1.5, transition: 'wipe_left', transitionDurationSec: 0.6 },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    expect(patchRes.json().clip.speed).toBe(1.5);
+
+    const splitRes = await app.inject({
+      method: 'POST',
+      url: `/api/projects/demo-film/timeline/clips/${sampleClip.id}/split`,
+      payload: { splitAtSec: 2 },
+    });
+    expect(splitRes.statusCode).toBe(200);
+    expect(splitRes.json().leftClip.durationSec).toBe(2);
+    expect(splitRes.json().rightClip.startSec).toBe(2);
+
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: `/api/projects/demo-film/timeline/clips/${sampleClip.id}?ripple=true`,
+    });
+    expect(delRes.statusCode).toBe(200);
+    expect(stage4Mock.deleteClip).toHaveBeenCalledWith(
+      'demo-film',
+      sampleClip.id,
+      { ripple: true },
+      'user',
+    );
+
+    const clearCacheRes = await app.inject({
+      method: 'DELETE',
+      url: '/api/projects/demo-film/timeline/render-cache',
+    });
+    expect(clearCacheRes.statusCode).toBe(200);
+    expect(clearCacheRes.json().clearedFiles).toBe(5);
+
+    await app.close();
+  });
 });
