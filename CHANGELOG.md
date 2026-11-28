@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-28
+
+### Added
+- **Icône officielle VideoStudio & jeu complet de favicons (`apps/web/public/`, `apps/web/index.html`)** :
+  - Création de l'icône vectorielle **clap de cinéma ambre & graphite** (`favicon.svg`), déclinée en `favicon.ico` multi-résolutions (`16/32/48px`), `favicon-16x16.png`, `favicon-32x32.png`, `apple-touch-icon.png` (`180×180`), `icon-192.png`, `icon-512.png`, ainsi que `site.webmanifest` et `<meta name="theme-color" content="#0d1017">` pour les onglets navigateur, favoris et raccourcis bureau/mobile.
+
 ## [0.8.1] - 2026-11-28
 
 ### Fixed & Improved
