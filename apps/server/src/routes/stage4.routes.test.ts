@@ -310,4 +310,70 @@ describe('Stage 4 Timeline & NLE Export REST routes', () => {
 
     await app.close();
   });
+
+  it('supports POST /timeline/patch (batch surgical edits) and POST /timeline/render-range (fast preview)', async () => {
+    const app = Fastify({ logger: false });
+    const stage4Mock = {
+      patchTimelineClips: vi.fn().mockResolvedValue({
+        timeline: SAMPLE_TIMELINE,
+        appliedCount: 2,
+        modifiedClipIds: [SAMPLE_TIMELINE.tracks[0]!.clips[0]!.id],
+        summary: ['update "S01 · Ouverture"', 'reorder 1 clips (ripple=true)'],
+      }),
+      startRangeRender: vi.fn().mockResolvedValue({
+        render: SAMPLE_RENDER,
+        jobId: '00000000-0000-4000-8000-000000000777',
+        startSec: 140,
+        endSec: 170,
+        clipCount: 3,
+      }),
+    } as unknown as Stage4Service;
+
+    registerStage4Routes(app, stage4Mock);
+
+    const patchRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/timeline/patch',
+      payload: {
+        operations: [
+          {
+            op: 'update',
+            title: 'S01 · Ouverture',
+            patch: {
+              camera: { mode: 'power_pullback', z0: 1.34, z1: 1.0, beatPulseAmp: 0.035 },
+              cinemascope: { bar0: 0.25, bar1: 0.125 },
+              fx: { mangaBlink: true, flashIn: { alpha: 0.9, color: '#FFFFFF', frames: 6 } },
+            },
+          },
+          { op: 'reorder', titles: ['S01 · Ouverture'], ripple: true },
+        ],
+      },
+    });
+    expect(patchRes.statusCode).toBe(200);
+    expect(patchRes.json().appliedCount).toBe(2);
+
+    const badPatchRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/timeline/patch',
+      payload: { operations: [] },
+    });
+    expect(badPatchRes.statusCode).toBe(400);
+
+    const rangeRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/timeline/render-range',
+      payload: { startSec: 140, endSec: 170, resolution: '1280x720' },
+    });
+    expect(rangeRes.statusCode).toBe(202);
+    expect(rangeRes.json().clipCount).toBe(3);
+
+    const badRangeRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo-film/timeline/render-range',
+      payload: { startSec: -5, endSec: 0 },
+    });
+    expect(badRangeRes.statusCode).toBe(400);
+
+    await app.close();
+  });
 });

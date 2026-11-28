@@ -154,4 +154,76 @@ describe('NLE Exporters (OTIO, FCPXML, EDL) & SMPTE', () => {
     expect(selectTimelinePlaybackUrl(urls, 'video', 'hq_master')).toBe('/api/media/1/original');
     expect(selectTimelinePlaybackUrl(urls, 'audio', 'draft_proxy')).toBe('/api/media/1/original');
   });
+
+  it('remains backward-compatible when exporting CapCut multi-layer timelines (overlay/text tracks, wipe_left, camera & structured fx)', () => {
+    const capcutTimeline: TimelineDto = {
+      ...SAMPLE_TIMELINE,
+      tracks: [
+        {
+          ...SAMPLE_TIMELINE.tracks[0]!,
+          clips: [
+            {
+              ...SAMPLE_TIMELINE.tracks[0]!.clips[0]!,
+              transition: 'wipe_left',
+              transitionDurationSec: 0.6,
+              camera: {
+                mode: 'power_pullback',
+                z0: 1.34,
+                z1: 1.0,
+                cx0: 0.5,
+                cx1: 0.5,
+                cy0: 0.5,
+                cy1: 0.5,
+                rotDeg: 2,
+                beatPulseAmp: 0.035,
+                shakeAmp: 0.2,
+                tremorAmp: 0,
+              },
+              cinemascope: { bar0: 0.25, bar1: 0.125 },
+              fx: { mangaBlink: true, flashIn: { alpha: 0.8, color: '#FFFFFF', frames: 6 } },
+            },
+          ],
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000103',
+          projectId: SAMPLE_TIMELINE.projectId,
+          name: 'T1 · Titres',
+          type: 'text',
+          muted: false,
+          locked: false,
+          volume: 1,
+          sortOrder: 2,
+          clips: [
+            {
+              ...SAMPLE_TIMELINE.tracks[0]!.clips[0]!,
+              id: '00000000-0000-4000-8000-000000000209',
+              trackId: '00000000-0000-4000-8000-000000000103',
+              assetId: null,
+              assetRef: null,
+              assetType: null,
+              title: 'Titre Principal',
+              textOverlay: {
+                text: 'NEO TOKYO',
+                subtitle: 'Chapitre 1',
+                fontSize: 64,
+                color: '#FFFFFF',
+                bgColor: '#000000',
+                bgOpacity: 0,
+                x: 50,
+                y: 50,
+                bold: true,
+                animation: 'fade',
+              },
+            },
+          ],
+        },
+        SAMPLE_TIMELINE.tracks[1]!,
+      ],
+    };
+
+    const otio = JSON.parse(generateOtio(capcutTimeline, 'CapCut AMV')) as { OTIO_SCHEMA: string };
+    expect(otio.OTIO_SCHEMA).toBe('Timeline.1');
+    expect(generateFcpxml(capcutTimeline, 'CapCut AMV')).toContain('<fcpxml version="1.10">');
+    expect(generateEdl(capcutTimeline, 'CapCut AMV')).toContain('TITLE: CAPCUT AMV');
+  });
 });

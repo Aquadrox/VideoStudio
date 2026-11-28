@@ -18,4 +18,5 @@ export * from './dossier-utils.js';
 export * from './knowledge-schemas.js';
 export * from './knowledge-utils.js';
 export * from './effects-schemas.js';
+export * from './amv-engine.js';
 export * from './effects-utils.js';
