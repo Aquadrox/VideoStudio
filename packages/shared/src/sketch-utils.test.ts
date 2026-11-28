@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildScenePlanTemplate,
   createEmptySketchScene,
+  createWhiteboardSketchScene,
   generateAiDirectorBrief,
   getCanvasDimensionsForAspectRatio,
   getFocalLengthFovDeg,
+  isLightCanvasColor,
+  sortSketchesForBoard,
 } from './sketch-utils.js';
 
 describe('sketch-utils', () => {
@@ -94,5 +97,21 @@ describe('sketch-utils', () => {
     expect(brief).toContain('Zoom avant (Push-in)');
     expect(brief).toContain('@img-012');
     expect(brief).toContain('1 tracé(s)');
+  });
+
+  it('supports whiteboard paper scenes, light color detection, and storyboard ordering', () => {
+    const wb = createWhiteboardSketchScene('#ffffff');
+    expect(wb.backgroundColor).toBe('#ffffff');
+    expect(isLightCanvasColor('#ffffff')).toBe(true);
+    expect(isLightCanvasColor('#f8f4e8')).toBe(true);
+    expect(isLightCanvasColor('#131720')).toBe(false);
+
+    const sorted = sortSketchesForBoard([
+      { id: 'c', inSketchBoard: true, boardOrder: 2, createdAt: '2026-11-27T10:00:00Z' },
+      { id: 'hidden', inSketchBoard: false, boardOrder: 0, createdAt: '2026-11-27T09:00:00Z' },
+      { id: 'a', inSketchBoard: true, boardOrder: 0, createdAt: '2026-11-27T11:00:00Z' },
+      { id: 'b', inSketchBoard: true, boardOrder: 1, createdAt: '2026-11-27T10:30:00Z' },
+    ]);
+    expect(sorted.map((s) => s.id)).toEqual(['a', 'b', 'c']);
   });
 });

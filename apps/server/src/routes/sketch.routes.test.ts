@@ -14,6 +14,13 @@ function makeSampleSketch(overrides: Partial<SketchDto> = {}): SketchDto {
     assetUrl: '/api/assets/33333333-3333-4333-8333-333333333333/file',
     assetThumbnailUrl: '/api/assets/33333333-3333-4333-8333-333333333333/thumb',
     shotId: null,
+    shotTitle: null,
+    shotHandle: null,
+    sceneId: null,
+    inSketchBoard: true,
+    boardOrder: 0,
+    durationSec: 3,
+    caption: 'Entrée du héros',
     title: 'Plan S01 — Entrée taverne',
     mode: 'scene_plan',
     aspectRatio: '16:9',
@@ -26,9 +33,16 @@ function makeSampleSketch(overrides: Partial<SketchDto> = {}): SketchDto {
   };
 }
 
-describe('Sketch REST routes', () => {
-  it('lists, creates, fetches by asset, updates, and deletes sketches cleanly', async () => {
+describe('Sketch & Sketch Storyboard REST routes', () => {
+  it('lists, creates, fetches by asset, updates, reorders board, links shot, syncs storyboard, and deletes cleanly', async () => {
     const sample = makeSampleSketch();
+    const linked = makeSampleSketch({
+      shotId: '44444444-4444-4444-8444-444444444444',
+      shotTitle: 'Plan S01 — Entrée taverne',
+      shotHandle: '@shot-001',
+      sceneId: '55555555-5555-4555-8555-555555555555',
+    });
+
     const mockService = {
       listSketches: vi.fn(async () => [sample]),
       getSketchById: vi.fn(async (id: string) => (id === sample.id ? sample : null)),
@@ -39,6 +53,15 @@ describe('Sketch REST routes', () => {
       updateSketch: vi.fn(async (id: string) =>
         id === sample.id ? { ...sample, title: 'Plan S01 v2' } : null,
       ),
+      reorderSketchBoard: vi.fn(async () => [{ ...sample, boardOrder: 2, durationSec: 4.5 }]),
+      linkSketchToShot: vi.fn(async (id: string) => (id === sample.id ? linked : null)),
+      syncSketchBoardToStoryboard: vi.fn(async () => ({
+        sceneId: '55555555-5555-4555-8555-555555555555',
+        sceneTitle: 'Storyboard Croquis',
+        createdCount: 1,
+        updatedCount: 0,
+        sketches: [linked],
+      })),
       deleteSketch: vi.fn(async (id: string) => id === sample.id),
     } as unknown as SketchService;
 
@@ -59,6 +82,9 @@ describe('Sketch REST routes', () => {
         title: 'Plan S01 — Entrée taverne',
         mode: 'scene_plan',
         aspectRatio: '16:9',
+        inSketchBoard: true,
+        durationSec: 3,
+        caption: 'Entrée du héros',
         sceneData: createEmptySketchScene('scene_plan'),
       },
     });
@@ -71,6 +97,36 @@ describe('Sketch REST routes', () => {
       payload: { title: '' },
     });
     expect(badCreateRes.statusCode).toBe(400);
+
+    const reorderRes = await app.inject({
+      method: 'PATCH',
+      url: '/api/projects/demo/sketches/board-order',
+      payload: {
+        items: [{ sketchId: sample.id, boardOrder: 2, durationSec: 4.5, inSketchBoard: true }],
+      },
+    });
+    expect(reorderRes.statusCode).toBe(200);
+    expect(reorderRes.json().sketches[0].boardOrder).toBe(2);
+
+    const linkRes = await app.inject({
+      method: 'POST',
+      url: `/api/sketches/${sample.id}/link-shot`,
+      payload: {
+        newSceneTitle: 'Scène 1',
+        syncKeyframe: true,
+        syncBrief: true,
+      },
+    });
+    expect(linkRes.statusCode).toBe(200);
+    expect(linkRes.json().sketch.shotHandle).toBe('@shot-001');
+
+    const syncRes = await app.inject({
+      method: 'POST',
+      url: '/api/projects/demo/sketches/sync-to-storyboard',
+      payload: { newSceneTitle: 'Storyboard Croquis' },
+    });
+    expect(syncRes.statusCode).toBe(200);
+    expect(syncRes.json().createdCount).toBe(1);
 
     const byAssetRes = await app.inject({
       method: 'GET',

@@ -15,11 +15,14 @@ import {
   Copy,
   Download,
   Eraser,
+  FilePlus2,
   Film,
   Grid3x3,
   Highlighter,
   Image as ImageIcon,
+  LayoutGrid,
   Lightbulb,
+  Link2,
   Minus,
   MousePointer2,
   Move,
@@ -40,14 +43,18 @@ import {
   buildScenePlanTemplate,
   CAMERA_MOVEMENT_LABELS,
   createEmptySketchScene,
+  createWhiteboardSketchScene,
   generateAiDirectorBrief,
   getCanvasDimensionsForAspectRatio,
+  isLightCanvasColor,
   SCENE_PLAN_TEMPLATES,
   SHOT_SIZE_LABELS,
+  sortSketchesForBoard,
   type AssetDto,
   type BibleEntityDto,
   type MediaFolderDto,
   type ProjectDto,
+  type SceneDto,
   type ScenePlanTemplateId,
   type SketchCameraMovement,
   type SketchGuideType,
@@ -71,6 +78,7 @@ import {
   renderSketchToCanvas,
   type SelectedSketchItem,
 } from '../utils/sketch-renderer';
+import { SketchStoryboardView } from './SketchStoryboardView';
 
 type ActiveTool =
   | 'select'
@@ -91,15 +99,24 @@ type ActiveTool =
   | 'text';
 
 const PALETTE_COLORS = [
+  '#111827',
+  '#334155',
   '#e5a038',
+  '#dc2626',
+  '#2563eb',
   '#f8fafc',
   '#38bdf8',
-  '#f472b6',
   '#34d399',
-  '#fb7185',
+  '#f472b6',
   '#fbbf24',
-  '#94a3b8',
 ];
+
+const PAPER_PRESETS = [
+  { id: 'dark', label: 'Sombre', hex: '#131720' },
+  { id: 'white', label: 'Feuille blanche', hex: '#ffffff' },
+  { id: 'cream', label: 'Papier crème', hex: '#f8f4e8' },
+  { id: 'slate', label: 'Ardoise', hex: '#1e293b' },
+] as const;
 
 const FOCAL_PRESETS = [24, 35, 50, 85, 135];
 const ASPECT_RATIOS = ['16:9', '9:16', '1:1', '4:3', '2.39:1'];
@@ -144,14 +161,27 @@ function normalizeDeg(deg: number): number {
   return d;
 }
 
+export type SketchLaunchRequest =
+  | { kind: 'edit_sketch'; sketchId: string; nonce: number }
+  | { kind: 'underlay'; asset: AssetDto; nonce: number }
+  | { kind: 'board'; nonce: number }
+  | {
+      kind: 'whiteboard';
+      shotId?: string;
+      title?: string;
+      durationSec?: number;
+      nonce: number;
+    };
+
 export interface SketchStudioPanelProps {
   project: ProjectDto;
   assets: AssetDto[];
   folders: MediaFolderDto[];
-  initialSketchId?: string | null;
-  initialUnderlayAsset?: AssetDto | null;
+  launchRequest?: SketchLaunchRequest | null;
   refreshSignal: number;
   onSketchSaved: (sketch: SketchDto) => void;
+  onOpenPreprodStoryboard: () => void;
+  onAssetsMutated?: () => void;
   onCopyText: (text: string, label?: string) => void;
   onNotify: (message: string) => void;
 }
@@ -160,27 +190,35 @@ export function SketchStudioPanel({
   project,
   assets,
   folders,
-  initialSketchId,
-  initialUnderlayAsset,
+  launchRequest,
   refreshSignal,
   onSketchSaved,
+  onOpenPreprodStoryboard,
+  onAssetsMutated,
   onCopyText,
   onNotify,
 }: SketchStudioPanelProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
 
+  const [studioView, setStudioView] = useState<'editor' | 'board'>('editor');
   const [sketches, setSketches] = useState<SketchDto[]>([]);
+  const [preprodScenes, setPreprodScenes] = useState<SceneDto[]>([]);
   const [bibleCharacters, setBibleCharacters] = useState<BibleEntityDto[]>([]);
   const [editingSketchId, setEditingSketchId] = useState<string | null>(null);
   const [linkedAssetRef, setLinkedAssetRef] = useState<string | null>(null);
+  const [linkedShotId, setLinkedShotId] = useState<string | null>(null);
+  const [linkedShotHandle, setLinkedShotHandle] = useState<string | null>(null);
 
   const [title, setTitle] = useState('Plan S01 — Blocking');
   const [mode, setMode] = useState<SketchMode>('scene_plan');
   const [aspectRatio, setAspectRatio] = useState(project.aspectRatio || '16:9');
   const [folderPath, setFolderPath] = useState('plans');
+  const [inSketchBoard, setInSketchBoard] = useState(true);
+  const [durationSec, setDurationSec] = useState(3);
+  const [caption, setCaption] = useState('');
   const [saveMode, setSaveMode] = useState<'new_version' | 'replace'>('new_version');
-  const [includeGuidesInExport, setIncludeGuidesInExport] = useState(true);
+  const [includeGuidesInExport, setIncludeGuidesInExport] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [scene, setScene] = useState<SketchSceneData>(() => createEmptySketchScene('scene_plan'));
@@ -265,43 +303,104 @@ export function SketchStudioPanel({
     });
   }, [scene]);
 
+  const boardCount = useMemo(() => sortSketchesForBoard(sketches).length, [sketches]);
+
   const loadSketchIntoEditor = useCallback((sk: SketchDto) => {
+    setStudioView('editor');
     setEditingSketchId(sk.id);
     setLinkedAssetRef(sk.assetRef);
+    setLinkedShotId(sk.shotId);
+    setLinkedShotHandle(sk.shotHandle);
     setTitle(sk.title);
     setMode(sk.mode);
     setAspectRatio(sk.aspectRatio || '16:9');
     setFolderPath(sk.folderPath || (sk.mode === 'scene_plan' ? 'plans' : 'croquis'));
+    setInSketchBoard(sk.inSketchBoard);
+    setDurationSec(sk.durationSec || 3);
+    setCaption(sk.caption || '');
     setScene(sk.sceneData);
     setSelected(null);
     setUndoStack([]);
     setRedoStack([]);
+    if (isLightCanvasColor(sk.sceneData.backgroundColor)) {
+      setActiveColor('#111827');
+      setTool('pen');
+    }
   }, []);
 
   const handleNewBlank = useCallback(
     (nextMode: SketchMode) => {
+      setStudioView('editor');
       setEditingSketchId(null);
       setLinkedAssetRef(null);
+      setLinkedShotId(null);
+      setLinkedShotHandle(null);
       setMode(nextMode);
       setTitle(nextMode === 'scene_plan' ? 'Nouveau plan de scène' : 'Nouveau croquis');
       setAspectRatio(project.aspectRatio || '16:9');
       setFolderPath(nextMode === 'scene_plan' ? 'plans' : 'croquis');
+      setInSketchBoard(true);
+      setDurationSec(3);
+      setCaption('');
       setScene(createEmptySketchScene(nextMode));
       setSelected(null);
       setUndoStack([]);
       setRedoStack([]);
       setTool(nextMode === 'storyboard_sketch' ? 'pen' : 'select');
+      setActiveColor('#e5a038');
     },
     [project.aspectRatio],
   );
 
-  // Load saved sketches + Bible characters for the active project
+  const handleNewWhiteboard = useCallback(
+    (opts?: { shotId?: string; title?: string; durationSec?: number; paperHex?: string }) => {
+      const nextNum = sketches.length + 1;
+      setStudioView('editor');
+      setEditingSketchId(null);
+      setLinkedAssetRef(null);
+      setLinkedShotId(opts?.shotId ?? null);
+      setLinkedShotHandle(null);
+      setMode('storyboard_sketch');
+      setTitle(opts?.title?.trim() || `Croquis #${String(nextNum).padStart(2, '0')}`);
+      setAspectRatio(project.aspectRatio || '16:9');
+      setFolderPath('croquis');
+      setInSketchBoard(true);
+      setDurationSec(opts?.durationSec ?? 3);
+      setCaption('');
+      setScene(createWhiteboardSketchScene(opts?.paperHex ?? '#ffffff'));
+      setSelected(null);
+      setUndoStack([]);
+      setRedoStack([]);
+      setTool('pen');
+      setActiveColor('#111827');
+      setBrushWidth(3);
+    },
+    [project.aspectRatio, sketches.length],
+  );
+
+  const handleSetPaperColor = useCallback((hex: string) => {
+    commitScene((prev) => ({ ...prev, backgroundColor: hex }));
+    if (isLightCanvasColor(hex)) {
+      setActiveColor((curr) => (curr === '#f8fafc' ? '#111827' : curr));
+    } else {
+      setActiveColor((curr) => (curr === '#111827' ? '#f8fafc' : curr));
+    }
+  }, [commitScene]);
+
+  // Load saved sketches, Pre-prod storyboard scenes & Bible characters for the active project
   useEffect(() => {
     let active = true;
     void api
       .listSketches(project.id)
       .then((list) => {
         if (active) setSketches(list);
+      })
+      .catch(() => {});
+
+    void api
+      .getStoryboard(project.id)
+      .then((sb) => {
+        if (active) setPreprodScenes(sb);
       })
       .catch(() => {});
 
@@ -317,44 +416,61 @@ export function SketchStudioPanel({
     };
   }, [project.id, refreshSignal]);
 
-  // Open a requested sketch directly (from Media Inspector "Éditer le croquis / plan")
+  // Handle direct deep-launch requests from Media Inspector or Pre-prod Storyboard
   useEffect(() => {
-    if (!initialSketchId) return;
-    let active = true;
-    void api
-      .getSketch(initialSketchId)
-      .then((sk) => {
-        if (active) {
-          loadSketchIntoEditor(sk);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
-    };
-  }, [initialSketchId, loadSketchIntoEditor]);
-
-  // Open with a requested image asset as underlay ("Dessiner par-dessus")
-  useEffect(() => {
-    if (!initialUnderlayAsset) return;
-    setEditingSketchId(null);
-    setLinkedAssetRef(null);
-    setMode('storyboard_sketch');
-    setTitle(`Croquis sur ${initialUnderlayAsset.title}`);
-    setFolderPath('croquis');
-    setScene({
-      ...createEmptySketchScene('storyboard_sketch'),
-      underlay: {
-        assetId: initialUnderlayAsset.id,
-        assetRef: initialUnderlayAsset.refCode,
-        opacity: 0.65,
-      },
-    });
-    setTool('motion_arrow');
-    setSelected(null);
-    setUndoStack([]);
-    setRedoStack([]);
-  }, [initialUnderlayAsset]);
+    if (!launchRequest) return;
+    if (launchRequest.kind === 'board') {
+      setStudioView('board');
+      return;
+    }
+    if (launchRequest.kind === 'whiteboard') {
+      handleNewWhiteboard({
+        shotId: launchRequest.shotId,
+        title: launchRequest.title,
+        durationSec: launchRequest.durationSec,
+      });
+      return;
+    }
+    if (launchRequest.kind === 'underlay') {
+      setStudioView('editor');
+      setEditingSketchId(null);
+      setLinkedAssetRef(null);
+      setLinkedShotId(null);
+      setLinkedShotHandle(null);
+      setMode('storyboard_sketch');
+      setTitle(`Croquis sur ${launchRequest.asset.title}`);
+      setFolderPath('croquis');
+      setInSketchBoard(true);
+      setDurationSec(3);
+      setCaption('');
+      setScene({
+        ...createEmptySketchScene('storyboard_sketch'),
+        underlay: {
+          assetId: launchRequest.asset.id,
+          assetRef: launchRequest.asset.refCode,
+          opacity: 0.65,
+        },
+      });
+      setTool('motion_arrow');
+      setSelected(null);
+      setUndoStack([]);
+      setRedoStack([]);
+      return;
+    }
+    if (launchRequest.kind === 'edit_sketch') {
+      let active = true;
+      void api
+        .getSketch(launchRequest.sketchId)
+        .then((sk) => {
+          if (active) loadSketchIntoEditor(sk);
+        })
+        .catch(() => {});
+      return () => {
+        active = false;
+      };
+    }
+    return undefined;
+  }, [launchRequest, loadSketchIntoEditor, handleNewWhiteboard]);
 
   // Load reference underlay image element whenever underlay.assetId changes
   const underlayAssetId = scene.underlay?.assetId ?? null;
@@ -951,6 +1067,10 @@ export function SketchStudioPanel({
     setFolderPath(tpl.mode === 'scene_plan' ? 'plans' : 'croquis');
     commitScene(() => tpl.scene);
     setSelected(null);
+    if (isLightCanvasColor(tpl.scene.backgroundColor)) {
+      setTool('pen');
+      setActiveColor('#111827');
+    }
     onNotify('Modèle de mise en scène appliqué');
   };
 
@@ -994,10 +1114,10 @@ export function SketchStudioPanel({
     }
   };
 
-  const handleSaveToMedia = async () => {
+  const handleSaveToMedia = async (): Promise<SketchDto | null> => {
     if (!title.trim()) {
       onNotify('Indique un titre pour enregistrer le croquis / plan');
-      return;
+      return null;
     }
     setSaving(true);
     try {
@@ -1007,6 +1127,10 @@ export function SketchStudioPanel({
         mode,
         aspectRatio,
         folderPath: folderPath.trim(),
+        shotId: linkedShotId,
+        inSketchBoard,
+        durationSec: Number.isFinite(durationSec) && durationSec >= 0.5 ? durationSec : 3,
+        caption: caption.trim(),
         sceneData: scene,
         aiDirectorBrief: aiBrief,
         pngBase64,
@@ -1018,17 +1142,42 @@ export function SketchStudioPanel({
 
       setEditingSketchId(saved.id);
       setLinkedAssetRef(saved.assetRef);
+      setLinkedShotId(saved.shotId);
+      setLinkedShotHandle(saved.shotHandle);
       setSketches((prev) => [saved, ...prev.filter((s) => s.id !== saved.id)]);
       onSketchSaved(saved);
       onNotify(
         editingSketchId
           ? `Plan / croquis mis à jour (${saved.assetRef ?? 'enregistré'}) dans /${saved.folderPath || 'racine'}`
-          : `Plan / croquis enregistré dans Médias (${saved.assetRef ?? 'ok'})`,
+          : `Plan / croquis enregistré dans Médias (${saved.assetRef ?? 'ok'})${inSketchBoard ? ' + Storyboard Croquis' : ''}`,
       );
+      return saved;
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Erreur lors de la sauvegarde');
+      return null;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleCreateShotInPreprod = async (sceneId?: string) => {
+    const saved = await handleSaveToMedia();
+    if (!saved) return;
+    try {
+      const linked = await api.linkSketchToShot(saved.id, {
+        createShotInSceneId: sceneId || undefined,
+        newSceneTitle: sceneId ? undefined : 'Storyboard Croquis',
+        syncKeyframe: true,
+        syncBrief: true,
+      });
+      setLinkedShotId(linked.shotId);
+      setLinkedShotHandle(linked.shotHandle);
+      setSketches((prev) => prev.map((s) => (s.id === linked.id ? linked : s)));
+      const refreshedScenes = await api.getStoryboard(project.id);
+      setPreprodScenes(refreshedScenes);
+      onNotify(`Plan ${linked.shotHandle ?? ''} créé et lié dans le Storyboard Pré-prod`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Erreur création plan Pré-prod');
     }
   };
 
@@ -1072,117 +1221,180 @@ export function SketchStudioPanel({
       {/* Top Studio Header Bar */}
       <div className="sketch-topbar">
         <div className="sketch-topbar-left">
-          <div className="sketch-mode-switch" role="group" aria-label="Mode de création">
+          {/* Primary View Switch: Canvas Editor vs Side-by-Side Sketch Storyboard */}
+          <div className="sketch-mode-switch" role="group" aria-label="Vue atelier ou planche storyboard">
             <button
               type="button"
-              className={`btn btn-xs ${mode === 'scene_plan' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => {
-                setMode('scene_plan');
-                if (!editingSketchId) setFolderPath('plans');
-                if (!scene.guides.includes('grid')) toggleGuide('grid');
-              }}
+              className={`btn btn-xs ${studioView === 'editor' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setStudioView('editor')}
             >
-              <Camera size={13} /> Plan de scène (Vue dessus)
+              <PenTool size={13} /> Atelier Dessin
             </button>
             <button
               type="button"
-              className={`btn btn-xs ${mode === 'storyboard_sketch' ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => {
-                setMode('storyboard_sketch');
-                if (!editingSketchId) setFolderPath('croquis');
-                if (!scene.guides.includes('thirds')) toggleGuide('thirds');
-                setTool('pen');
-              }}
+              className={`btn btn-xs ${studioView === 'board' ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={() => setStudioView('board')}
+              title="Afficher les croquis côte à côte en Storyboard"
             >
-              <PenTool size={13} /> Croquis Storyboard (Cadre)
+              <LayoutGrid size={13} /> Storyboard Croquis ({boardCount})
             </button>
           </div>
 
-          <select
-            className="input input-sm"
-            value=""
-            onChange={(e) => {
-              if (e.target.value) handleApplyTemplate(e.target.value as ScenePlanTemplateId);
-            }}
-            title="Charger un modèle de mise en scène pré-configuré"
-            style={{ width: 210 }}
-          >
-            <option value="">✨ Modèles rapides…</option>
-            {SCENE_PLAN_TEMPLATES.map((tpl) => (
-              <option key={tpl.id} value={tpl.id}>
-                {tpl.label}
-              </option>
-            ))}
-          </select>
+          {studioView === 'editor' && (
+            <>
+              <div className="sketch-mode-switch" role="group" aria-label="Mode de création">
+                <button
+                  type="button"
+                  className={`btn btn-xs ${mode === 'scene_plan' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => {
+                    setMode('scene_plan');
+                    if (!editingSketchId) setFolderPath('plans');
+                    if (!scene.guides.includes('grid')) toggleGuide('grid');
+                  }}
+                >
+                  <Camera size={13} /> Plan de scène
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-xs ${
+                    mode === 'storyboard_sketch' && !isLightCanvasColor(scene.backgroundColor)
+                      ? 'btn-primary'
+                      : 'btn-ghost'
+                  }`}
+                  onClick={() => {
+                    setMode('storyboard_sketch');
+                    if (!editingSketchId) setFolderPath('croquis');
+                    if (!scene.guides.includes('thirds')) toggleGuide('thirds');
+                    setTool('pen');
+                  }}
+                >
+                  <PenTool size={13} /> Croquis
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-xs ${
+                    mode === 'storyboard_sketch' && isLightCanvasColor(scene.backgroundColor)
+                      ? 'btn-primary'
+                      : 'btn-ghost'
+                  }`}
+                  onClick={() => handleNewWhiteboard()}
+                  title="Ouvrir une feuille blanche vierge prête pour dessiner au crayon noir"
+                >
+                  <FilePlus2 size={13} /> Feuille blanche
+                </button>
+              </div>
 
-          <select
-            className="input input-sm"
-            value={aspectRatio}
-            onChange={(e) => setAspectRatio(e.target.value)}
-            title="Format / Ratio du cadre"
-            style={{ width: 88 }}
-          >
-            {ASPECT_RATIOS.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
+              <select
+                className="input input-sm"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) handleApplyTemplate(e.target.value as ScenePlanTemplateId);
+                }}
+                title="Charger un modèle de mise en scène pré-configuré"
+                style={{ width: 195 }}
+              >
+                <option value="">✨ Modèles rapides…</option>
+                {SCENE_PLAN_TEMPLATES.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.label}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                className="input input-sm"
+                value={aspectRatio}
+                onChange={(e) => setAspectRatio(e.target.value)}
+                title="Format / Ratio du cadre"
+                style={{ width: 82 }}
+              >
+                {ASPECT_RATIOS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
         </div>
 
-        <div className="sketch-topbar-right">
-          <button
-            type="button"
-            className="btn btn-xs btn-ghost"
-            onClick={handleUndo}
-            disabled={undoStack.length === 0}
-            title="Annuler (Ctrl+Z)"
-          >
-            <Undo2 size={14} />
-          </button>
-          <button
-            type="button"
-            className="btn btn-xs btn-ghost"
-            onClick={handleRedo}
-            disabled={redoStack.length === 0}
-            title="Rétablir (Ctrl+Shift+Z)"
-          >
-            <Redo2 size={14} />
-          </button>
-          <button
-            type="button"
-            className="btn btn-xs btn-ghost"
-            onClick={() => handleNewBlank(mode)}
-            title="Nouveau plan / croquis vierge"
-          >
-            <Plus size={14} /> Nouveau
-          </button>
-          <button
-            type="button"
-            className="btn btn-xs btn-ghost"
-            onClick={handleDownloadPng}
-            title="Télécharger PNG localement"
-          >
-            <Download size={14} /> PNG
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            onClick={() => void handleSaveToMedia()}
-            disabled={saving}
-          >
-            <Save size={14} />{' '}
-            {saving
-              ? 'Enregistrement…'
-              : editingSketchId
-                ? 'Mettre à jour dans Médias'
-                : 'Enregistrer dans Médias'}
-          </button>
-        </div>
+        {studioView === 'editor' && (
+          <div className="sketch-topbar-right">
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost"
+              onClick={handleUndo}
+              disabled={undoStack.length === 0}
+              title="Annuler (Ctrl+Z)"
+            >
+              <Undo2 size={14} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost"
+              onClick={handleRedo}
+              disabled={redoStack.length === 0}
+              title="Rétablir (Ctrl+Shift+Z)"
+            >
+              <Redo2 size={14} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost"
+              onClick={() =>
+                isLightCanvasColor(scene.backgroundColor)
+                  ? handleNewWhiteboard()
+                  : handleNewBlank(mode)
+              }
+              title="Nouveau plan / croquis vierge"
+            >
+              <Plus size={14} /> Nouveau
+            </button>
+            <button
+              type="button"
+              className="btn btn-xs btn-ghost"
+              onClick={handleDownloadPng}
+              title="Télécharger PNG localement"
+            >
+              <Download size={14} /> PNG
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => void handleSaveToMedia()}
+              disabled={saving}
+            >
+              <Save size={14} />{' '}
+              {saving
+                ? 'Enregistrement…'
+                : editingSketchId
+                  ? 'Mettre à jour'
+                  : 'Enregistrer'}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Main 3-Column Studio Body */}
-      <div className="sketch-body">
+      {/* Mode 1: Side-by-Side Sketch Storyboard View */}
+      {studioView === 'board' ? (
+        <SketchStoryboardView
+          project={project}
+          sketches={sketches}
+          scenes={preprodScenes}
+          onSketchesChanged={(next) => {
+            setSketches(next);
+            void api.getStoryboard(project.id).then(setPreprodScenes).catch(() => {});
+          }}
+          onEditSketch={(sk) => loadSketchIntoEditor(sk)}
+          onNewWhiteboard={() => handleNewWhiteboard()}
+          onNewScenePlan={() => handleNewBlank('scene_plan')}
+          onOpenPreprodStoryboard={onOpenPreprodStoryboard}
+          onExportedSheetToMedia={() => onAssetsMutated?.()}
+          onNotify={onNotify}
+        />
+      ) : (
+        /* Mode 2: Main 3-Column Canvas Editor */
+        <div className="sketch-body">
         {/* Left Tools Palette */}
         <aside className="sketch-tools">
           <div className="sketch-tool-group">
@@ -1350,6 +1562,30 @@ export function SketchStudioPanel({
                   onClick={() => setActiveColor(hex)}
                   aria-label={`Couleur ${hex}`}
                 />
+              ))}
+            </div>
+
+            <div className="sketch-paper-strip" title="Fond de la feuille">
+              <span className="muted" style={{ fontSize: 11 }}>
+                Feuille :
+              </span>
+              {PAPER_PRESETS.map((paper) => (
+                <button
+                  key={paper.id}
+                  type="button"
+                  className={`chip-btn ${
+                    scene.backgroundColor.toLowerCase() === paper.hex ? 'active' : ''
+                  }`}
+                  onClick={() => handleSetPaperColor(paper.hex)}
+                  title={`Passer sur fond ${paper.label}`}
+                >
+                  <span
+                    className="paper-dot"
+                    style={{ background: paper.hex }}
+                    aria-hidden="true"
+                  />
+                  {paper.label}
+                </button>
               ))}
             </div>
 
@@ -1538,11 +1774,11 @@ export function SketchStudioPanel({
 
         {/* Right Context Inspector + Save + AI Brief + Saved Sketches */}
         <aside className="sketch-inspector">
-          {/* Save Metadata Card */}
+          {/* Save Metadata & Storyboard Linking Card */}
           <div className="sketch-card">
             <div className="sketch-card-head">
               <strong>
-                <Film size={13} /> Fiche & Stockage Médias
+                <Film size={13} /> Fiche, Storyboard & Médias
               </strong>
               {linkedAssetRef && (
                 <button
@@ -1583,8 +1819,21 @@ export function SketchStudioPanel({
                 </datalist>
               </label>
 
+              <label className="field-label" style={{ width: 74 }}>
+                Durée (s)
+                <input
+                  className="input input-sm"
+                  type="number"
+                  min={0.5}
+                  max={300}
+                  step={0.5}
+                  value={durationSec}
+                  onChange={(e) => setDurationSec(Number(e.target.value) || 3)}
+                />
+              </label>
+
               {editingSketchId && (
-                <label className="field-label" style={{ width: 122 }}>
+                <label className="field-label" style={{ width: 108 }}>
                   Mise à jour
                   <select
                     className="input input-sm"
@@ -1598,6 +1847,27 @@ export function SketchStudioPanel({
               )}
             </div>
 
+            <label className="field-label">
+              Légende / Dialogue / Action (Storyboard)
+              <textarea
+                className="input input-sm"
+                rows={2}
+                value={caption}
+                onChange={(e) => setCaption(e.target.value)}
+                placeholder="Note affichée sous la case du Storyboard Croquis et synchronisée en Pré-prod…"
+                style={{ resize: 'vertical' }}
+              />
+            </label>
+
+            <label className="checkbox-inline" style={{ fontSize: 11.5 }}>
+              <input
+                type="checkbox"
+                checked={inSketchBoard}
+                onChange={(e) => setInSketchBoard(e.target.checked)}
+              />
+              Placer dans le Storyboard Croquis (planche côte à côte)
+            </label>
+
             <label className="checkbox-inline" style={{ fontSize: 11.5 }}>
               <input
                 type="checkbox"
@@ -1606,6 +1876,59 @@ export function SketchStudioPanel({
               />
               Inclure la grille / règle des tiers dans le PNG exporté
             </label>
+
+            {/* Pre-prod Storyboard Link */}
+            <div className="sketch-preprod-link-section">
+              <div className="sketch-card-head" style={{ fontSize: 11.5 }}>
+                <strong>
+                  <Link2 size={12} /> Lien Storyboard Pré-prod
+                </strong>
+                {linkedShotHandle && (
+                  <button
+                    type="button"
+                    className="sketch-board-linked-pill"
+                    onClick={onOpenPreprodStoryboard}
+                    title="Ouvrir le Storyboard dans Pré-prod"
+                  >
+                    <Check size={11} /> {linkedShotHandle}
+                  </button>
+                )}
+              </div>
+
+              <select
+                className="input input-sm"
+                value={linkedShotId ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value || null;
+                  setLinkedShotId(val);
+                  const foundShot = preprodScenes
+                    .flatMap((sc) => sc.shots)
+                    .find((sh) => sh.id === val);
+                  setLinkedShotHandle(foundShot?.handle ?? null);
+                }}
+              >
+                <option value="">— Aucun plan Pré-prod lié —</option>
+                {preprodScenes.map((sc) => (
+                  <optgroup key={sc.id} label={`Scène ${sc.sceneNumber} — ${sc.title}`}>
+                    {sc.shots.map((sh) => (
+                      <option key={sh.id} value={sh.id}>
+                        {sh.handle} — {sh.title}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                className="btn btn-xs btn-secondary"
+                disabled={saving}
+                onClick={() => void handleCreateShotInPreprod(preprodScenes[0]?.id)}
+                title="Enregistrer ce croquis et créer directement un Plan lié dans le Storyboard Pré-prod"
+              >
+                <Plus size={12} /> Enregistrer & créer un Plan dans Pré-prod
+              </button>
+            </div>
           </div>
 
           {/* Selected Element Properties */}
@@ -2208,6 +2531,7 @@ export function SketchStudioPanel({
           </div>
         </aside>
       </div>
+      )}
     </div>
   );
 }

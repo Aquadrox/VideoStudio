@@ -546,6 +546,10 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
       shot_id uuid REFERENCES shots(id) ON DELETE SET NULL,
+      in_sketch_board boolean NOT NULL DEFAULT true,
+      board_order integer NOT NULL DEFAULT 0,
+      duration_sec double precision NOT NULL DEFAULT 3,
+      caption text NOT NULL DEFAULT '',
       title text NOT NULL,
       mode text NOT NULL DEFAULT 'scene_plan',
       aspect_ratio text NOT NULL DEFAULT '16:9',
@@ -555,6 +559,10 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE sketches ADD COLUMN IF NOT EXISTS in_sketch_board boolean NOT NULL DEFAULT true;
+    ALTER TABLE sketches ADD COLUMN IF NOT EXISTS board_order integer NOT NULL DEFAULT 0;
+    ALTER TABLE sketches ADD COLUMN IF NOT EXISTS duration_sec double precision NOT NULL DEFAULT 3;
+    ALTER TABLE sketches ADD COLUMN IF NOT EXISTS caption text NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS sketches_project_updated_idx ON sketches (project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS sketches_asset_idx ON sketches (asset_id);
   `);

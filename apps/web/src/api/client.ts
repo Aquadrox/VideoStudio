@@ -23,6 +23,7 @@ import type {
   CreateWebhookInput,
   DiskUsageSummaryDto,
   JobDto,
+  LinkSketchToShotInput,
   MediaFolderDto,
   NleExportFormat,
   ProjectDto,
@@ -32,6 +33,7 @@ import type {
   PromptTemplateDto,
   RecordQcInput,
   RenderedPromptResult,
+  ReorderSketchBoardInput,
   RulebookDto,
   RuleDto,
   SaveSketchInput,
@@ -41,6 +43,7 @@ import type {
   SkillDto,
   SkillVersionDto,
   StartTimelineRenderInput,
+  SyncSketchBoardToStoryboardInput,
   SystemMetricsDto,
   TimelineDto,
   TimelineQualityMode,
@@ -987,6 +990,53 @@ export const api = {
     await apiFetch(
       `/api/sketches/${encodeURIComponent(sketchId)}?deleteAsset=${deleteAsset ? 'true' : 'false'}`,
       { method: 'DELETE' },
+    );
+  },
+
+  async reorderSketchBoard(
+    projectId: string,
+    input: ReorderSketchBoardInput,
+  ): Promise<SketchDto[]> {
+    const res = await apiFetch<{ sketches: SketchDto[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sketches/board-order`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.sketches;
+  },
+
+  async linkSketchToShot(sketchId: string, input: LinkSketchToShotInput): Promise<SketchDto> {
+    const res = await apiFetch<{ sketch: SketchDto }>(
+      `/api/sketches/${encodeURIComponent(sketchId)}/link-shot`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
+    );
+    return res.sketch;
+  },
+
+  async syncSketchBoardToStoryboard(
+    projectId: string,
+    input: SyncSketchBoardToStoryboardInput = { newSceneTitle: 'Storyboard Croquis' },
+  ): Promise<{
+    sceneId: string;
+    sceneTitle: string;
+    createdCount: number;
+    updatedCount: number;
+    sketches: SketchDto[];
+  }> {
+    return apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/sketches/sync-to-storyboard`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      },
     );
   },
 

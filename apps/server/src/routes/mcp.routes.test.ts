@@ -180,6 +180,7 @@ describe('MCP Streamable HTTP route', () => {
       expect(toolsText).toContain('list_sketches');
       expect(toolsText).toContain('get_sketch');
       expect(toolsText).toContain('save_sketch');
+      expect(toolsText).toContain('get_sketch_storyboard');
       // Text Document Assets (.md, .txt, .log, etc.)
       expect(toolsText).toContain('read_text_asset');
       expect(toolsText).toContain('save_text_asset');

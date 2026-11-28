@@ -51,7 +51,7 @@ import type { WebhookService } from './webhook.service.js';
 const execFileAsync = promisify(execFile);
 const gzipAsync = promisify(zlib.gzip);
 
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.8.0';
 
 async function getDirectorySizeBytes(dirPath: string): Promise<number> {
   let total = 0;
