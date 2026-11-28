@@ -539,6 +539,24 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS backups_created_idx ON backups (created_at DESC);
+
+    -- Scene Blocking Plans & Freehand Storyboard Sketches
+    CREATE TABLE IF NOT EXISTS sketches (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,
+      shot_id uuid REFERENCES shots(id) ON DELETE SET NULL,
+      title text NOT NULL,
+      mode text NOT NULL DEFAULT 'scene_plan',
+      aspect_ratio text NOT NULL DEFAULT '16:9',
+      folder_path text NOT NULL DEFAULT 'plans',
+      scene_data jsonb NOT NULL,
+      ai_director_brief text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS sketches_project_updated_idx ON sketches (project_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS sketches_asset_idx ON sketches (asset_id);
   `);
 
   // Seed one default reusable Rulebook if none exist yet

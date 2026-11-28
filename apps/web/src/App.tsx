@@ -35,6 +35,7 @@ import {
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  PenTool,
   Search,
   Server,
   ShieldCheck,
@@ -81,6 +82,7 @@ import { OpsPanel } from './components/OpsPanel';
 import { PreprodPanel } from './components/PreprodPanel';
 import { ProjectGitPanel } from './components/ProjectGitPanel';
 import { RulesPanel } from './components/RulesPanel';
+import { SketchStudioPanel } from './components/SketchStudioPanel';
 import { SkillsPanel } from './components/SkillsPanel';
 import { TimelinePanel } from './components/TimelinePanel';
 import { YouTubePanel } from './components/YouTubePanel';
@@ -120,6 +122,7 @@ import {
 
 type WorkspaceMode =
   | 'media'
+  | 'sketch'
   | 'preprod'
   | 'timeline'
   | 'audio'
@@ -182,6 +185,9 @@ export function App() {
   const [skillsRefresh, setSkillsRefresh] = useState(0);
   const [stage3Refresh, setStage3Refresh] = useState(0);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
+  const [sketchRefresh, setSketchRefresh] = useState(0);
+  const [sketchToEditId, setSketchToEditId] = useState<string | null>(null);
+  const [sketchUnderlayAsset, setSketchUnderlayAsset] = useState<AssetDto | null>(null);
 
   const [rightTab, setRightTab] = useState<'inspector' | 'activity'>('inspector');
   const [typeFilter, setTypeFilter] = useState<AssetType | 'all'>('all');
@@ -505,6 +511,9 @@ export function App() {
           break;
         case 'timeline.changed':
           setTimelineRefresh((n) => n + 1);
+          break;
+        case 'sketches.changed':
+          setSketchRefresh((n) => n + 1);
           break;
       }
     },
@@ -951,7 +960,7 @@ export function App() {
       const key = e.key.toLowerCase();
 
       // Quick triage on selected asset (A = Approve, R = Needs revision, 1..5 = Rating)
-      if (selectedAsset && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (selectedAsset && workspaceMode !== 'sketch' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         if (key === 'a') {
           e.preventDefault();
           void api
@@ -1120,6 +1129,11 @@ export function App() {
 
     const tabs: Array<{ mode: WorkspaceMode; label: string; subtitle: string }> = [
       { mode: 'media', label: 'Module Médias', subtitle: 'Galerie DAM, dossiers et versions' },
+      {
+        mode: 'sketch',
+        label: 'Module Croquis & Plans',
+        subtitle: 'Blocking caméra/personnages, mouvements & dessin à main levée',
+      },
       { mode: 'preprod', label: 'Module Pré-prod', subtitle: 'Scénario, Bible & Storyboard' },
       { mode: 'timeline', label: 'Module Timeline', subtitle: 'Montage multi-pistes, animatique & rendu FFmpeg' },
       { mode: 'audio', label: 'Module Audio', subtitle: 'Musique, paroles LRC/SRT et marqueurs' },
@@ -1185,7 +1199,7 @@ export function App() {
                 </div>
                 <div>
                   <div className="brand-title">VideoStudio</div>
-                  <div className="brand-sub">v0.5.4 · MCP · LAN</div>
+                  <div className="brand-sub">v0.6.0 · MCP · LAN</div>
                 </div>
               </div>
 
@@ -1453,6 +1467,13 @@ export function App() {
             onClick={() => setWorkspaceMode('media')}
           >
             <Layers size={14} /> Médias <span className="mode-badge">{assets.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'sketch' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('sketch')}
+          >
+            <PenTool size={14} /> Croquis & Plans
           </button>
           <button
             type="button"
@@ -2196,6 +2217,25 @@ export function App() {
           </>
         )}
 
+        {workspaceMode === 'sketch' && activeProject && (
+          <SketchStudioPanel
+            project={activeProject}
+            assets={assets}
+            folders={folders}
+            initialSketchId={sketchToEditId}
+            initialUnderlayAsset={sketchUnderlayAsset}
+            refreshSignal={sketchRefresh}
+            onSketchSaved={() => {
+              if (activeProjectId) {
+                void api.listAssets(activeProjectId).then(setAssets);
+                void refreshFolders(activeProjectId);
+              }
+            }}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
         {workspaceMode === 'preprod' && (
           <PreprodPanel
             project={activeProject}
@@ -2388,6 +2428,16 @@ export function App() {
                       rightId: target.id,
                     });
                     setWorkspaceMode('compare');
+                  }}
+                  onEditSketch={(sketchId) => {
+                    setSketchUnderlayAsset(null);
+                    setSketchToEditId(sketchId);
+                    setWorkspaceMode('sketch');
+                  }}
+                  onSketchOverAsset={(targetAsset) => {
+                    setSketchToEditId(null);
+                    setSketchUnderlayAsset(targetAsset);
+                    setWorkspaceMode('sketch');
                   }}
                   onCopyText={handleCopyText}
                   onNotify={showToast}

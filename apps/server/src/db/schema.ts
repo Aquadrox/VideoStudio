@@ -18,6 +18,7 @@ import type {
   ComfyMetadata,
   PromptVariable,
   QcCheckValue,
+  SketchSceneData,
   YouTubeChapter,
 } from '@videostudio/shared';
 
@@ -661,3 +662,30 @@ export const backups = pgTable(
   },
   (table) => [index('backups_created_idx').on(table.createdAt)],
 );
+
+// --- Stage 6: Scene Blocking Plans & Freehand Storyboard Sketches ---
+
+export const sketches = pgTable(
+  'sketches',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    shotId: uuid('shot_id').references(() => shots.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    mode: text('mode').notNull().default('scene_plan'),
+    aspectRatio: text('aspect_ratio').notNull().default('16:9'),
+    folderPath: text('folder_path').notNull().default('plans'),
+    sceneData: jsonb('scene_data').$type<SketchSceneData>().notNull(),
+    aiDirectorBrief: text('ai_director_brief').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('sketches_project_updated_idx').on(table.projectId, table.updatedAt),
+    index('sketches_asset_idx').on(table.assetId),
+  ],
+);
+

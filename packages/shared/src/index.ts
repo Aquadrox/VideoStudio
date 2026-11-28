@@ -9,3 +9,5 @@ export * from './nle-export.js';
 export * from './stage5-schemas.js';
 export * from './stage5-utils.js';
 export * from './task-utils.js';
+export * from './sketch-schemas.js';
+export * from './sketch-utils.js';
