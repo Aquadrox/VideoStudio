@@ -3576,6 +3576,13 @@ textarea {
   overflow: hidden;
 }
 
+.sketch-studio.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  background: var(--bg-app);
+}
+
 .sketch-topbar {
   display: flex;
   align-items: center;
@@ -3610,6 +3617,10 @@ textarea {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+.sketch-body.inspector-hidden {
+  grid-template-columns: 112px minmax(0, 1fr);
 }
 
 .sketch-tools {
@@ -3739,22 +3750,26 @@ textarea {
   flex: 1;
   min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  overflow: hidden;
+  padding: 14px;
+  overflow: auto;
 }
 
 .sketch-canvas {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  display: block;
+  margin: auto;
+  flex-shrink: 0;
   border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  border: 1px solid rgba(148, 163, 184, 0.28);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.55);
   touch-action: none;
   cursor: crosshair;
+}
+
+.sketch-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .sketch-canvas.tool-select {
@@ -3903,6 +3918,33 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease;
+}
+
+.btn-icon:hover:not(:disabled) {
+  border-color: rgba(229, 160, 56, 0.55);
+  background: rgba(229, 160, 56, 0.12);
+  color: var(--text-primary);
+}
+
+.btn-icon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .chip-btn {
