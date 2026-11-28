@@ -23,11 +23,14 @@ import type {
   CreateWebhookInput,
   DiskUsageSummaryDto,
   JobDto,
+  KnowledgeKind,
+  KnowledgeProjectType,
   LinkSketchToShotInput,
   MediaFolderDto,
   NleExportFormat,
   ProductionDossierOptions,
   ProjectDto,
+  ProjectPlaybookDto,
   ProjectRepoStatusDto,
   ProjectRulesBundle,
   ProjectScriptDto,
@@ -46,6 +49,7 @@ import type {
   SkillDto,
   SkillVersionDto,
   StartTimelineRenderInput,
+  StudioKnowledgeEntryDto,
   SyncSketchBoardToStoryboardInput,
   SystemMetricsDto,
   TimelineDto,
@@ -57,10 +61,12 @@ import type {
   UpdateRuleInput,
   UpdateScriptInput,
   UpdateShotInput,
+  UpdateStudioKnowledgeInput,
   UpdateWatchFolderInput,
   UpdateWebhookInput,
   UpdateYouTubePackageInput,
   UploadYouTubeDraftInput,
+  UpsertStudioKnowledgeInput,
   UpsertAudioTrackInput,
   UpsertBibleEntityInput,
   UpsertProjectRuleOverrideInput,
@@ -203,24 +209,87 @@ export const api = {
     return apiFetch(`/api/assets/${encodeURIComponent(assetId)}`);
   },
 
-  async uploadAssetFile(
+  uploadAssetFile(
     projectId: string,
     file: File,
-    opts?: { qualityTier?: string; parentRef?: string; folderPath?: string },
+    opts?: {
+      qualityTier?: string;
+      parentRef?: string;
+      folderPath?: string;
+      signal?: AbortSignal;
+      onProgress?: (progress: {
+        loaded: number;
+        total: number;
+        percent: number;
+        phase: 'uploading' | 'processing';
+      }) => void;
+    },
   ): Promise<AssetDto> {
     const form = new FormData();
     form.append('file', file);
     if (opts?.qualityTier) form.append('qualityTier', opts.qualityTier);
     if (opts?.parentRef) form.append('parentRef', opts.parentRef);
     if (opts?.folderPath) form.append('folderPath', opts.folderPath);
-    const res = await apiFetch<{ asset: AssetDto }>(
-      `/api/projects/${encodeURIComponent(projectId)}/assets`,
-      {
-        method: 'POST',
-        body: form,
-      },
-    );
-    return res.asset;
+
+    return new Promise<AssetDto>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `/api/projects/${encodeURIComponent(projectId)}/assets`, true);
+
+      const handleAbort = () => {
+        xhr.abort();
+      };
+      if (opts?.signal) {
+        if (opts.signal.aborted) {
+          reject(new DOMException('Upload cancelled', 'AbortError'));
+          return;
+        }
+        opts.signal.addEventListener('abort', handleAbort, { once: true });
+      }
+
+      const cleanup = () => {
+        opts?.signal?.removeEventListener('abort', handleAbort);
+      };
+
+      xhr.upload.onprogress = (evt) => {
+        const total = evt.lengthComputable && evt.total > 0 ? evt.total : file.size || 1;
+        const loaded = Math.min(total, evt.loaded);
+        const percent = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+        opts?.onProgress?.({ loaded, total, percent, phase: 'uploading' });
+      };
+
+      xhr.upload.onload = () => {
+        const total = file.size || 1;
+        opts?.onProgress?.({ loaded: total, total, percent: 100, phase: 'processing' });
+      };
+
+      xhr.onerror = () => {
+        cleanup();
+        reject(new Error('Erreur réseau pendant l’envoi du fichier'));
+      };
+
+      xhr.onabort = () => {
+        cleanup();
+        reject(new DOMException('Upload cancelled', 'AbortError'));
+      };
+
+      xhr.onload = () => {
+        cleanup();
+        let parsed: { asset?: AssetDto; error?: string } | null = null;
+        try {
+          parsed = xhr.responseText ? (JSON.parse(xhr.responseText) as { asset?: AssetDto; error?: string }) : null;
+        } catch {
+          parsed = null;
+        }
+
+        if (xhr.status >= 200 && xhr.status < 300 && parsed?.asset) {
+          resolve(parsed.asset);
+        } else {
+          reject(new Error(parsed?.error || `HTTP ${xhr.status} lors de l'import`));
+        }
+      };
+
+      xhr.send(form);
+    });
   },
 
   async updateAsset(assetId: string, patch: UpdateAssetInput): Promise<AssetDto> {
@@ -874,6 +943,82 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
+    });
+  },
+
+  // --- Shared Studio Knowledge & AI Cross-Project Memory (v0.10.0) ---
+
+  async listKnowledge(
+    filter: {
+      projectType?: KnowledgeProjectType;
+      kind?: KnowledgeKind;
+      search?: string;
+      verifiedOnly?: boolean;
+      tag?: string;
+    } = {},
+  ): Promise<StudioKnowledgeEntryDto[]> {
+    const qs = new URLSearchParams();
+    if (filter.projectType && filter.projectType !== 'all') qs.set('projectType', filter.projectType);
+    if (filter.kind) qs.set('kind', filter.kind);
+    if (filter.search?.trim()) qs.set('search', filter.search.trim());
+    if (filter.verifiedOnly) qs.set('verifiedOnly', '1');
+    if (filter.tag?.trim()) qs.set('tag', filter.tag.trim());
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await apiFetch<{ entries: StudioKnowledgeEntryDto[] }>(`/api/knowledge${suffix}`);
+    return res.entries;
+  },
+
+  async getProjectPlaybook(params: {
+    projectIdOrSlug?: string;
+    projectType?: KnowledgeProjectType;
+  }): Promise<ProjectPlaybookDto> {
+    const qs = new URLSearchParams();
+    if (params.projectIdOrSlug) qs.set('projectIdOrSlug', params.projectIdOrSlug);
+    if (params.projectType) qs.set('projectType', params.projectType);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    const res = await apiFetch<{ playbook: ProjectPlaybookDto }>(`/api/knowledge/playbook${suffix}`);
+    return res.playbook;
+  },
+
+  async upsertKnowledge(
+    input: UpsertStudioKnowledgeInput,
+  ): Promise<{ entry: StudioKnowledgeEntryDto; created: boolean }> {
+    return apiFetch('/api/knowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+  },
+
+  async updateKnowledge(
+    idOrSlug: string,
+    patch: UpdateStudioKnowledgeInput,
+  ): Promise<StudioKnowledgeEntryDto> {
+    const res = await apiFetch<{ entry: StudioKnowledgeEntryDto }>(
+      `/api/knowledge/${encodeURIComponent(idOrSlug)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      },
+    );
+    return res.entry;
+  },
+
+  async deleteKnowledge(idOrSlug: string): Promise<void> {
+    await apiFetch(`/api/knowledge/${encodeURIComponent(idOrSlug)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async applyKnowledgeToProject(
+    idOrSlug: string,
+    projectIdOrSlug: string,
+  ): Promise<{ rule: RuleDto; entry: StudioKnowledgeEntryDto }> {
+    return apiFetch(`/api/knowledge/${encodeURIComponent(idOrSlug)}/apply-to-project`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectIdOrSlug }),
     });
   },
 

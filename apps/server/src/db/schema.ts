@@ -723,4 +723,37 @@ export const projectSubtitles = pgTable('project_subtitles', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+// --- Stage 8 (v0.10.0): Shared Studio Knowledge & AI Cross-Project Memory ---
+
+export const studioKnowledge = pgTable(
+  'studio_knowledge',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    slug: text('slug').notNull().unique(),
+    title: text('title').notNull(),
+    kind: text('kind').notNull().default('lesson'),
+    projectTypes: jsonb('project_types').$type<string[]>().notNull().default(['all']),
+    priority: text('priority').notNull().default('normal'),
+    content: text('content').notNull(),
+    positiveFragment: text('positive_fragment').notNull().default(''),
+    negativeFragment: text('negative_fragment').notNull().default(''),
+    recommendedModel: text('recommended_model').notNull().default(''),
+    linkedSkillSlug: text('linked_skill_slug'),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    learnedBy: text('learned_by').notNull().default('user'),
+    verified: boolean('verified').notNull().default(false),
+    pinned: boolean('pinned').notNull().default(false),
+    sourceProjectSlug: text('source_project_slug'),
+    usageCount: integer('usage_count').notNull().default(0),
+    lastRecalledAt: timestamp('last_recalled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('studio_knowledge_kind_idx').on(table.kind),
+    index('studio_knowledge_updated_idx').on(table.updatedAt),
+  ],
+);
+
+
 

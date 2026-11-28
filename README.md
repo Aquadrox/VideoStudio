@@ -1,6 +1,6 @@
 # VideoStudio — Studio Vidéo Assisté par IA & Claude Code
 
-[![Version](https://img.shields.io/badge/version-0.9.0-e5a038?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-0.10.0-e5a038?style=flat-square)](#)
 [![Stack](https://img.shields.io/badge/stack-React%20%7C%20Fastify%20%7C%20PostgreSQL%20%7C%20MCP-1e293b?style=flat-square)](#architecture)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Blue%2FGreen-10b981?style=flat-square)](#mises-à-jour-sans-interruption-bluegreen)
 
@@ -41,12 +41,12 @@
 
 | Module | Capacités principales |
 | --- | --- |
-| **Médias & DAM** | Arborescence de dossiers & sous-dossiers, **glisser-déposer simple ou multi-sélection** (`Ctrl/Cmd+Clic`, `Shift+Clic`), vues **Grille / Grandes miniatures / Liste / Détails**, filtre **Récents**, extraction automatique des métadonnées **ComfyUI** (prompts, seed, CFG, LoRAs, workflow JSON), références `@ref` & `studio://`, lignage de versions (`v1 → v2`), panneaux latéraux redimensionnables & masquables. |
+| **Médias & DAM** | Arborescence de dossiers & sous-dossiers, **glisser-déposer simple ou multi-sélection** (`Ctrl/Cmd+Clic`, `Shift+Clic`), **file d'import temps réel** (progression octet par octet, vitesse, ETA & état FFmpeg), vues **Grille / Grandes miniatures / Liste / Détails**, filtre **Récents**, métadonnées **ComfyUI** automatiques, `@ref` & panneaux redimensionnables. |
 | **Croquis & Plans de Scène** | **Plan de scène (Blocking vue du dessus)** : caméras avec cône FOV par focale (`24–135mm`), personnages liés à la Bible, lumières (`Key/Fill/Rim/Practical`), décors, trajectoires & ligne des 180°, **Brief IA auto-généré**. **Mode Croquis / Feuille blanche** : dessin main levée, guides cinéma, underlay image, ouverture **plein cadre**, zoom fluide (`35%–300%` + `Ctrl+Molette`) et mode **Plein écran (`F`)**. |
 | **Storyboard Croquis & Pré-prod** | Planche côte à côte (`2/3/4 colonnes` ou bande horizontale), réordonnancement Drag & Drop, export planche PNG, **liaison bidirectionnelle** avec le **Storyboard Pré-prod** (Scénario, Bible, Découpage technique) et **Export Dossier de Production PDF / Pitch Deck** en 1 clic. |
 | **Éditeur texte enrichi** | Lecture et édition in-app de `.md`, `.txt`, `.log`, `.json`, `.yaml`, `.srt`, `.lrc`, `.fountain`, etc. Mode **Split** (Markdown + aperçu enrichi), colorisation de logs par niveau (`ERROR`/`WARN`/`INFO`), formatage JSON, `Ctrl+F` Rechercher/Remplacer et versionnage `v1 → v2`. |
 | **Timeline NLE v2 & Sous-titres** | Montage multi-pistes avec **Drag & Trim direct**, aimantation **Snap**, **waveforms audio**, marqueurs **BPM & paroles Suno/LRC**, aperçu live des transitions (`Crossfade` / `Fondu au noir`), **piste Sous-titres SRT/VTT** avec incrustation live + **Burn-in FFmpeg**, bascule **Draft ↔ HQ** et exports **OTIO / FCPXML / EDL**. |
-| **Collaboration Claude Code (MCP)** | **81 outils MCP** (`Streamable HTTP`), suivi en direct des tâches & **ETA temps réel** par WebSocket, file d'attente de retours horodatés sur frames vidéo, règles de studio hiérarchiques, bibliothèque de prompts/workflows & synchronisation `SKILL.md`. |
+| **Collaboration Claude Code (MCP)** | **86 outils MCP** (`Streamable HTTP`), **Mémoire IA & Playbooks par type de projet** (apprentissage continu & auto-rappel au lancement), suivi en direct des tâches & **ETA temps réel** par WebSocket, retours horodatés sur frames vidéo, règles hiérarchiques, prompts/workflows & sync `SKILL.md`. |
 | **Publication & Exploitation** | Préparation **YouTube Ready Pack** (miniatures, chapitres, titres, description) + upload brouillon OAuth2 optionnel, **Watch Folders ComfyUI**, webhooks HMAC, monitoring disque/nettoyage, backups automatiques & déploiement **Blue/Green zéro coupure**. |
 
 ---
@@ -261,11 +261,12 @@ L'onglet **Pré-prod** regroupe toute la préparation créative du film :
 
 ## 🤖 Catalogue des outils MCP (Claude Code)
 
-VideoStudio expose **81 outils MCP** et des ressources `studio://` en `Streamable HTTP` sur `/mcp` :
+VideoStudio expose **86 outils MCP** et des ressources `studio://` en `Streamable HTTP` sur `/mcp` :
 
 | Domaine | Exemples d'outils MCP |
 | --- | --- |
-| **Projets & Activité** | `list_projects`, `create_project`, `update_project`, `get_project_overview`, `log_activity`, `start_job`, `update_job`, `sync_agent_tasks`, `update_agent_task` |
+| **Projets & Activité** | `list_projects`, `create_project` *(auto-rappel Playbook)*, `update_project`, `get_project_overview`, `log_activity`, `start_job`, `update_job`, `sync_agent_tasks`, `update_agent_task` |
+| **Mémoire IA & Playbooks** | `recall_project_playbook`, `learn_studio_knowledge`, `list_studio_knowledge`, `update_studio_knowledge`, `delete_studio_knowledge` *(+ ressources `studio://knowledge`, `studio://playbooks/{type}`)* |
 | **Médias, Dossiers & QC** | `register_asset`, `ingest_folder`, `list_assets`, `get_asset`, `update_asset`, `delete_asset`, `delete_assets_batch`, `list_media_folders`, `create_media_folder`, `resolve_reference`, `record_qc`, `get_frame`, `contact_sheet` |
 | **Croquis & Plans de Scène** | `list_sketches`, `get_sketch`, `save_sketch`, `get_sketch_storyboard` |
 | **Documents & Dossiers PDF** | `read_text_asset`, `save_text_asset`, `export_production_dossier` |
