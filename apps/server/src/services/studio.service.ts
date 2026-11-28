@@ -5,6 +5,8 @@ import {
   buildStudioUri,
   formatAssetRefCode,
   getParentFolderPath,
+  getTextDocumentLanguage,
+  isEditableTextFile,
   normalizeFolderPath,
   parseStudioRef,
   slugifyProjectName,
@@ -986,6 +988,147 @@ export class StudioService {
     });
 
     return true;
+  }
+
+  async readTextAssetContent(assetId: string): Promise<{
+    asset: AssetDto;
+    content: string;
+    sizeBytes: number;
+    language: ReturnType<typeof getTextDocumentLanguage>;
+    isExternalReference: boolean;
+    updatedAt: string;
+  } | null> {
+    const found = await this.getAssetById(assetId);
+    if (!found) return null;
+
+    if (!isEditableTextFile(found.asset.originalFilename, found.asset.mimeType)) {
+      throw new Error(
+        `Le fichier « ${found.asset.originalFilename} » (${found.asset.mimeType}) n'est pas un fichier texte éditable`,
+      );
+    }
+
+    const loaded = await this.media.readTextFileContent(found.raw.filePath);
+    return {
+      asset: found.asset,
+      content: loaded.content,
+      sizeBytes: loaded.sizeBytes,
+      language: getTextDocumentLanguage(found.asset.originalFilename, found.asset.mimeType),
+      isExternalReference: loaded.isExternalReference,
+      updatedAt: found.asset.updatedAt,
+    };
+  }
+
+  async updateTextAssetContent(
+    assetId: string,
+    params: {
+      content: string;
+      saveMode?: 'in_place' | 'new_version';
+      title?: string;
+    },
+    actor: Actor = 'user',
+  ): Promise<{ asset: AssetDto; savedMode: 'in_place' | 'new_version' } | null> {
+    const found = await this.getAssetById(assetId);
+    if (!found) return null;
+
+    if (!isEditableTextFile(found.asset.originalFilename, found.asset.mimeType)) {
+      throw new Error(
+        `Le fichier « ${found.asset.originalFilename} » n'est pas un fichier texte éditable`,
+      );
+    }
+
+    const isExternal =
+      found.raw.filePath.startsWith('ingest://') ||
+      found.raw.filePath.startsWith('ingest-root://');
+    const effectiveMode: 'in_place' | 'new_version' =
+      params.saveMode === 'new_version' || isExternal ? 'new_version' : 'in_place';
+
+    if (effectiveMode === 'new_version') {
+      const created = await this.ingestAssetFromBuffer({
+        projectIdOrSlug: found.asset.projectId,
+        buffer: Buffer.from(params.content, 'utf8'),
+        filename: found.asset.originalFilename,
+        mimeType: found.asset.mimeType,
+        explicitType: 'document',
+        folderPath: found.asset.folderPath,
+        title: params.title?.trim() || found.asset.title,
+        qualityTier: found.asset.qualityTier,
+        status: found.asset.status,
+        parentAssetId: found.asset.id,
+        relationType: 'revision',
+        tags: found.asset.tags,
+        notes: found.asset.notes,
+        createdBy: actor,
+      });
+      return { asset: created, savedMode: 'new_version' };
+    }
+
+    const { sizeBytes } = await this.media.writeManagedTextFile(found.raw.filePath, params.content);
+    const nextTitle = params.title?.trim() || found.asset.title;
+    const [updated] = await this.db
+      .update(assets)
+      .set({
+        fileSize: sizeBytes,
+        title: nextTitle,
+        updatedAt: new Date(),
+      })
+      .where(eq(assets.id, assetId))
+      .returning();
+
+    if (!updated) return null;
+
+    const dto = this.toAssetDto(updated, found.asset.projectSlug);
+    this.realtime.broadcast({ type: 'asset.updated', payload: dto });
+
+    await this.logActivity({
+      projectId: dto.projectId,
+      projectSlug: dto.projectSlug,
+      actor,
+      action: 'asset.content_updated',
+      summary: `Document texte édité : ${dto.handle} (${dto.originalFilename})`,
+      entityType: 'asset',
+      entityId: dto.id,
+      entityRef: dto.handle,
+      metadata: { sizeBytes },
+    });
+
+    return { asset: dto, savedMode: 'in_place' };
+  }
+
+  async createTextDocumentAsset(
+    projectIdOrSlug: string,
+    params: {
+      filename: string;
+      content: string;
+      title?: string;
+      folderPath?: string;
+      tags?: string[];
+      notes?: string;
+    },
+    actor: Actor = 'user',
+  ): Promise<AssetDto> {
+    let cleanName = path.basename(params.filename.trim());
+    if (!cleanName) cleanName = 'note.md';
+    if (!cleanName.includes('.')) cleanName = `${cleanName}.md`;
+
+    if (!isEditableTextFile(cleanName)) {
+      throw new Error(
+        `Extension non prise en charge pour un document texte : ${cleanName} (ex: .md, .txt, .log, .json, .srt, .lrc)`,
+      );
+    }
+
+    return this.ingestAssetFromBuffer({
+      projectIdOrSlug,
+      buffer: Buffer.from(params.content, 'utf8'),
+      filename: cleanName,
+      explicitType: 'document',
+      folderPath: params.folderPath,
+      title: params.title?.trim() || cleanName,
+      qualityTier: 'draft_lowres',
+      status: 'new',
+      tags: params.tags ?? ['document'],
+      notes: params.notes ?? '',
+      createdBy: actor,
+    });
   }
 
   async getAssetLineage(

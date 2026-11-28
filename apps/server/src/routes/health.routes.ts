@@ -28,7 +28,7 @@ export function registerHealthRoutes(
 
     return reply.code(dbOk ? 200 : 503).send({
       status,
-      version: '0.6.0',
+      version: '0.7.0',
       slot: process.env.DEPLOY_SLOT || 'standalone',
       inFlightRequests,
       services: {

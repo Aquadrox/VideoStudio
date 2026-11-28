@@ -61,7 +61,7 @@ export function createVideoStudioMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.6.0',
+    version: '0.7.0',
   });
 
   // --- MCP Resources ---
@@ -2538,6 +2538,127 @@ export function createVideoStudioMcpServer(
       },
     );
   }
+
+  // ==========================================================================
+  // Text Document Assets (.md, .txt, .log, .json, .srt, etc.) MCP Tools
+  // ==========================================================================
+
+  server.tool(
+    'read_text_asset',
+    'Read the UTF-8 text content of a project document asset (.md, .txt, .log, .json, .srt, .lrc, etc.) by @ref handle, studio:// URI, or UUID.',
+    {
+      ref: z.string().min(1).describe('Asset @ref handle (e.g. @doc-001), studio:// URI, or UUID'),
+      project: z.string().optional().describe('Optional project slug or UUID when using an unscoped @ref'),
+    },
+    async ({ ref, project }) => {
+      try {
+        let assetId: string | null = null;
+        const byId = await studio.getAssetById(ref);
+        if (byId) {
+          assetId = byId.asset.id;
+        } else {
+          const resolved = await studio.resolveReference(ref, project);
+          if (resolved?.asset) {
+            assetId = resolved.asset.id;
+          }
+        }
+        if (!assetId) {
+          return { isError: true, content: [{ type: 'text', text: `Asset not found: ${ref}` }] };
+        }
+        const data = await studio.readTextAssetContent(assetId);
+        if (!data) {
+          return { isError: true, content: [{ type: 'text', text: `Asset not found: ${ref}` }] };
+        }
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  id: data.asset.id,
+                  handle: data.asset.handle,
+                  filename: data.asset.originalFilename,
+                  language: data.language,
+                  sizeBytes: data.sizeBytes,
+                  isExternalReference: data.isExternalReference,
+                  content: data.content,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'save_text_asset',
+    'Create a new text document (.md, .txt, .log, .json, .srt, etc.) in Media or update an existing one (in_place or new_version).',
+    {
+      project: z.string().min(1).describe('Project slug or UUID'),
+      existingRef: z
+        .string()
+        .optional()
+        .describe('Optional existing @doc-NNN ref or UUID to update instead of creating a new document'),
+      filename: z.string().min(1).max(160).optional().describe('Filename when creating a new document (e.g. "notes.md", "render.log")'),
+      title: z.string().max(200).optional(),
+      folderPath: z.string().max(240).optional(),
+      content: z.string().max(5 * 1024 * 1024),
+      saveMode: z.enum(['in_place', 'new_version']).default('in_place'),
+      tags: z.array(z.string()).optional(),
+    },
+    async ({ project, existingRef, filename, title, folderPath, content, saveMode, tags }) => {
+      try {
+        if (existingRef) {
+          let assetId: string | null = null;
+          const byId = await studio.getAssetById(existingRef);
+          if (byId) {
+            assetId = byId.asset.id;
+          } else {
+            const resolved = await studio.resolveReference(existingRef, project);
+            if (resolved?.asset) assetId = resolved.asset.id;
+          }
+          if (!assetId) {
+            return { isError: true, content: [{ type: 'text', text: `Asset not found: ${existingRef}` }] };
+          }
+          const updated = await studio.updateTextAssetContent(
+            assetId,
+            { content, saveMode, title },
+            'claude',
+          );
+          if (!updated) {
+            return { isError: true, content: [{ type: 'text', text: `Asset not found: ${existingRef}` }] };
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(updated, null, 2) }] };
+        }
+
+        const created = await studio.createTextDocumentAsset(
+          project,
+          {
+            filename: filename || 'document.md',
+            content,
+            title,
+            folderPath,
+            tags,
+          },
+          'claude',
+        );
+        return { content: [{ type: 'text', text: JSON.stringify({ asset: created }, null, 2) }] };
+      } catch (err) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+        };
+      }
+    },
+  );
 
   return server;
 }
