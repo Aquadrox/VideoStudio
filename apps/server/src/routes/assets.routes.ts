@@ -400,6 +400,80 @@ export function registerAssetRoutes(
     }
   });
 
+  app.get<{ Params: { id: string } }>('/api/assets/:id/content', async (request, reply) => {
+    try {
+      const data = await studio.readTextAssetContent(request.params.id);
+      if (!data) {
+        return reply.code(404).send({ error: 'Asset not found' });
+      }
+      return data;
+    } catch (err) {
+      return reply.code(400).send({
+        error: err instanceof Error ? err.message : 'Unable to read text content',
+      });
+    }
+  });
+
+  app.put<{ Params: { id: string } }>('/api/assets/:id/content', async (request, reply) => {
+    const parsed = z
+      .object({
+        content: z.string().max(5 * 1024 * 1024),
+        saveMode: z.enum(['in_place', 'new_version']).default('in_place'),
+        title: z.string().min(1).max(200).optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: 'Validation error',
+        details: parsed.error.flatten(),
+      });
+    }
+    try {
+      const result = await studio.updateTextAssetContent(request.params.id, parsed.data, 'user');
+      if (!result) {
+        return reply.code(404).send({ error: 'Asset not found' });
+      }
+      return result;
+    } catch (err) {
+      return reply.code(400).send({
+        error: err instanceof Error ? err.message : 'Unable to save text content',
+      });
+    }
+  });
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/documents',
+    async (request, reply) => {
+      const parsed = z
+        .object({
+          filename: z.string().min(1).max(160),
+          content: z.string().max(5 * 1024 * 1024).default(''),
+          title: z.string().max(200).optional(),
+          folderPath: z.string().max(240).optional(),
+          tags: z.array(z.string().max(48)).max(24).optional(),
+          notes: z.string().max(4000).optional(),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: 'Validation error',
+          details: parsed.error.flatten(),
+        });
+      }
+      try {
+        const asset = await studio.createTextDocumentAsset(
+          request.params.projectIdOrSlug,
+          parsed.data,
+          'user',
+        );
+        return reply.code(201).send({ asset });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create document';
+        return reply.code(message.includes('not found') ? 404 : 400).send({ error: message });
+      }
+    },
+  );
+
   app.delete<{ Params: { id: string } }>('/api/assets/:id', async (request, reply) => {
     const deleted = await studio.deleteAsset(request.params.id, 'user');
     if (!deleted) {

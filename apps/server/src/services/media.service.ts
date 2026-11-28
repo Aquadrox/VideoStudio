@@ -65,9 +65,37 @@ const EXT_TO_MIME: Record<string, string> = {
   '.m4a': 'audio/mp4',
   '.srt': 'text/plain',
   '.vtt': 'text/vtt',
+  '.lrc': 'text/plain',
+  '.ass': 'text/plain',
   '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
   '.txt': 'text/plain',
+  '.text': 'text/plain',
+  '.log': 'text/plain',
+  '.out': 'text/plain',
+  '.err': 'text/plain',
   '.json': 'application/json',
+  '.jsonl': 'application/json',
+  '.yaml': 'application/yaml',
+  '.yml': 'application/yaml',
+  '.toml': 'text/plain',
+  '.ini': 'text/plain',
+  '.cfg': 'text/plain',
+  '.conf': 'text/plain',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.xml': 'application/xml',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.ts': 'text/plain',
+  '.py': 'text/x-python',
+  '.sh': 'text/x-shellscript',
+  '.sql': 'text/plain',
+  '.fountain': 'text/plain',
+  '.prompt': 'text/plain',
+  '.nfo': 'text/plain',
 };
 
 export function inferMimeType(filename: string, providedMime?: string): string {
@@ -681,6 +709,58 @@ export class MediaService {
 
   async executeFfmpeg(args: string[], timeoutMs = 600_000): Promise<void> {
     await execFileAsync('ffmpeg', args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
+  }
+
+  /**
+   * Safely reads a text file (up to maxBytes) as UTF-8, rejecting binary files with NUL bytes.
+   */
+  async readTextFileContent(
+    relativePath: string,
+    maxBytes = 5 * 1024 * 1024,
+  ): Promise<{ content: string; sizeBytes: number; isExternalReference: boolean }> {
+    const isExternalReference =
+      relativePath.startsWith('ingest://') || relativePath.startsWith('ingest-root://');
+    const absPath = this.resolveMediaFile(relativePath);
+    const stat = await fs.stat(absPath);
+    if (!stat.isFile()) {
+      throw new Error('La cible n’est pas un fichier lisible');
+    }
+    if (stat.size > maxBytes) {
+      throw new Error(
+        `Fichier trop volumineux pour l’éditeur texte (${Math.round(stat.size / 1024 / 1024)} Mo > ${Math.round(maxBytes / 1024 / 1024)} Mo max)`,
+      );
+    }
+    const buf = await fs.readFile(absPath);
+    // Quick binary check on first 8KB
+    const probeLen = Math.min(buf.length, 8192);
+    for (let i = 0; i < probeLen; i += 1) {
+      if (buf[i] === 0) {
+        throw new Error('Ce fichier semble binaire et ne peut pas être ouvert dans l’éditeur texte');
+      }
+    }
+    return {
+      content: buf.toString('utf8'),
+      sizeBytes: buf.byteLength,
+      isExternalReference,
+    };
+  }
+
+  /**
+   * Atomically overwrites a managed text file inside DATA_DIR.
+   * Refuses writing to external read-only ingest references (`ingest://`, `ingest-root://`).
+   */
+  async writeManagedTextFile(relativePath: string, content: string): Promise<{ sizeBytes: number }> {
+    if (relativePath.startsWith('ingest://') || relativePath.startsWith('ingest-root://')) {
+      throw new Error(
+        'Les fichiers externes référencés en lecture seule ne peuvent pas être écrasés sur place ; enregistrer en nouvelle version gérée.',
+      );
+    }
+    const absPath = resolveSafePath(this.config.dataDir, relativePath);
+    const buf = Buffer.from(content, 'utf8');
+    const tmpPath = `${absPath}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    await fs.writeFile(tmpPath, buf);
+    await fs.rename(tmpPath, absPath);
+    return { sizeBytes: buf.byteLength };
   }
 
   private async probeMedia(absPath: string): Promise<FfprobeOutput | null> {

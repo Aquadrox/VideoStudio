@@ -48,19 +48,20 @@ import {
   X,
   Youtube,
 } from 'lucide-react';
-import type {
-  ActivityDto,
-  AgentTaskDto,
-  AssetDto,
-  AssetStatus,
-  AssetType,
-  CreateProjectInput,
-  JobDto,
-  MediaFolderDto,
-  ProjectDto,
-  ProjectStatus,
-  QualityTier,
-  RealtimeEvent,
+import {
+  isEditableTextFile,
+  type ActivityDto,
+  type AgentTaskDto,
+  type AssetDto,
+  type AssetStatus,
+  type AssetType,
+  type CreateProjectInput,
+  type JobDto,
+  type MediaFolderDto,
+  type ProjectDto,
+  type ProjectStatus,
+  type QualityTier,
+  type RealtimeEvent,
 } from '@videostudio/shared';
 import { api, type AssetLineage, type HealthResponse } from './api/client';
 import { ActivityFeed } from './components/ActivityFeed';
@@ -84,6 +85,7 @@ import { ProjectGitPanel } from './components/ProjectGitPanel';
 import { RulesPanel } from './components/RulesPanel';
 import { SketchStudioPanel } from './components/SketchStudioPanel';
 import { SkillsPanel } from './components/SkillsPanel';
+import { TextDocumentEditorModal } from './components/TextDocumentEditor';
 import { TimelinePanel } from './components/TimelinePanel';
 import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
@@ -188,6 +190,9 @@ export function App() {
   const [sketchRefresh, setSketchRefresh] = useState(0);
   const [sketchToEditId, setSketchToEditId] = useState<string | null>(null);
   const [sketchUnderlayAsset, setSketchUnderlayAsset] = useState<AssetDto | null>(null);
+  const [textEditorTarget, setTextEditorTarget] = useState<
+    { mode: 'edit'; asset: AssetDto } | { mode: 'create' } | null
+  >(null);
 
   const [rightTab, setRightTab] = useState<'inspector' | 'activity'>('inspector');
   const [typeFilter, setTypeFilter] = useState<AssetType | 'all'>('all');
@@ -960,7 +965,14 @@ export function App() {
       const key = e.key.toLowerCase();
 
       // Quick triage on selected asset (A = Approve, R = Needs revision, 1..5 = Rating)
-      if (selectedAsset && workspaceMode !== 'sketch' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (
+        selectedAsset &&
+        workspaceMode !== 'sketch' &&
+        !textEditorTarget &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
         if (key === 'a') {
           e.preventDefault();
           void api
@@ -1052,6 +1064,7 @@ export function App() {
     showNewProject,
     showShortcutsHelp,
     showToast,
+    textEditorTarget,
     workspaceMode,
   ]);
 
@@ -1065,6 +1078,18 @@ export function App() {
         keywords: ['project', 'nouveau', 'create'],
         onSelect: () => setShowNewProject(true),
       },
+      ...(activeProjectId
+        ? [
+            {
+              id: 'action-new-text-doc',
+              category: 'action' as const,
+              label: 'Nouveau fichier texte (.md, .txt, .log, .json)',
+              subtitle: 'Ouvre l’éditeur enrichi pour créer un document dans Médias',
+              keywords: ['markdown', 'md', 'txt', 'log', 'notes', 'document', 'texte', 'editeur'],
+              onSelect: () => setTextEditorTarget({ mode: 'create' }),
+            },
+          ]
+        : []),
       {
         id: 'action-backup-now',
         category: 'action',
@@ -1199,7 +1224,7 @@ export function App() {
                 </div>
                 <div>
                   <div className="brand-title">VideoStudio</div>
-                  <div className="brand-sub">v0.6.0 · MCP · LAN</div>
+                  <div className="brand-sub">v0.7.0 · MCP · LAN</div>
                 </div>
               </div>
 
@@ -1422,6 +1447,14 @@ export function App() {
                 />
                 <button
                   type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setTextEditorTarget({ mode: 'create' })}
+                  title="Créer un nouveau fichier texte (.md, .txt, .log, .json…) dans l'éditeur enrichi"
+                >
+                  <FileText size={14} /> Nouveau texte
+                </button>
+                <button
+                  type="button"
                   className="btn btn-primary"
                   disabled={uploading}
                   onClick={() => fileInputRef.current?.click()}
@@ -1592,7 +1625,7 @@ export function App() {
                 </div>
 
                 <div className="filter-group">
-                  {(['all', 'image', 'video', 'audio'] as const).map((t) => (
+                  {(['all', 'image', 'video', 'audio', 'document'] as const).map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -1605,7 +1638,9 @@ export function App() {
                           ? 'Images'
                           : t === 'video'
                             ? 'Vidéos'
-                            : 'Audio'}
+                            : t === 'audio'
+                              ? 'Audio'
+                              : 'Docs'}
                     </button>
                   ))}
 
@@ -2119,7 +2154,14 @@ export function App() {
                       onToggleCheck={handleToggleAssetCheck}
                       onDoubleClick={(item) => {
                         setSelectedAssetId(item.id);
-                        setLightboxAssetId(item.id);
+                        if (
+                          item.type === 'document' &&
+                          isEditableTextFile(item.originalFilename, item.mimeType)
+                        ) {
+                          setTextEditorTarget({ mode: 'edit', asset: item });
+                        } else {
+                          setLightboxAssetId(item.id);
+                        }
                       }}
                       onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
                       onNavigateFolder={(folderPath) => {
@@ -2151,7 +2193,14 @@ export function App() {
                       }
                       onDoubleClick={(item) => {
                         setSelectedAssetId(item.id);
-                        setLightboxAssetId(item.id);
+                        if (
+                          item.type === 'document' &&
+                          isEditableTextFile(item.originalFilename, item.mimeType)
+                        ) {
+                          setTextEditorTarget({ mode: 'edit', asset: item });
+                        } else {
+                          setLightboxAssetId(item.id);
+                        }
                       }}
                       onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
                       onNavigateFolder={(folderPath) => {
@@ -2192,7 +2241,14 @@ export function App() {
                             onToggleCheck={handleToggleAssetCheck}
                             onDoubleClick={(item) => {
                               setSelectedAssetId(item.id);
-                              setLightboxAssetId(item.id);
+                              if (
+                                item.type === 'document' &&
+                                isEditableTextFile(item.originalFilename, item.mimeType)
+                              ) {
+                                setTextEditorTarget({ mode: 'edit', asset: item });
+                              } else {
+                                setLightboxAssetId(item.id);
+                              }
                             }}
                             onCopyRef={(ref) => handleCopyText(ref, 'Référence Claude')}
                             onNavigateFolder={(folderPath) => {
@@ -2439,6 +2495,9 @@ export function App() {
                     setSketchUnderlayAsset(targetAsset);
                     setWorkspaceMode('sketch');
                   }}
+                  onOpenTextEditor={(targetAsset) =>
+                    setTextEditorTarget({ mode: 'edit', asset: targetAsset })
+                  }
                   onCopyText={handleCopyText}
                   onNotify={showToast}
                 />
@@ -2469,7 +2528,33 @@ export function App() {
             setSelectedAssetId(target.id);
             setLightboxAssetId(target.id);
           }}
+          onOpenTextEditor={(targetAsset) => {
+            setLightboxAssetId(null);
+            setTextEditorTarget({ mode: 'edit', asset: targetAsset });
+          }}
           onCopyText={handleCopyText}
+        />
+      )}
+
+      {textEditorTarget && activeProjectId && (
+        <TextDocumentEditorModal
+          asset={textEditorTarget.mode === 'edit' ? textEditorTarget.asset : null}
+          projectId={activeProjectId}
+          folders={folders}
+          defaultFolderPath={currentFolderPath}
+          onClose={() => setTextEditorTarget(null)}
+          onSaved={(savedAsset, isNew) => {
+            setAssets((prev) =>
+              isNew
+                ? [savedAsset, ...prev.filter((a) => a.id !== savedAsset.id)]
+                : prev.map((a) => (a.id === savedAsset.id ? savedAsset : a)),
+            );
+            setSelectedAssetId(savedAsset.id);
+            setTextEditorTarget({ mode: 'edit', asset: savedAsset });
+            void refreshFolders(activeProjectId);
+          }}
+          onCopyText={handleCopyText}
+          onNotify={showToast}
         />
       )}
 

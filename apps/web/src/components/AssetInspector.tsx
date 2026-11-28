@@ -6,6 +6,7 @@ import {
   Columns2,
   Copy,
   Download,
+  FileText,
   GitBranch,
   MapPin,
   PenTool,
@@ -13,13 +14,15 @@ import {
   Star,
   Trash2,
 } from 'lucide-react';
-import type {
-  AnnotationDto,
-  AssetDto,
-  AssetStatus,
-  MediaFolderDto,
-  QualityTier,
-  SketchDto,
+import {
+  isEditableTextFile,
+  type AnnotationDto,
+  type AssetDto,
+  type AssetStatus,
+  type MediaFolderDto,
+  type QualityTier,
+  type SketchDto,
+  type TextDocumentLanguage,
 } from '@videostudio/shared';
 import { api, type AssetLineage } from '../api/client';
 import { normalizeMediaCoordinates, timecodeToFrame } from '../utils/annotations';
@@ -29,6 +32,7 @@ import {
   QUALITY_TIER_LABELS,
   STATUS_LABELS,
 } from '../utils/format';
+import { TextDocumentPreview } from './TextDocumentEditor';
 
 interface AssetInspectorProps {
   asset: AssetDto | null;
@@ -51,6 +55,7 @@ interface AssetInspectorProps {
   onOpenCompare: (asset: AssetDto, compareWith?: AssetDto) => void;
   onEditSketch?: (sketchId: string) => void;
   onSketchOverAsset?: (asset: AssetDto) => void;
+  onOpenTextEditor?: (asset: AssetDto) => void;
   onCopyText: (text: string, label?: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -66,6 +71,7 @@ export function AssetInspector({
   onOpenCompare,
   onEditSketch,
   onSketchOverAsset,
+  onOpenTextEditor,
   onCopyText,
   onNotify,
 }: AssetInspectorProps) {
@@ -78,6 +84,10 @@ export function AssetInspector({
   const [savingNotes, setSavingNotes] = useState(false);
   const [showRawWorkflow, setShowRawWorkflow] = useState(false);
   const [linkedSketch, setLinkedSketch] = useState<SketchDto | null>(null);
+  const [textPreview, setTextPreview] = useState<{
+    content: string;
+    language: TextDocumentLanguage;
+  } | null>(null);
 
   // Visual Annotations state
   const [annotations, setAnnotations] = useState<AnnotationDto[]>([]);
@@ -90,6 +100,10 @@ export function AssetInspector({
   } | null>(null);
   const [pinComment, setPinComment] = useState('');
 
+  const isTextDoc = Boolean(
+    asset && isEditableTextFile(asset.originalFilename, asset.mimeType),
+  );
+
   useEffect(() => {
     setNotesDraft(asset?.notes ?? '');
     setTagsDraft(asset?.tags.join(', ') ?? '');
@@ -99,6 +113,7 @@ export function AssetInspector({
     setPendingPin(null);
     setPinComment('');
     setLinkedSketch(null);
+    setTextPreview(null);
 
     if (asset?.id && asset.type === 'image') {
       let active = true;
@@ -114,8 +129,23 @@ export function AssetInspector({
         active = false;
       };
     }
+
+    if (asset?.id && isEditableTextFile(asset.originalFilename, asset.mimeType)) {
+      let active = true;
+      void api
+        .getAssetTextContent(asset.id)
+        .then((res) => {
+          if (active) setTextPreview({ content: res.content, language: res.language });
+        })
+        .catch(() => {
+          if (active) setTextPreview(null);
+        });
+      return () => {
+        active = false;
+      };
+    }
     return undefined;
-  }, [asset?.id, asset?.type]);
+  }, [asset?.id, asset?.type, asset?.updatedAt, asset?.originalFilename, asset?.mimeType]);
 
   useEffect(() => {
     if (!asset?.id) {
@@ -234,9 +264,23 @@ export function AssetInspector({
               />
             )}
             {asset.type === 'document' && (
-              <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 12.5 }}>
-                {asset.originalFilename}
-              </div>
+              textPreview ? (
+                <div
+                  className="inspector-text-preview-box"
+                  onDoubleClick={() => onOpenTextEditor?.(asset)}
+                  title="Double-cliquer pour ouvrir l'éditeur enrichi"
+                >
+                  <TextDocumentPreview
+                    content={textPreview.content}
+                    language={textPreview.language}
+                    compact
+                  />
+                </div>
+              ) : (
+                <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 12.5 }}>
+                  {asset.originalFilename}
+                </div>
+              )
             )}
 
             {/* Existing visual pins */}
@@ -281,6 +325,16 @@ export function AssetInspector({
 
         <div className="preview-controls">
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+            {isTextDoc && onOpenTextEditor && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => onOpenTextEditor(asset)}
+                title="Lire et éditer ce fichier texte dans l'éditeur enrichi"
+              >
+                <FileText size={12} /> Éditer le document
+              </button>
+            )}
             {(asset.type === 'image' || asset.type === 'video') && (
               <button
                 type="button"

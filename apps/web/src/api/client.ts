@@ -989,4 +989,54 @@ export const api = {
       { method: 'DELETE' },
     );
   },
+
+  // --- Text Document Reading, Editing & Creation (.md, .txt, .log, .json, etc.) ---
+
+  async getAssetTextContent(assetId: string): Promise<{
+    asset: AssetDto;
+    content: string;
+    sizeBytes: number;
+    language: 'markdown' | 'log' | 'json' | 'subtitles' | 'yaml' | 'code' | 'plaintext';
+    isExternalReference: boolean;
+    updatedAt: string;
+  }> {
+    return apiFetch(`/api/assets/${encodeURIComponent(assetId)}/content`);
+  },
+
+  async updateAssetTextContent(
+    assetId: string,
+    payload: {
+      content: string;
+      saveMode?: 'in_place' | 'new_version';
+      title?: string;
+    },
+  ): Promise<{ asset: AssetDto; savedMode: 'in_place' | 'new_version' }> {
+    return apiFetch(`/api/assets/${encodeURIComponent(assetId)}/content`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async createTextDocument(
+    projectId: string,
+    payload: {
+      filename: string;
+      content: string;
+      title?: string;
+      folderPath?: string;
+      tags?: string[];
+      notes?: string;
+    },
+  ): Promise<AssetDto> {
+    const res = await apiFetch<{ asset: AssetDto }>(
+      `/api/projects/${encodeURIComponent(projectId)}/documents`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      },
+    );
+    return res.asset;
+  },
 };

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
+### Added
+- **Éditeur enrichi & lecteur de fichiers texte dans l'interface (`TextDocumentEditorModal`, `TextDocumentPreview`, `text-document-utils.ts`)** :
+  - Prise en charge de tous les fichiers texte usuels : `.md`, `.markdown`, `.txt`, `.log`, `.json`, `.yaml`/`.yml`, `.toml`, `.ini`, `.srt`, `.vtt`, `.lrc`, `.csv`, `.xml`, `.html`, `.css`, `.js`/`.ts`, `.py`, `.sh`, `.sql`, `.fountain`, `.prompt`, etc.
+  - **Éditeur enrichi complet** : barre de mise en forme Markdown (`H1/H2/H3`, gras, italique, barré, code inline/bloc, listes, checklists `- [ ]`, citations, tableaux GFM, liens, séparateurs), bascule **Éditer / Split (édition + aperçu enrichi côte à côte) / Lecture**, numéros de lignes synchronisés, **Rechercher & Remplacer (`Ctrl+F`)**, formatage & validation JSON en 1 clic, **visionneuse `.log` colorée par niveau** (`ERROR`, `WARN`, `INFO`, `DEBUG`) avec filtres cliquables, Word Wrap, statistiques live (lignes, mots, caractères, taille UTF-8) et sauvegarde **`Ctrl/Cmd+S`** sur place ou en **nouvelle version (`v2`)** (avec protection automatique des fichiers externes `ingest://` en lecture seule).
+  - **Intégration Médias, Inspecteur & Lightbox** : filtre **`Docs`** dans la barre Médias, bouton **« Nouveau texte »** (et commande `Cmd/Ctrl+K`) pour créer un document directement dans le dossier courant, aperçu enrichi directement dans `AssetInspector` et `MediaLightbox`, et ouverture instantanée au double-clic sur un document texte.
+  - **Endpoints REST & Outils MCP** : `GET/PUT /api/assets/:id/content`, `POST /api/projects/:id/documents`, ainsi que les outils MCP `read_text_asset` et `save_text_asset` pour Claude Code.
+
 ## [0.6.0] - 2026-11-27
 
 ### Added

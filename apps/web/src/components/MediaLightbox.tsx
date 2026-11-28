@@ -6,23 +6,31 @@ import {
   Download,
   FileText,
   Music,
+  Pencil,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type { AssetDto } from '@videostudio/shared';
+import {
+  isEditableTextFile,
+  type AssetDto,
+  type TextDocumentLanguage,
+} from '@videostudio/shared';
+import { api } from '../api/client';
 import {
   formatBytes,
   formatDuration,
   QUALITY_TIER_LABELS,
   STATUS_LABELS,
 } from '../utils/format';
+import { TextDocumentPreview } from './TextDocumentEditor';
 
 interface MediaLightboxProps {
   asset: AssetDto;
   assets: AssetDto[];
   onClose: () => void;
   onNavigate: (asset: AssetDto) => void;
+  onOpenTextEditor?: (asset: AssetDto) => void;
   onCopyText: (text: string, label?: string) => void;
 }
 
@@ -31,11 +39,18 @@ export function MediaLightbox({
   assets,
   onClose,
   onNavigate,
+  onOpenTextEditor,
   onCopyText,
 }: MediaLightboxProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [useOriginal, setUseOriginal] = useState(true);
   const [zoomed, setZoomed] = useState(false);
+  const [textDoc, setTextDoc] = useState<{
+    content: string;
+    language: TextDocumentLanguage;
+  } | null>(null);
+
+  const isTextAsset = isEditableTextFile(asset.originalFilename, asset.mimeType);
 
   const currentIdx = assets.findIndex((a) => a.id === asset.id);
   const prevAsset = currentIdx > 0 ? assets[currentIdx - 1] ?? null : null;
@@ -45,7 +60,23 @@ export function MediaLightbox({
   useEffect(() => {
     setZoomed(false);
     setUseOriginal(asset.type === 'image');
-  }, [asset.id, asset.type]);
+    setTextDoc(null);
+    if (isEditableTextFile(asset.originalFilename, asset.mimeType)) {
+      let active = true;
+      void api
+        .getAssetTextContent(asset.id)
+        .then((res) => {
+          if (active) setTextDoc({ content: res.content, language: res.language });
+        })
+        .catch(() => {
+          if (active) setTextDoc(null);
+        });
+      return () => {
+        active = false;
+      };
+    }
+    return undefined;
+  }, [asset.id, asset.type, asset.originalFilename, asset.mimeType]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -107,6 +138,15 @@ export function MediaLightbox({
               <span className="lightbox-counter">
                 {currentIdx + 1} / {assets.length}
               </span>
+            )}
+            {isTextAsset && onOpenTextEditor && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => onOpenTextEditor(asset)}
+              >
+                <Pencil size={13} /> Éditer
+              </button>
             )}
             {asset.type === 'image' && (
               <button
@@ -212,13 +252,19 @@ export function MediaLightbox({
           )}
 
           {asset.type === 'document' && (
-            <div className="lightbox-audio-box">
-              <FileText size={42} color="var(--text-secondary)" />
-              <div style={{ fontWeight: 600 }}>{asset.originalFilename}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                {formatBytes(asset.fileSize)}
+            textDoc ? (
+              <div className="lightbox-text-doc-box">
+                <TextDocumentPreview content={textDoc.content} language={textDoc.language} />
               </div>
-            </div>
+            ) : (
+              <div className="lightbox-audio-box">
+                <FileText size={42} color="var(--text-secondary)" />
+                <div style={{ fontWeight: 600 }}>{asset.originalFilename}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {formatBytes(asset.fileSize)}
+                </div>
+              </div>
+            )
           )}
 
           {nextAsset && (
