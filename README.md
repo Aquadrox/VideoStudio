@@ -1,6 +1,6 @@
 # VideoStudio — Studio Vidéo Assisté par IA & Claude Code
 
-[![Version](https://img.shields.io/badge/version-0.8.1-e5a038?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-0.8.2-e5a038?style=flat-square)](#)
 [![Stack](https://img.shields.io/badge/stack-React%20%7C%20Fastify%20%7C%20PostgreSQL%20%7C%20MCP-1e293b?style=flat-square)](#architecture)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Blue%2FGreen-10b981?style=flat-square)](#mises-à-jour-sans-interruption-bluegreen)
 
