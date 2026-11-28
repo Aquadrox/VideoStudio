@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   Copy,
+  FilePlus2,
   FileText,
   Film,
   GitCompare,
+  LayoutGrid,
+  PenTool,
   Plus,
   Save,
   Trash2,
@@ -11,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   computeLineDiff,
+  sortSketchesForBoard,
   type AssetDto,
   type BibleEntityDto,
   type BibleEntityType,
@@ -18,6 +22,7 @@ import {
   type ProjectScriptDto,
   type SceneDto,
   type ShotStatus,
+  type SketchDto,
 } from '@videostudio/shared';
 import { api } from '../api/client';
 import { formatRelativeTime } from '../utils/format';
@@ -26,6 +31,10 @@ interface PreprodPanelProps {
   project: ProjectDto | null;
   assets: AssetDto[];
   refreshSignal: number;
+  initialSubTab?: 'script' | 'bible' | 'storyboard';
+  onOpenSketchBoard?: () => void;
+  onEditSketch?: (sketchId: string) => void;
+  onDrawSketchForShot?: (shot: { id: string; title: string; durationSec: number }) => void;
   onCopyText: (text: string, label?: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -49,10 +58,14 @@ export function PreprodPanel({
   project,
   assets,
   refreshSignal,
+  initialSubTab,
+  onOpenSketchBoard,
+  onEditSketch,
+  onDrawSketchForShot,
   onCopyText,
   onNotify,
 }: PreprodPanelProps) {
-  const [subTab, setSubTab] = useState<'script' | 'bible' | 'storyboard'>('script');
+  const [subTab, setSubTab] = useState<'script' | 'bible' | 'storyboard'>(initialSubTab ?? 'script');
 
   // Script state
   const [script, setScript] = useState<ProjectScriptDto | null>(null);
@@ -70,6 +83,7 @@ export function PreprodPanel({
 
   // Storyboard state
   const [scenes, setScenes] = useState<SceneDto[]>([]);
+  const [sketches, setSketches] = useState<SketchDto[]>([]);
   const [newSceneTitle, setNewSceneTitle] = useState('');
   const [newSceneSummary, setNewSceneSummary] = useState('');
   const [addingShotSceneId, setAddingShotSceneId] = useState<string | null>(null);
@@ -78,22 +92,37 @@ export function PreprodPanel({
   const [shotDuration, setShotDuration] = useState(4);
   const [shotPrompt, setShotPrompt] = useState('');
 
+  useEffect(() => {
+    if (initialSubTab) setSubTab(initialSubTab);
+  }, [initialSubTab]);
+
   const loadAll = async () => {
     if (!project) return;
-    const [sc, bib, sb] = await Promise.all([
+    const [sc, bib, sb, sk] = await Promise.all([
       api.getProjectScript(project.id),
       api.listBibleEntities(project.id),
       api.getStoryboard(project.id),
+      api.listSketches(project.id),
     ]);
     setScript(sc);
     setScriptContent(sc.content);
     setEntities(bib);
     setScenes(sb);
+    setSketches(sk);
   };
 
   useEffect(() => {
     void loadAll().catch(() => undefined);
   }, [project?.id, refreshSignal]);
+
+  const boardSketchCount = useMemo(() => sortSketchesForBoard(sketches).length, [sketches]);
+  const sketchByShotId = useMemo(() => {
+    const map = new Map<string, SketchDto>();
+    for (const sk of sketches) {
+      if (sk.shotId && !map.has(sk.shotId)) map.set(sk.shotId, sk);
+    }
+    return map;
+  }, [sketches]);
 
   const diffLines = useMemo(() => {
     if (!script || diffVersionNum === null) return null;
@@ -427,6 +456,43 @@ export function PreprodPanel({
             </div>
           </form>
 
+          {/* Bridge Banner to Side-by-Side Sketch Storyboard */}
+          <div className="panel-card sketch-preprod-bridge-bar">
+            <div>
+              <strong>Storyboard Croquis & Feuilles blanches</strong>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                {boardSketchCount} case(s) sur ta planche croquis · Chaque croquis lié à un plan
+                met automatiquement à jour sa vignette ici.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {onOpenSketchBoard && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={onOpenSketchBoard}
+                >
+                  <LayoutGrid size={13} /> Ouvrir le Storyboard Croquis ({boardSketchCount})
+                </button>
+              )}
+              {onDrawSketchForShot && (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() =>
+                    onDrawSketchForShot({
+                      id: '',
+                      title: `Croquis #${String(sketches.length + 1).padStart(2, '0')}`,
+                      durationSec: 3,
+                    })
+                  }
+                >
+                  <FilePlus2 size={13} /> + Dessiner feuille blanche
+                </button>
+              )}
+            </div>
+          </div>
+
           {scenes.map((scene) => (
             <div key={scene.id} className="panel-card">
               <div className="rule-row-top">
@@ -521,8 +587,15 @@ export function PreprodPanel({
                 {scene.shots.map((shot) => {
                   const keyframe = shot.keyframeAssetId ? assetById.get(shot.keyframeAssetId) : null;
                   const video = shot.videoAssetId ? assetById.get(shot.videoAssetId) : null;
+                  const linkedSketch = sketchByShotId.get(shot.id) ?? null;
                   const previewUrl =
-                    video?.urls.thumbnail ?? keyframe?.urls.thumbnail ?? keyframe?.urls.proxy;
+                    video?.urls.thumbnail ??
+                    keyframe?.urls.thumbnail ??
+                    keyframe?.urls.proxy ??
+                    keyframe?.urls.original ??
+                    linkedSketch?.assetThumbnailUrl ??
+                    linkedSketch?.assetUrl ??
+                    null;
 
                   return (
                     <div key={shot.id} className="rule-row">
@@ -559,6 +632,72 @@ export function PreprodPanel({
                           {shot.prompt}
                         </div>
                       )}
+
+                      {/* Sketch / Drawing Link Controls for this Shot */}
+                      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {linkedSketch && onEditSketch ? (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-xs"
+                            onClick={() => onEditSketch(linkedSketch.id)}
+                            title={`Ouvrir et retoucher le croquis « ${linkedSketch.title} »`}
+                          >
+                            <PenTool size={11} /> Éditer le croquis
+                          </button>
+                        ) : (
+                          <>
+                            {onDrawSketchForShot && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-xs"
+                                onClick={() =>
+                                  onDrawSketchForShot({
+                                    id: shot.id,
+                                    title: shot.title,
+                                    durationSec: shot.durationSec,
+                                  })
+                                }
+                                title="Dessiner un croquis sur feuille blanche lié à ce plan"
+                              >
+                                <PenTool size={11} /> Dessiner un croquis
+                              </button>
+                            )}
+                            {sketches.length > 0 && (
+                              <select
+                                className="select-compact"
+                                value=""
+                                onChange={async (e) => {
+                                  const skId = e.target.value;
+                                  if (!skId) return;
+                                  try {
+                                    await api.linkSketchToShot(skId, {
+                                      shotId: shot.id,
+                                      syncKeyframe: true,
+                                      syncBrief: true,
+                                    });
+                                    await loadAll();
+                                    onNotify(`Croquis attaché au plan ${shot.handle}`);
+                                  } catch (err) {
+                                    onNotify(
+                                      err instanceof Error ? err.message : 'Erreur liaison croquis',
+                                    );
+                                  }
+                                }}
+                                title="Attacher un croquis existant à ce plan"
+                                style={{ maxWidth: 145 }}
+                              >
+                                <option value="">+ Lier croquis…</option>
+                                {sketches.map((sk) => (
+                                  <option key={sk.id} value={sk.id}>
+                                    {sk.title}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </>
+                        )}
+                      </div>
+
                       <div className="rule-row-top">
                         <select
                           className="select-compact"

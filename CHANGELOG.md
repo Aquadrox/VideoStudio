@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-27
+
+### Added
+- **Storyboard de Croquis (planche côte à côte), Feuille blanche & liaison bidirectionnelle Pré-prod (`SketchStoryboardView`, `SketchStudioPanel`, `PreprodPanel`, `SketchService`)** :
+  - **Mode Feuille blanche à main levée** : bouton rapide **« Feuille blanche »** + sélecteur de papier (`Sombre`, `Feuille blanche`, `Papier crème`, `Ardoise`), encre noire/graphite/couleurs storyboard, et adaptation automatique du contraste des guides (`Grille`, `Règle des tiers`, `Safe Frames`) sur fond clair.
+  - **Planche Storyboard Croquis (côte à côte)** : nouvelle vue intégrée à l'atelier permettant de placer ses croquis et plans les uns à côté des autres (`2 / 3 / 4 colonnes` ou **bande horizontale**), réordonner par **Drag & Drop** ou flèches `←`/`→`, éditer la **légende/action** et la **durée (s)** sous chaque case, et **exporter toute la planche en PNG** (téléchargement local ou stockage direct dans Médias `/storyboard`).
+  - **Liaison bidirectionnelle totale avec le Storyboard Pré-prod** :
+    - Depuis l'atelier ou la planche : lier un croquis à un **Plan Pré-prod** existant, créer directement un nouveau plan dans Pré-prod, ou **« Tout pousser vers Pré-prod »** en 1 clic (toute retouche ultérieure du croquis met automatiquement à jour la vignette `keyframeAssetId` du plan lié !).
+    - Depuis le **Storyboard dans Pré-prod** : bandeau d'accès rapide au Storyboard Croquis + boutons **« Dessiner un croquis »** (ouvre une feuille blanche pré-liée au plan), **« Éditer le croquis »**, et sélecteur **« + Lier croquis… »** sur chaque plan.
+  - **API REST & MCP** : `PATCH /api/projects/:id/sketches/board-order`, `POST /api/sketches/:id/link-shot`, `POST /api/projects/:id/sketches/sync-to-storyboard`, colonnes additives `in_sketch_board` / `board_order` / `duration_sec` / `caption`, et nouvel outil MCP **`get_sketch_storyboard`** pour Claude Code.
+
 ## [0.7.0] - 2026-11-27
 
 ### Added

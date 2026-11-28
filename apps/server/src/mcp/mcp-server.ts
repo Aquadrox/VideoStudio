@@ -23,6 +23,7 @@ import {
   SketchModeSchema,
   SketchSceneDataSchema,
   SkillScopeSchema,
+  sortSketchesForBoard,
   StorageModeSchema,
   SyncAgentTaskItemSchema,
   TimelineQualityModeSchema,
@@ -61,7 +62,7 @@ export function createVideoStudioMcpServer(
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.7.0',
+    version: '0.8.0',
   });
 
   // --- MCP Resources ---
@@ -2535,6 +2536,48 @@ export function createVideoStudioMcpServer(
             content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
           };
         }
+      },
+    );
+
+    server.tool(
+      'get_sketch_storyboard',
+      'Get the ordered side-by-side Sketch Storyboard sequence for a project (order, title, durationSec, caption, linked Pre-prod shotHandle, PNG @ref, and AI Director Brief for each panel).',
+      {
+        project: z.string().min(1).describe('Project slug or UUID'),
+      },
+      async ({ project }) => {
+        const list = await sketches.listSketches(project);
+        const board = sortSketchesForBoard(list);
+        const totalDurationSec = board.reduce((sum, s) => sum + (s.durationSec || 0), 0);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  panelCount: board.length,
+                  totalDurationSec,
+                  panels: board.map((s, idx) => ({
+                    panelNumber: idx + 1,
+                    id: s.id,
+                    title: s.title,
+                    mode: s.mode,
+                    durationSec: s.durationSec,
+                    caption: s.caption,
+                    assetRef: s.assetRef,
+                    assetHandle: s.assetHandle,
+                    shotId: s.shotId,
+                    shotHandle: s.shotHandle,
+                    shotTitle: s.shotTitle,
+                    aiDirectorBrief: s.aiDirectorBrief,
+                  })),
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
       },
     );
   }

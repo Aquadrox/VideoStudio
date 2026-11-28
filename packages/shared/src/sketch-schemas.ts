@@ -201,6 +201,10 @@ export const SaveSketchSchema = z.object({
   aspectRatio: z.string().min(3).max(20).default('16:9'),
   folderPath: z.string().max(240).optional(),
   shotId: z.string().uuid().nullable().optional(),
+  inSketchBoard: z.boolean().optional(),
+  boardOrder: z.number().int().min(0).max(10000).optional(),
+  durationSec: z.number().min(0.5).max(300).optional(),
+  caption: z.string().max(1000).optional(),
   sceneData: SketchSceneDataSchema,
   aiDirectorBrief: z.string().max(8000).optional(),
   /** Optional rendered PNG (data URL or raw base64) to store/update in Media */
@@ -211,6 +215,41 @@ export const SaveSketchSchema = z.object({
 });
 export type SaveSketchInput = z.infer<typeof SaveSketchSchema>;
 
+export const ReorderSketchBoardItemSchema = z.object({
+  sketchId: z.string().uuid(),
+  inSketchBoard: z.boolean().optional(),
+  boardOrder: z.number().int().min(0).max(10000).optional(),
+  durationSec: z.number().min(0.5).max(300).optional(),
+  caption: z.string().max(1000).optional(),
+});
+export type ReorderSketchBoardItem = z.infer<typeof ReorderSketchBoardItemSchema>;
+
+export const ReorderSketchBoardSchema = z.object({
+  items: z.array(ReorderSketchBoardItemSchema).min(1).max(200),
+});
+export type ReorderSketchBoardInput = z.infer<typeof ReorderSketchBoardSchema>;
+
+export const LinkSketchToShotSchema = z.object({
+  /** Existing Pre-prod Shot UUID to link (or null to unlink) */
+  shotId: z.string().uuid().nullable().optional(),
+  /** Alternatively create a new Shot inside this Scene UUID and link it */
+  createShotInSceneId: z.string().uuid().optional(),
+  /** Optional title for an auto-created scene if project has no scene yet */
+  newSceneTitle: z.string().min(1).max(160).optional(),
+  /** Attach the sketch PNG asset as the shot keyframe */
+  syncKeyframe: z.boolean().default(true),
+  /** Copy caption / AI Director Brief into the shot visual description & prompt when empty */
+  syncBrief: z.boolean().default(true),
+});
+export type LinkSketchToShotInput = z.infer<typeof LinkSketchToShotSchema>;
+
+export const SyncSketchBoardToStoryboardSchema = z.object({
+  sceneId: z.string().uuid().optional(),
+  newSceneTitle: z.string().min(1).max(160).default('Storyboard Croquis'),
+  sketchIds: z.array(z.string().uuid()).max(200).optional(),
+});
+export type SyncSketchBoardToStoryboardInput = z.infer<typeof SyncSketchBoardToStoryboardSchema>;
+
 export interface SketchDto {
   id: string;
   projectId: string;
@@ -220,6 +259,13 @@ export interface SketchDto {
   assetUrl: string | null;
   assetThumbnailUrl: string | null;
   shotId: string | null;
+  shotTitle: string | null;
+  shotHandle: string | null;
+  sceneId: string | null;
+  inSketchBoard: boolean;
+  boardOrder: number;
+  durationSec: number;
+  caption: string;
   title: string;
   mode: SketchMode;
   aspectRatio: string;
@@ -229,3 +275,4 @@ export interface SketchDto {
   createdAt: string;
   updatedAt: string;
 }
+

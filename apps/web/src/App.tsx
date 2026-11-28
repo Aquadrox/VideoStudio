@@ -83,7 +83,7 @@ import { OpsPanel } from './components/OpsPanel';
 import { PreprodPanel } from './components/PreprodPanel';
 import { ProjectGitPanel } from './components/ProjectGitPanel';
 import { RulesPanel } from './components/RulesPanel';
-import { SketchStudioPanel } from './components/SketchStudioPanel';
+import { SketchStudioPanel, type SketchLaunchRequest } from './components/SketchStudioPanel';
 import { SkillsPanel } from './components/SkillsPanel';
 import { TextDocumentEditorModal } from './components/TextDocumentEditor';
 import { TimelinePanel } from './components/TimelinePanel';
@@ -188,8 +188,10 @@ export function App() {
   const [stage3Refresh, setStage3Refresh] = useState(0);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [sketchRefresh, setSketchRefresh] = useState(0);
-  const [sketchToEditId, setSketchToEditId] = useState<string | null>(null);
-  const [sketchUnderlayAsset, setSketchUnderlayAsset] = useState<AssetDto | null>(null);
+  const [sketchLaunchRequest, setSketchLaunchRequest] = useState<SketchLaunchRequest | null>(null);
+  const [preprodSubTab, setPreprodSubTab] = useState<'script' | 'bible' | 'storyboard' | undefined>(
+    undefined,
+  );
   const [textEditorTarget, setTextEditorTarget] = useState<
     { mode: 'edit'; asset: AssetDto } | { mode: 'create' } | null
   >(null);
@@ -1088,6 +1090,28 @@ export function App() {
               keywords: ['markdown', 'md', 'txt', 'log', 'notes', 'document', 'texte', 'editeur'],
               onSelect: () => setTextEditorTarget({ mode: 'create' }),
             },
+            {
+              id: 'action-new-whiteboard',
+              category: 'action' as const,
+              label: 'Dessiner un croquis sur feuille blanche',
+              subtitle: 'Ouvre une feuille blanche à main levée prête pour le storyboard',
+              keywords: ['croquis', 'feuille', 'blanche', 'dessin', 'storyboard', 'sketch'],
+              onSelect: () => {
+                setSketchLaunchRequest({ kind: 'whiteboard', nonce: Date.now() });
+                setWorkspaceMode('sketch');
+              },
+            },
+            {
+              id: 'action-open-sketch-board',
+              category: 'action' as const,
+              label: 'Ouvrir le Storyboard Croquis (planche côte à côte)',
+              subtitle: 'Séquencer les croquis et les synchroniser avec Pré-prod',
+              keywords: ['storyboard', 'croquis', 'planche', 'board', 'sketch'],
+              onSelect: () => {
+                setSketchLaunchRequest({ kind: 'board', nonce: Date.now() });
+                setWorkspaceMode('sketch');
+              },
+            },
           ]
         : []),
       {
@@ -1224,7 +1248,7 @@ export function App() {
                 </div>
                 <div>
                   <div className="brand-title">VideoStudio</div>
-                  <div className="brand-sub">v0.7.0 · MCP · LAN</div>
+                  <div className="brand-sub">v0.8.0 · MCP · LAN</div>
                 </div>
               </div>
 
@@ -2278,10 +2302,19 @@ export function App() {
             project={activeProject}
             assets={assets}
             folders={folders}
-            initialSketchId={sketchToEditId}
-            initialUnderlayAsset={sketchUnderlayAsset}
-            refreshSignal={sketchRefresh}
+            launchRequest={sketchLaunchRequest}
+            refreshSignal={sketchRefresh + stage3Refresh}
             onSketchSaved={() => {
+              if (activeProjectId) {
+                void api.listAssets(activeProjectId).then(setAssets);
+                void refreshFolders(activeProjectId);
+              }
+            }}
+            onOpenPreprodStoryboard={() => {
+              setPreprodSubTab('storyboard');
+              setWorkspaceMode('preprod');
+            }}
+            onAssetsMutated={() => {
               if (activeProjectId) {
                 void api.listAssets(activeProjectId).then(setAssets);
                 void refreshFolders(activeProjectId);
@@ -2296,7 +2329,26 @@ export function App() {
           <PreprodPanel
             project={activeProject}
             assets={assets}
-            refreshSignal={stage3Refresh}
+            refreshSignal={stage3Refresh + sketchRefresh}
+            initialSubTab={preprodSubTab}
+            onOpenSketchBoard={() => {
+              setSketchLaunchRequest({ kind: 'board', nonce: Date.now() });
+              setWorkspaceMode('sketch');
+            }}
+            onEditSketch={(sketchId) => {
+              setSketchLaunchRequest({ kind: 'edit_sketch', sketchId, nonce: Date.now() });
+              setWorkspaceMode('sketch');
+            }}
+            onDrawSketchForShot={(shot) => {
+              setSketchLaunchRequest({
+                kind: 'whiteboard',
+                shotId: shot.id || undefined,
+                title: shot.title,
+                durationSec: shot.durationSec,
+                nonce: Date.now(),
+              });
+              setWorkspaceMode('sketch');
+            }}
             onCopyText={handleCopyText}
             onNotify={showToast}
           />
@@ -2486,13 +2538,15 @@ export function App() {
                     setWorkspaceMode('compare');
                   }}
                   onEditSketch={(sketchId) => {
-                    setSketchUnderlayAsset(null);
-                    setSketchToEditId(sketchId);
+                    setSketchLaunchRequest({ kind: 'edit_sketch', sketchId, nonce: Date.now() });
                     setWorkspaceMode('sketch');
                   }}
                   onSketchOverAsset={(targetAsset) => {
-                    setSketchToEditId(null);
-                    setSketchUnderlayAsset(targetAsset);
+                    setSketchLaunchRequest({
+                      kind: 'underlay',
+                      asset: targetAsset,
+                      nonce: Date.now(),
+                    });
                     setWorkspaceMode('sketch');
                   }}
                   onOpenTextEditor={(targetAsset) =>

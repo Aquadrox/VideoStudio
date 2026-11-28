@@ -1,8 +1,10 @@
 import {
   CAMERA_MOVEMENT_LABELS,
   getFocalLengthFovDeg,
+  isLightCanvasColor,
   type SketchCameraNode,
   type SketchCharacterNode,
+  type SketchDto,
   type SketchLightNode,
   type SketchMotionArrow,
   type SketchPropNode,
@@ -111,11 +113,15 @@ function drawGuides(
   h: number,
   scale: number,
 ): void {
+  const lightPaper = isLightCanvasColor(scene.backgroundColor);
+
   for (const guide of scene.guides) {
     ctx.save();
     if (guide === 'grid') {
       const step = Math.round(Math.min(w, h) / 14);
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(15, 23, 42, 0.09)'
+        : 'rgba(148, 163, 184, 0.08)';
       ctx.lineWidth = 1;
       for (let x = step; x < w; x += step) {
         ctx.beginPath();
@@ -130,7 +136,9 @@ function drawGuides(
         ctx.stroke();
       }
       // Subtle center axes
-      ctx.strokeStyle = 'rgba(229, 160, 56, 0.14)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(217, 119, 6, 0.25)'
+        : 'rgba(229, 160, 56, 0.14)';
       ctx.setLineDash([4 * scale, 6 * scale]);
       ctx.beginPath();
       ctx.moveTo(w / 2, 0);
@@ -139,7 +147,9 @@ function drawGuides(
       ctx.lineTo(w, h / 2);
       ctx.stroke();
     } else if (guide === 'thirds') {
-      ctx.strokeStyle = 'rgba(229, 160, 56, 0.32)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(100, 116, 139, 0.32)'
+        : 'rgba(229, 160, 56, 0.32)';
       ctx.lineWidth = Math.max(1, 1.1 * scale);
       ctx.setLineDash([5 * scale, 5 * scale]);
       for (const f of [1 / 3, 2 / 3]) {
@@ -151,7 +161,9 @@ function drawGuides(
         ctx.stroke();
       }
       ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(229, 160, 56, 0.65)';
+      ctx.fillStyle = lightPaper
+        ? 'rgba(217, 119, 6, 0.7)'
+        : 'rgba(229, 160, 56, 0.65)';
       for (const fx of [1 / 3, 2 / 3]) {
         for (const fy of [1 / 3, 2 / 3]) {
           ctx.beginPath();
@@ -160,7 +172,9 @@ function drawGuides(
         }
       }
     } else if (guide === 'golden') {
-      ctx.strokeStyle = 'rgba(96, 165, 250, 0.25)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(37, 99, 235, 0.26)'
+        : 'rgba(96, 165, 250, 0.25)';
       ctx.lineWidth = Math.max(1, 1 * scale);
       ctx.beginPath();
       ctx.moveTo(0, 0);
@@ -178,7 +192,9 @@ function drawGuides(
         ctx.stroke();
       }
     } else if (guide === 'crosshair') {
-      ctx.strokeStyle = 'rgba(248, 250, 252, 0.28)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(15, 23, 42, 0.34)'
+        : 'rgba(248, 250, 252, 0.28)';
       ctx.lineWidth = Math.max(1, 1.2 * scale);
       const arm = 22 * scale;
       ctx.beginPath();
@@ -192,11 +208,15 @@ function drawGuides(
       ctx.stroke();
     } else if (guide === 'safe_frames') {
       // 90% Action Safe + 80% Title Safe
-      ctx.strokeStyle = 'rgba(52, 211, 153, 0.36)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(5, 150, 105, 0.45)'
+        : 'rgba(52, 211, 153, 0.36)';
       ctx.lineWidth = Math.max(1, 1 * scale);
       ctx.setLineDash([6 * scale, 4 * scale]);
       ctx.strokeRect(w * 0.05, h * 0.05, w * 0.9, h * 0.9);
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.36)';
+      ctx.strokeStyle = lightPaper
+        ? 'rgba(217, 119, 6, 0.45)'
+        : 'rgba(251, 191, 36, 0.36)';
       ctx.strokeRect(w * 0.1, h * 0.1, w * 0.8, h * 0.8);
     }
     ctx.restore();
@@ -1057,3 +1077,142 @@ export function eraseStrokesNearPoint(
     (s) => !s.points.some((pt) => Math.hypot(pt.x - nx, pt.y - ny) <= radiusNorm),
   );
 }
+
+/**
+ * Renders a complete side-by-side Sketch Storyboard contact sheet onto an offscreen canvas
+ * and returns a PNG data URL (suitable for local download or saving into Media /storyboard).
+ */
+export async function renderSketchStoryboardSheetPng(
+  sketches: SketchDto[],
+  opts: {
+    projectName: string;
+    columns?: number;
+    paperTheme?: 'dark' | 'light';
+  },
+): Promise<string> {
+  if (sketches.length === 0) {
+    throw new Error('Aucun croquis sur la planche à exporter');
+  }
+
+  const cols = Math.max(1, Math.min(opts.columns ?? 3, sketches.length));
+  const rows = Math.ceil(sketches.length / cols);
+  const pad = 36;
+  const gap = 28;
+  const headerH = 74;
+  const cardW = 540;
+  const frameH = 304; // 16:9
+  const captionH = 88;
+  const cardH = frameH + captionH;
+
+  const totalW = pad * 2 + cols * cardW + (cols - 1) * gap;
+  const totalH = headerH + pad + rows * cardH + (rows - 1) * gap + pad;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = totalW;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D indisponible');
+
+  const isLight = opts.paperTheme === 'light';
+  ctx.fillStyle = isLight ? '#f8fafc' : '#0f131c';
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  // Header Banner
+  const totalSec = sketches.reduce((acc, s) => acc + (s.durationSec || 0), 0);
+  ctx.fillStyle = isLight ? '#0f172a' : '#f8fafc';
+  ctx.font = '700 24px Inter, system-ui, sans-serif';
+  ctx.fillText(`STORYBOARD CROQUIS — ${opts.projectName}`, pad, 44);
+  ctx.fillStyle = isLight ? '#475569' : '#94a3b8';
+  ctx.font = '500 14px Inter, system-ui, sans-serif';
+  ctx.fillText(
+    `${sketches.length} case(s) · Durée estimée : ${Math.round(totalSec * 10) / 10}s`,
+    pad,
+    66,
+  );
+
+  // Preload linked images if available (fallback to direct sceneData vector render)
+  const loadImg = (url: string) =>
+    new Promise<HTMLImageElement | null>((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+
+  for (let i = 0; i < sketches.length; i += 1) {
+    const sk = sketches[i]!;
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = pad + col * (cardW + gap);
+    const y = headerH + pad + row * (cardH + gap);
+
+    // Card shell
+    drawRoundedRect(ctx, x, y, cardW, cardH, 10);
+    ctx.fillStyle = isLight ? '#ffffff' : '#171c28';
+    ctx.fill();
+    ctx.strokeStyle = isLight ? '#cbd5e1' : '#2d3748';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Frame thumbnail (prefer vector render of sceneData so it's always crisp even without saved asset)
+    const frameCanvas = document.createElement('canvas');
+    frameCanvas.width = cardW;
+    frameCanvas.height = frameH;
+    const fCtx = frameCanvas.getContext('2d');
+    if (fCtx) {
+      let underlayImg: HTMLImageElement | null = null;
+      if (sk.sceneData.underlay?.assetId) {
+        underlayImg = await loadImg(
+          `/api/assets/${encodeURIComponent(sk.sceneData.underlay.assetId)}/file`,
+        );
+      }
+      renderSketchToCanvas(fCtx, sk.sceneData, {
+        width: cardW,
+        height: frameH,
+        underlayImage: underlayImg,
+        forExport: true,
+        includeGuidesInExport: false,
+      });
+      ctx.save();
+      drawRoundedRect(ctx, x + 1, y + 1, cardW - 2, frameH - 2, 9);
+      ctx.clip();
+      ctx.drawImage(frameCanvas, x, y);
+      ctx.restore();
+    }
+
+    // Panel number pill
+    const numLabel = `#${String(i + 1).padStart(2, '0')}`;
+    drawPillLabel(ctx, numLabel, x + 32, y + 22, '#e5a038', 1.1);
+    if (sk.shotHandle) {
+      drawPillLabel(ctx, sk.shotHandle, x + cardW - 58, y + 22, '#34d399', 0.95);
+    }
+
+    // Caption area
+    const textX = x + 14;
+    const titleY = y + frameH + 24;
+    ctx.fillStyle = isLight ? '#0f172a' : '#f1f5f9';
+    ctx.font = '700 15px Inter, system-ui, sans-serif';
+    const titleTrim = sk.title.length > 42 ? `${sk.title.slice(0, 41)}…` : sk.title;
+    ctx.fillText(titleTrim, textX, titleY);
+
+    ctx.fillStyle = '#e5a038';
+    ctx.font = '600 13px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${sk.durationSec}s`, x + cardW - 14, titleY);
+    ctx.textAlign = 'left';
+
+    ctx.fillStyle = isLight ? '#475569' : '#94a3b8';
+    ctx.font = '400 12.5px Inter, system-ui, sans-serif';
+    const captionText = sk.caption.trim() || (sk.mode === 'scene_plan' ? 'Plan de scène' : 'Croquis');
+    const line1 = captionText.slice(0, 74);
+    const line2 = captionText.length > 74 ? `${captionText.slice(74, 144)}${captionText.length > 144 ? '…' : ''}` : '';
+    ctx.fillText(line1, textX, titleY + 22);
+    if (line2) {
+      ctx.fillText(line2, textX, titleY + 40);
+    }
+  }
+
+  return canvas.toDataURL('image/png');
+}
+

@@ -59,6 +59,17 @@ export function getCanvasDimensionsForAspectRatio(aspectRatio: string): {
   return { width: 1920, height: 1080 };
 }
 
+export function isLightCanvasColor(hex: string | undefined): boolean {
+  if (!hex) return false;
+  const clean = hex.trim().replace(/^#/, '');
+  if (!/^[0-9a-f]{6}$/i.test(clean)) return false;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  // Relative perceptual luminance
+  return 0.299 * r + 0.587 * g + 0.114 * b > 165;
+}
+
 export function createEmptySketchScene(mode: SketchMode = 'scene_plan'): SketchSceneData {
   return {
     version: 1,
@@ -77,6 +88,26 @@ export function createEmptySketchScene(mode: SketchMode = 'scene_plan'): SketchS
     shapes: [],
     notes: [],
   };
+}
+
+export function createWhiteboardSketchScene(paperColor = '#ffffff'): SketchSceneData {
+  return {
+    ...createEmptySketchScene('storyboard_sketch'),
+    backgroundColor: paperColor,
+    guides: ['thirds'],
+  };
+}
+
+export function sortSketchesForBoard<
+  T extends { inSketchBoard: boolean; boardOrder: number; createdAt: string },
+>(sketches: T[]): T[] {
+  return sketches
+    .filter((s) => s.inSketchBoard)
+    .slice()
+    .sort((a, b) => {
+      if (a.boardOrder !== b.boardOrder) return a.boardOrder - b.boardOrder;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
 }
 
 function describeScreenZone(x: number, y: number, mode: SketchMode): string {
@@ -255,6 +286,7 @@ export function generateAiDirectorBrief(
 }
 
 export type ScenePlanTemplateId =
+  | 'blank_whiteboard'
   | 'blank_plan'
   | 'blank_sketch'
   | 'dialogue_180'
@@ -270,6 +302,12 @@ export interface ScenePlanTemplateMeta {
 }
 
 export const SCENE_PLAN_TEMPLATES: ScenePlanTemplateMeta[] = [
+  {
+    id: 'blank_whiteboard',
+    label: 'Feuille blanche (Dessin à main levée)',
+    mode: 'storyboard_sketch',
+    description: 'Feuille blanche papier prête pour dessiner un croquis au crayon noir.',
+  },
   {
     id: 'dialogue_180',
     label: 'Dialogue Champ / Contre-champ (180°)',
@@ -296,15 +334,15 @@ export const SCENE_PLAN_TEMPLATES: ScenePlanTemplateMeta[] = [
   },
   {
     id: 'blank_plan',
-    label: 'Plan de scène vierge',
+    label: 'Plan de scène vierge (Fond sombre)',
     mode: 'scene_plan',
     description: 'Vue du dessus avec grille 2D prête pour le blocking.',
   },
   {
     id: 'blank_sketch',
-    label: 'Croquis Storyboard vierge',
+    label: 'Croquis Storyboard (Fond sombre)',
     mode: 'storyboard_sketch',
-    description: 'Cadre vierge avec règle des tiers pour dessiner à main levée.',
+    description: 'Cadre sombre avec règle des tiers pour dessiner à main levée.',
   },
 ];
 
@@ -315,6 +353,9 @@ export function buildScenePlanTemplate(
   const charA = characterNames[0] || 'Personnage A';
   const charB = characterNames[1] || 'Personnage B';
 
+  if (templateId === 'blank_whiteboard') {
+    return { mode: 'storyboard_sketch', scene: createWhiteboardSketchScene('#ffffff') };
+  }
   if (templateId === 'blank_plan') {
     return { mode: 'scene_plan', scene: createEmptySketchScene('scene_plan') };
   }
