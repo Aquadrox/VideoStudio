@@ -529,6 +529,7 @@ export function App() {
           setStage3Refresh((n) => n + 1);
           break;
         case 'timeline.changed':
+        case 'effects.changed':
           setTimelineRefresh((n) => n + 1);
           break;
         case 'sketches.changed':
@@ -1385,7 +1386,7 @@ export function App() {
                 </div>
                 <div>
                   <div className="brand-title">VideoStudio</div>
-                  <div className="brand-sub">v0.10.0 · MCP · LAN</div>
+                  <div className="brand-sub">v0.11.0 · MCP · LAN</div>
                 </div>
               </div>
 

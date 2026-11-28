@@ -1,10 +1,10 @@
 # VideoStudio — Studio Vidéo Assisté par IA & Claude Code
 
-[![Version](https://img.shields.io/badge/version-0.10.0-e5a038?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-0.11.0-e5a038?style=flat-square)](#)
 [![Stack](https://img.shields.io/badge/stack-React%20%7C%20Fastify%20%7C%20PostgreSQL%20%7C%20MCP-1e293b?style=flat-square)](#architecture)
 [![Deploy](https://img.shields.io/badge/deploy-Docker%20Blue%2FGreen-10b981?style=flat-square)](#mises-à-jour-sans-interruption-bluegreen)
 
-**VideoStudio** est un studio de production vidéo auto-hébergé sur serveur local (Linux / Debian + Docker Compose), conçu pour collaborer en temps réel avec **Claude Code** via **MCP (Model Context Protocol)** et **ComfyUI** — de la conception (scénario, bible, croquis à main levée, plans de scène, storyboard) jusqu'au montage multi-pistes NLE et à la publication YouTube.
+**VideoStudio** est un studio de production vidéo auto-hébergé sur serveur local (Linux / Debian + Docker Compose), conçu pour collaborer en temps réel avec **Claude Code** via **MCP (Model Context Protocol)** et **ComfyUI** — de la conception (scénario, bible, croquis à main levée, plans de scène, storyboard) jusqu'au montage multi-pistes NLE façon CapCut et à la publication YouTube.
 
 ![VideoStudio — Médiathèque DAM, Suivi Claude Code Temps Réel & Inspecteur ComfyUI](docs/screenshots/01-medias-dam.png)
 
@@ -45,8 +45,8 @@
 | **Croquis & Plans de Scène** | **Plan de scène (Blocking vue du dessus)** : caméras avec cône FOV par focale (`24–135mm`), personnages liés à la Bible, lumières (`Key/Fill/Rim/Practical`), décors, trajectoires & ligne des 180°, **Brief IA auto-généré**. **Mode Croquis / Feuille blanche** : dessin main levée, guides cinéma, underlay image, ouverture **plein cadre**, zoom fluide (`35%–300%` + `Ctrl+Molette`) et mode **Plein écran (`F`)**. |
 | **Storyboard Croquis & Pré-prod** | Planche côte à côte (`2/3/4 colonnes` ou bande horizontale), réordonnancement Drag & Drop, export planche PNG, **liaison bidirectionnelle** avec le **Storyboard Pré-prod** (Scénario, Bible, Découpage technique) et **Export Dossier de Production PDF / Pitch Deck** en 1 clic. |
 | **Éditeur texte enrichi** | Lecture et édition in-app de `.md`, `.txt`, `.log`, `.json`, `.yaml`, `.srt`, `.lrc`, `.fountain`, etc. Mode **Split** (Markdown + aperçu enrichi), colorisation de logs par niveau (`ERROR`/`WARN`/`INFO`), formatage JSON, `Ctrl+F` Rechercher/Remplacer et versionnage `v1 → v2`. |
-| **Timeline NLE v2 & Sous-titres** | Montage multi-pistes avec **Drag & Trim direct**, aimantation **Snap**, **waveforms audio**, marqueurs **BPM & paroles Suno/LRC**, aperçu live des transitions (`Crossfade` / `Fondu au noir`), **piste Sous-titres SRT/VTT** avec incrustation live + **Burn-in FFmpeg**, bascule **Draft ↔ HQ** et exports **OTIO / FCPXML / EDL**. |
-| **Collaboration Claude Code (MCP)** | **86 outils MCP** (`Streamable HTTP`), **Mémoire IA & Playbooks par type de projet** (apprentissage continu & auto-rappel au lancement), suivi en direct des tâches & **ETA temps réel** par WebSocket, retours horodatés sur frames vidéo, règles hiérarchiques, prompts/workflows & sync `SKILL.md`. |
+| **Studio Montage CapCut & Effets IA** | Montage multi-couches (**Vidéo `V`**, **Overlay/PiP `OV`**, **Textes `T`**, **Audio multi-pistes `A`**, **Sous-titres `S`**), **Razor Split (`S`)**, Undo/Redo, vitesse `0.25×–4×`, Transform/Keyframes, étalonnage couleur, **11 transitions FFmpeg `xfade`**, **bibliothèque d'effets custom créés par l'IA ou l'utilisateur**, **rendu FFmpeg incrémental ultra-rapide (cache SHA-256)**, bascule **Draft ↔ HQ** et exports **OTIO / FCPXML / EDL**. |
+| **Collaboration Claude Code (MCP)** | **95 outils MCP** (`Streamable HTTP`), montage chirurgical & création d'effets custom IA, **Mémoire IA & Playbooks par type de projet** (apprentissage continu & auto-rappel au lancement), suivi en direct des tâches & **ETA temps réel** par WebSocket, retours horodatés, règles hiérarchiques & sync `SKILL.md`. |
 | **Publication & Exploitation** | Préparation **YouTube Ready Pack** (miniatures, chapitres, titres, description) + upload brouillon OAuth2 optionnel, **Watch Folders ComfyUI**, webhooks HMAC, monitoring disque/nettoyage, backups automatiques & déploiement **Blue/Green zéro coupure**. |
 
 ---
@@ -261,7 +261,7 @@ L'onglet **Pré-prod** regroupe toute la préparation créative du film :
 
 ## 🤖 Catalogue des outils MCP (Claude Code)
 
-VideoStudio expose **86 outils MCP** et des ressources `studio://` en `Streamable HTTP` sur `/mcp` :
+VideoStudio expose **95 outils MCP** et des ressources `studio://` en `Streamable HTTP` sur `/mcp` :
 
 | Domaine | Exemples d'outils MCP |
 | --- | --- |
@@ -271,7 +271,7 @@ VideoStudio expose **86 outils MCP** et des ressources `studio://` en `Streamabl
 | **Croquis & Plans de Scène** | `list_sketches`, `get_sketch`, `save_sketch`, `get_sketch_storyboard` |
 | **Documents & Dossiers PDF** | `read_text_asset`, `save_text_asset`, `export_production_dossier` |
 | **Pré-prod & Audio** | `get_script`, `update_script`, `upsert_bible_entity`, `get_storyboard`, `upsert_storyboard`, `create_scene`, `create_shot`, `update_shot`, `compose_prompt`, `upsert_audio_track`, `import_suno_alignment` |
-| **Timeline, Sous-titres & Exports** | `get_timeline`, `save_timeline`, `build_animatic_from_storyboard`, `switch_timeline_quality`, `render_timeline` *(avec `burnSubtitles`)*, `export_nle`, `get_subtitles`, `save_subtitles`, `export_subtitles_srt` |
+| **Montage CapCut, Effets IA & Sous-titres** | `get_timeline`, `save_timeline`, `add_timeline_clip`, `update_timeline_clip`, `split_timeline_clip`, `delete_timeline_clip`, `clear_timeline_render_cache`, `list_video_effects`, `create_video_effect`, `update_video_effect`, `delete_video_effect` *(+ `studio://effects`)*, `build_animatic_from_storyboard`, `switch_timeline_quality`, `render_timeline` *(cache incrémental SHA-256 + `burnSubtitles`)*, `export_nle`, `get_subtitles`, `save_subtitles`, `export_subtitles_srt` |
 | **Règles, Prompts & Skills** | `get_active_rules`, `list_rulebooks`, `set_project_rule_override`, `add_project_custom_rule`, `list_prompt_templates`, `render_prompt_with_rules`, `list_comfy_workflows`, `list_skills`, `read_skill`, `save_skill` |
 | **Retours, Git, YouTube & Ops** | `get_pending_feedback`, `resolve_feedback`, `update_youtube_package`, `prepare_youtube_pack`, `upload_youtube_draft`, `init_project_git_repo`, `sync_and_commit_project_repo`, `get_system_health_and_disk`, `create_backup`, `list_watch_folders`, `create_watch_folder`, `list_webhooks` |
 

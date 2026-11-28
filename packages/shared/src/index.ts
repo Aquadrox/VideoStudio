@@ -17,3 +17,5 @@ export * from './timeline-v2-utils.js';
 export * from './dossier-utils.js';
 export * from './knowledge-schemas.js';
 export * from './knowledge-utils.js';
+export * from './effects-schemas.js';
+export * from './effects-utils.js';

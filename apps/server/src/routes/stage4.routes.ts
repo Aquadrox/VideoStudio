@@ -1,8 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  AddTimelineClipInputSchema,
   NleExportFormatSchema,
+  PatchTimelineClipInputSchema,
   SaveProjectSubtitlesInputSchema,
+  SplitTimelineClipInputSchema,
   StartTimelineRenderInputSchema,
   TimelineQualityModeSchema,
   UpsertTimelineInputSchema,
@@ -29,6 +32,99 @@ export function registerStage4Routes(app: FastifyInstance, stage4: Stage4Service
       const timeline = await stage4.saveTimeline(request.params.projectIdOrSlug, parsed.data, 'user');
       if (!timeline) return reply.code(404).send({ error: 'Project not found' });
       return { timeline };
+    },
+  );
+
+  // --- Surgical CapCut Clip Editing Endpoints ---
+
+  app.post<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/timeline/clips',
+    async (request, reply) => {
+      const parsed = AddTimelineClipInputSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      try {
+        const res = await stage4.addClip(request.params.projectIdOrSlug, parsed.data, 'user');
+        if (!res) return reply.code(404).send({ error: 'Project not found' });
+        return reply.code(201).send(res);
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Failed to add clip',
+        });
+      }
+    },
+  );
+
+  app.patch<{ Params: { projectIdOrSlug: string; clipId: string } }>(
+    '/api/projects/:projectIdOrSlug/timeline/clips/:clipId',
+    async (request, reply) => {
+      const parsed = PatchTimelineClipInputSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      try {
+        const res = await stage4.updateClip(
+          request.params.projectIdOrSlug,
+          request.params.clipId,
+          parsed.data,
+          'user',
+        );
+        if (!res) return reply.code(404).send({ error: 'Clip or project not found' });
+        return res;
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Failed to update clip',
+        });
+      }
+    },
+  );
+
+  app.post<{ Params: { projectIdOrSlug: string; clipId: string } }>(
+    '/api/projects/:projectIdOrSlug/timeline/clips/:clipId/split',
+    async (request, reply) => {
+      const parsed = SplitTimelineClipInputSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Validation error', details: parsed.error.flatten() });
+      }
+      try {
+        const res = await stage4.splitClip(
+          request.params.projectIdOrSlug,
+          request.params.clipId,
+          parsed.data.splitAtSec,
+          'user',
+        );
+        if (!res) return reply.code(404).send({ error: 'Clip or project not found' });
+        return res;
+      } catch (err) {
+        return reply.code(400).send({
+          error: err instanceof Error ? err.message : 'Failed to split clip',
+        });
+      }
+    },
+  );
+
+  app.delete<{
+    Params: { projectIdOrSlug: string; clipId: string };
+    Querystring: { ripple?: string };
+  }>('/api/projects/:projectIdOrSlug/timeline/clips/:clipId', async (request, reply) => {
+    const ripple = request.query.ripple === '1' || request.query.ripple === 'true';
+    const res = await stage4.deleteClip(
+      request.params.projectIdOrSlug,
+      request.params.clipId,
+      { ripple },
+      'user',
+    );
+    if (!res) return reply.code(404).send({ error: 'Clip or project not found' });
+    return res;
+  });
+
+  app.delete<{ Params: { projectIdOrSlug: string } }>(
+    '/api/projects/:projectIdOrSlug/timeline/render-cache',
+    async (request, reply) => {
+      const res = await stage4.clearRenderCache(request.params.projectIdOrSlug);
+      if (!res) return reply.code(404).send({ error: 'Project not found' });
+      return res;
     },
   );
 

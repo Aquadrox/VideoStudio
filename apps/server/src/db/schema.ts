@@ -15,7 +15,14 @@ import {
 import type {
   AudioMarker,
   ChecklistItem,
+  ClipAppliedEffect,
+  ClipColorAdjust,
+  ClipKeyframe,
+  ClipTextOverlay,
+  ClipTransform,
   ComfyMetadata,
+  EffectParamSpec,
+  EffectParamValue,
   PromptVariable,
   QcCheckValue,
   SketchSceneData,
@@ -567,10 +574,24 @@ export const timelineClips = pgTable(
     durationSec: doublePrecision('duration_sec').notNull().default(4),
     inSec: doublePrecision('in_sec').notNull().default(0),
     outSec: doublePrecision('out_sec'),
+    speed: doublePrecision('speed').notNull().default(1),
     transition: text('transition').notNull().default('cut'),
     transitionDurationSec: doublePrecision('transition_duration_sec').notNull().default(0),
     volume: doublePrecision('volume').notNull().default(1),
+    fadeInSec: doublePrecision('fade_in_sec').notNull().default(0),
+    fadeOutSec: doublePrecision('fade_out_sec').notNull().default(0),
     muted: boolean('muted').notNull().default(false),
+    transform: jsonb('transform')
+      .$type<ClipTransform>()
+      .notNull()
+      .default({ x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, flipH: false, flipV: false }),
+    colorAdjust: jsonb('color_adjust')
+      .$type<ClipColorAdjust>()
+      .notNull()
+      .default({ brightness: 0, contrast: 1, saturation: 1, gamma: 1, blur: 0, vignette: 0, sharpen: 0 }),
+    effects: jsonb('effects').$type<ClipAppliedEffect[]>().notNull().default([]),
+    keyframes: jsonb('keyframes').$type<ClipKeyframe[]>().notNull().default([]),
+    textOverlay: jsonb('text_overlay').$type<ClipTextOverlay | null>(),
     notes: text('notes').notNull().default(''),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -752,6 +773,34 @@ export const studioKnowledge = pgTable(
   (table) => [
     index('studio_knowledge_kind_idx').on(table.kind),
     index('studio_knowledge_updated_idx').on(table.updatedAt),
+  ],
+);
+
+// --- Stage 9 (v0.11.0): Custom AI & User Video/Audio Effects Catalog ---
+
+export const videoEffects = pgTable(
+  'video_effects',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    slug: text('slug').notNull().unique(),
+    name: text('name').notNull(),
+    category: text('category').notNull().default('video_fx'),
+    description: text('description').notNull().default(''),
+    icon: text('icon').notNull().default('✨'),
+    ffmpegFilterTemplate: text('ffmpeg_filter_template').notNull(),
+    cssPreviewFilter: text('css_preview_filter').notNull().default(''),
+    paramsSchema: jsonb('params_schema').$type<EffectParamSpec[]>().notNull().default([]),
+    defaultParams: jsonb('default_params').$type<Record<string, EffectParamValue>>().notNull().default({}),
+    createdBy: text('created_by').notNull().default('user'),
+    isBuiltin: boolean('is_builtin').notNull().default(false),
+    tags: jsonb('tags').$type<string[]>().notNull().default([]),
+    usageCount: integer('usage_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('video_effects_category_idx').on(table.category),
+    index('video_effects_updated_idx').on(table.updatedAt),
   ],
 );
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-28
+
+### Added
+- **Studio de Montage Vidéo complet façon CapCut (`TimelinePanel`, `EffectsLibraryDrawer`, `CapCutClipInspector`, `Stage4Service`, `effects-schemas.ts`, `effects-utils.ts`)** :
+  - **Architecture Studio 3 colonnes** : panneau **Ressources CapCut** à gauche (`Médias`, `Effets`, `Transitions`, `Textes`), **Moniteur de compositing temps réel** au centre (rendu live CSS des effets, étalonnage couleur, transform/zoom/flip, images-clés animées, couches **Overlay / PiP** et **Textes** + sous-titres) et **Inspecteur de clip à onglets** à droite (`Base / Transform / Vitesse`, `Couleur`, `FX`, `Audio`, `Texte`, `Keyframes`).
+  - **Multi-pistes avancé & outils CapCut** : pistes **Vidéo (`V1+`)**, **Overlay / PiP (`OV`)**, **Textes (`T`)**, **Audio multi-pistes (`A1+`)** et **Sous-titres (`S1`)** ; outil **Couper / Razor (`S`)** au curseur (préservant `inSec` et keyframes), **Dupliquer**, **Ripple Delete**, **Undo / Redo (`Ctrl+Z` / `Ctrl+Shift+Z`)**, **Vitesse (`0.25×`–`4×`)**, **Transform** (échelle, X/Y, rotation, opacité, miroirs H/V), **Étalonnage couleur** (luminosité, contraste, saturation, gamma, flou, netteté, vignette), **11 transitions FFmpeg `xfade`** (`crossfade`, `fade_black`, `fade_white`, `wipe_left/right`, `slide_left/right`, `zoom_in`, `circle_open`, `dissolve`), **Keyframes** et **mixage multi-pistes audio** (`adelay` + `afade` + `volume` + `amix`).
+- **Bibliothèque d'Effets Custom Partagée IA & Utilisateur (`video_effects`, `EffectsService`, `effects.routes.ts`)** :
+  - **12 effets pro intégrés** (Cinéma Teal & Orange, Film Noir N&B, VHS Rétro & Grain, Glitch RGB, Rêve / Soft Glow, Vignette Dramatique, Golden Hour Doré, Néon Cyberpunk, Netteté Pro 4K, Flash Impact, Voix Radio, Écho Cathédrale).
+  - **Création d'effets par l'IA (MCP) ET par l'utilisateur (Studio Effets UI)** : chaque effet définit une chaîne FFmpeg paramétrable sécurisée (`{{param}}`, validée contre toute injection/accès fichier), un aperçu CSS temps réel et des sliders configurables, immédiatement utilisable sur tous les projets par l'IA comme par l'utilisateur.
+- **Rendu FFmpeg Incrémental ultra-rapide par Cache de Segments SHA-256** :
+  - Chaque segment vidéo est mis en cache par empreinte SHA-256 dans `.render-cache/<projectId>/` : lors d'une retouche chirurgicale d'un seul extrait (ou d'un changement d'effet), **seul le clip modifié est ré-encodé**, les autres sont réutilisés instantanément (`⚡ X/Y segments du cache`), avec nettoyage LRU automatique et bouton **Vider cache**.
+- **9 nouveaux outils MCP (total : 95 outils)** + ressource `studio://effects` : **`add_timeline_clip`**, **`update_timeline_clip`**, **`split_timeline_clip`**, **`delete_timeline_clip`**, **`clear_timeline_render_cache`**, **`list_video_effects`**, **`create_video_effect`**, **`update_video_effect`**, **`delete_video_effect`** (plus `bypassCache` sur `render_timeline`).
+- Ajout de `fonts-dejavu-core` dans `docker/Dockerfile.server` pour un rendu `drawtext` et sous-titres burn-in garanti en production.
+
 ## [0.10.0] - 2026-11-28
 
 ### Added

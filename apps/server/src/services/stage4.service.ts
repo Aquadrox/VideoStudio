@@ -1,11 +1,18 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, gt } from 'drizzle-orm';
 import {
   buildAssetHandle,
+  buildClipSegmentCacheSignature,
+  buildDrawtextFilter,
   buildFfmpegSubtitleFilter,
+  compileClipAudioFilterChain,
+  compileClipVideoFilterChain,
+  computeXfadeChainPlan,
   cuesFromLrc,
+  DEFAULT_CLIP_COLOR_ADJUST,
+  DEFAULT_CLIP_TRANSFORM,
   DEFAULT_SUBTITLE_STYLE,
   generateEdl,
   generateFcpxml,
@@ -14,10 +21,18 @@ import {
   parseSrtOrVtt,
   serializeSrt,
   serializeVtt,
+  splitClipAtTime,
   type Actor,
+  type AddTimelineClipInput,
   type AssetDto,
   type AssetType,
+  type ClipAppliedEffect,
+  type ClipColorAdjust,
+  type ClipKeyframe,
+  type ClipTextOverlay,
+  type ClipTransform,
   type NleExportFormat,
+  type PatchTimelineClipInput,
   type ProjectSubtitlesDto,
   type QualityTier,
   type SaveProjectSubtitlesInput,
@@ -33,6 +48,7 @@ import {
   type TimelineTrackType,
   type TimelineTransition,
   type UpsertTimelineInput,
+  type VideoEffectDto,
 } from '@videostudio/shared';
 import type { AppConfig } from '../config.js';
 import type { Database } from '../db/index.js';
@@ -45,6 +61,7 @@ import {
   timelineTracks,
 } from '../db/schema.js';
 import { resolveSafePath } from '../utils/security.js';
+import type { EffectsService } from './effects.service.js';
 import type { MediaService } from './media.service.js';
 import type { RealtimeHub } from './realtime.service.js';
 import type { Stage3Service } from './stage3.service.js';
@@ -52,9 +69,11 @@ import type { StudioService } from './studio.service.js';
 import type { WebhookService } from './webhook.service.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_CACHED_SEGMENTS_PER_PROJECT = 200;
 
 export class Stage4Service {
   private webhookService?: WebhookService;
+  private effectsService?: EffectsService;
 
   constructor(
     private readonly config: AppConfig,
@@ -67,6 +86,59 @@ export class Stage4Service {
 
   setWebhookService(webhookService: WebhookService): void {
     this.webhookService = webhookService;
+  }
+
+  setEffectsService(effectsService: EffectsService): void {
+    this.effectsService = effectsService;
+  }
+
+  private normalizeTransform(raw?: Partial<ClipTransform> | null): ClipTransform {
+    return {
+      ...DEFAULT_CLIP_TRANSFORM,
+      ...(raw ?? {}),
+    };
+  }
+
+  private normalizeColorAdjust(raw?: Partial<ClipColorAdjust> | null): ClipColorAdjust {
+    return {
+      ...DEFAULT_CLIP_COLOR_ADJUST,
+      ...(raw ?? {}),
+    };
+  }
+
+  private toClipDto(
+    c: typeof timelineClips.$inferSelect,
+    asset?: typeof assets.$inferSelect,
+  ): TimelineClipDto {
+    return {
+      id: c.id,
+      trackId: c.trackId,
+      projectId: c.projectId,
+      assetId: c.assetId,
+      assetRef: asset ? buildAssetHandle(asset.refCode) : null,
+      assetTitle: asset ? asset.title : null,
+      assetType: asset ? (asset.type as AssetType) : null,
+      assetQualityTier: asset ? (asset.qualityTier as QualityTier) : null,
+      title: c.title,
+      startSec: c.startSec,
+      durationSec: c.durationSec,
+      inSec: c.inSec,
+      outSec: c.outSec,
+      speed: c.speed ?? 1,
+      transition: c.transition as TimelineTransition,
+      transitionDurationSec: c.transitionDurationSec,
+      volume: c.volume,
+      fadeInSec: c.fadeInSec ?? 0,
+      fadeOutSec: c.fadeOutSec ?? 0,
+      muted: c.muted,
+      transform: this.normalizeTransform(c.transform),
+      colorAdjust: this.normalizeColorAdjust(c.colorAdjust),
+      effects: Array.isArray(c.effects) ? (c.effects as ClipAppliedEffect[]) : [],
+      keyframes: Array.isArray(c.keyframes) ? (c.keyframes as ClipKeyframe[]) : [],
+      textOverlay: (c.textOverlay as ClipTextOverlay | null | undefined) ?? null,
+      notes: c.notes,
+      sortOrder: c.sortOrder,
+    };
   }
 
   async getTimeline(projectIdOrSlug: string): Promise<TimelineDto | null> {
@@ -115,28 +187,7 @@ export class Stage4Service {
       const clipEnd = c.startSec + c.durationSec;
       if (clipEnd > maxEndSec) maxEndSec = clipEnd;
 
-      const dto: TimelineClipDto = {
-        id: c.id,
-        trackId: c.trackId,
-        projectId: c.projectId,
-        assetId: c.assetId,
-        assetRef: asset ? buildAssetHandle(asset.refCode) : null,
-        assetTitle: asset ? asset.title : null,
-        assetType: asset ? (asset.type as AssetType) : null,
-        assetQualityTier: asset ? (asset.qualityTier as QualityTier) : null,
-        title: c.title,
-        startSec: c.startSec,
-        durationSec: c.durationSec,
-        inSec: c.inSec,
-        outSec: c.outSec,
-        transition: c.transition as TimelineTransition,
-        transitionDurationSec: c.transitionDurationSec,
-        volume: c.volume,
-        muted: c.muted,
-        notes: c.notes,
-        sortOrder: c.sortOrder,
-      };
-
+      const dto = this.toClipDto(c, asset);
       const list = clipsByTrack.get(c.trackId) ?? [];
       list.push(dto);
       clipsByTrack.set(c.trackId, list);
@@ -185,6 +236,22 @@ export class Stage4Service {
     };
   }
 
+  private async resolveClipAssetId(
+    projectSlug: string,
+    assetId?: string | null,
+    assetRef?: string | null,
+  ): Promise<string | null> {
+    let resolvedAssetId: string | null = assetId ?? null;
+    if (!resolvedAssetId && assetRef) {
+      const resolved = await this.studio.resolveReference(assetRef, projectSlug);
+      resolvedAssetId = resolved?.asset?.id ?? null;
+    }
+    if (resolvedAssetId && !UUID_REGEX.test(resolvedAssetId)) {
+      resolvedAssetId = null;
+    }
+    return resolvedAssetId;
+  }
+
   async saveTimeline(
     projectIdOrSlug: string,
     input: UpsertTimelineInput,
@@ -222,14 +289,7 @@ export class Stage4Service {
 
       for (let cIdx = 0; cIdx < tr.clips.length; cIdx += 1) {
         const cl = tr.clips[cIdx]!;
-        let resolvedAssetId: string | null = cl.assetId ?? null;
-        if (!resolvedAssetId && cl.assetRef) {
-          const resolved = await this.studio.resolveReference(cl.assetRef, project.slug);
-          resolvedAssetId = resolved?.asset?.id ?? null;
-        }
-        if (resolvedAssetId && !UUID_REGEX.test(resolvedAssetId)) {
-          resolvedAssetId = null;
-        }
+        const resolvedAssetId = await this.resolveClipAssetId(project.slug, cl.assetId, cl.assetRef);
 
         await this.db.insert(timelineClips).values({
           projectId: project.id,
@@ -240,10 +300,18 @@ export class Stage4Service {
           durationSec: cl.durationSec,
           inSec: cl.inSec,
           outSec: cl.outSec ?? null,
+          speed: cl.speed ?? 1,
           transition: cl.transition,
           transitionDurationSec: cl.transitionDurationSec,
           volume: cl.volume,
+          fadeInSec: cl.fadeInSec ?? 0,
+          fadeOutSec: cl.fadeOutSec ?? 0,
           muted: cl.muted,
+          transform: this.normalizeTransform(cl.transform),
+          colorAdjust: this.normalizeColorAdjust(cl.colorAdjust),
+          effects: cl.effects ?? [],
+          keyframes: cl.keyframes ?? [],
+          textOverlay: cl.textOverlay ?? null,
           notes: cl.notes,
           sortOrder: cIdx,
         });
@@ -270,6 +338,391 @@ export class Stage4Service {
     });
 
     return dto;
+  }
+
+  // ============================================================================
+  // Surgical CapCut Clip Editing Operations (Web UI + Claude MCP)
+  // ============================================================================
+
+  async addClip(
+    projectIdOrSlug: string,
+    input: AddTimelineClipInput,
+    actor: Actor = 'user',
+  ): Promise<{ timeline: TimelineDto; clip: TimelineClipDto } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const existingTracks = await this.db
+      .select()
+      .from(timelineTracks)
+      .where(eq(timelineTracks.projectId, project.id))
+      .orderBy(asc(timelineTracks.sortOrder), asc(timelineTracks.createdAt));
+
+    let targetTrack = input.trackId
+      ? existingTracks.find((t) => t.id === input.trackId)
+      : existingTracks.find((t) => t.trackType === input.trackType);
+
+    if (!targetTrack) {
+      const defaultLabels: Record<TimelineTrackType, string> = {
+        video: 'V1 · Vidéo Principale',
+        overlay: 'V2 · Overlay / PiP',
+        text: 'T1 · Titres & Textes',
+        effect: 'FX1 · Effets',
+        audio: 'A1 · Audio / Musique',
+      };
+      const [created] = await this.db
+        .insert(timelineTracks)
+        .values({
+          projectId: project.id,
+          trackType: input.trackType,
+          name: input.trackName || defaultLabels[input.trackType],
+          sortOrder: existingTracks.length,
+          muted: false,
+          locked: false,
+          volume: 1,
+        })
+        .returning();
+      targetTrack = created;
+    }
+
+    if (!targetTrack) throw new Error('Unable to resolve or create timeline track');
+
+    const trackClips = await this.db
+      .select()
+      .from(timelineClips)
+      .where(eq(timelineClips.trackId, targetTrack.id))
+      .orderBy(asc(timelineClips.startSec));
+
+    const autoStartSec = trackClips.reduce(
+      (maxEnd, c) => Math.max(maxEnd, c.startSec + c.durationSec),
+      0,
+    );
+    const startSec =
+      input.startSec !== undefined ? input.startSec : Math.round(autoStartSec * 1000) / 1000;
+
+    const resolvedAssetId = await this.resolveClipAssetId(project.slug, input.assetId, input.assetRef);
+
+    const [createdClip] = await this.db
+      .insert(timelineClips)
+      .values({
+        projectId: project.id,
+        trackId: targetTrack.id,
+        assetId: resolvedAssetId,
+        title: input.title,
+        startSec,
+        durationSec: input.durationSec,
+        inSec: input.inSec ?? 0,
+        outSec: input.outSec ?? null,
+        speed: input.speed ?? 1,
+        transition: input.transition ?? 'cut',
+        transitionDurationSec: input.transitionDurationSec ?? 0,
+        volume: input.volume ?? 1,
+        fadeInSec: input.fadeInSec ?? 0,
+        fadeOutSec: input.fadeOutSec ?? 0,
+        muted: input.muted ?? false,
+        transform: this.normalizeTransform(input.transform),
+        colorAdjust: this.normalizeColorAdjust(input.colorAdjust),
+        effects: input.effects ?? [],
+        keyframes: input.keyframes ?? [],
+        textOverlay: input.textOverlay ?? null,
+        notes: input.notes ?? '',
+        sortOrder: trackClips.length,
+      })
+      .returning();
+
+    if (!createdClip) throw new Error('Failed to create timeline clip');
+
+    const timeline = await this.getTimeline(project.id);
+    if (!timeline) return null;
+    const clipDto = timeline.tracks
+      .flatMap((t) => t.clips)
+      .find((c) => c.id === createdClip.id);
+    if (!clipDto) throw new Error('Created clip not found in timeline');
+
+    this.realtime.broadcast({
+      type: 'timeline.changed',
+      payload: { projectId: project.id },
+    });
+
+    await this.studio.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'timeline.clip_added',
+      summary: `Clip ajouté : "${clipDto.title}" sur ${targetTrack.name} (${clipDto.startSec.toFixed(1)}s · ${clipDto.durationSec.toFixed(1)}s)`,
+      entityType: 'project',
+      entityId: project.id,
+      entityRef: `@proj-${project.slug}`,
+    });
+
+    return { timeline, clip: clipDto };
+  }
+
+  async updateClip(
+    projectIdOrSlug: string,
+    clipId: string,
+    patch: PatchTimelineClipInput,
+    actor: Actor = 'user',
+  ): Promise<{ timeline: TimelineDto; clip: TimelineClipDto } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const [existing] = await this.db
+      .select()
+      .from(timelineClips)
+      .where(and(eq(timelineClips.id, clipId), eq(timelineClips.projectId, project.id)))
+      .limit(1);
+    if (!existing) return null;
+
+    let nextAssetId = existing.assetId;
+    if (patch.assetId !== undefined || patch.assetRef !== undefined) {
+      nextAssetId = await this.resolveClipAssetId(project.slug, patch.assetId, patch.assetRef);
+    }
+
+    const nextTransform = patch.transform
+      ? this.normalizeTransform({ ...existing.transform, ...patch.transform })
+      : this.normalizeTransform(existing.transform);
+
+    const nextColor = patch.colorAdjust
+      ? this.normalizeColorAdjust({ ...existing.colorAdjust, ...patch.colorAdjust })
+      : this.normalizeColorAdjust(existing.colorAdjust);
+
+    await this.db
+      .update(timelineClips)
+      .set({
+        trackId: patch.trackId ?? existing.trackId,
+        assetId: nextAssetId,
+        title: patch.title ?? existing.title,
+        startSec: patch.startSec ?? existing.startSec,
+        durationSec: patch.durationSec ?? existing.durationSec,
+        inSec: patch.inSec ?? existing.inSec,
+        outSec: patch.outSec !== undefined ? patch.outSec : existing.outSec,
+        speed: patch.speed ?? existing.speed,
+        transition: patch.transition ?? existing.transition,
+        transitionDurationSec: patch.transitionDurationSec ?? existing.transitionDurationSec,
+        volume: patch.volume ?? existing.volume,
+        fadeInSec: patch.fadeInSec ?? existing.fadeInSec,
+        fadeOutSec: patch.fadeOutSec ?? existing.fadeOutSec,
+        muted: patch.muted ?? existing.muted,
+        transform: nextTransform,
+        colorAdjust: nextColor,
+        effects: patch.effects ?? existing.effects,
+        keyframes: patch.keyframes ?? existing.keyframes,
+        textOverlay: patch.textOverlay !== undefined ? patch.textOverlay : existing.textOverlay,
+        notes: patch.notes ?? existing.notes,
+        updatedAt: new Date(),
+      })
+      .where(eq(timelineClips.id, existing.id));
+
+    const timeline = await this.getTimeline(project.id);
+    if (!timeline) return null;
+    const clipDto = timeline.tracks.flatMap((t) => t.clips).find((c) => c.id === existing.id);
+    if (!clipDto) return null;
+
+    this.realtime.broadcast({
+      type: 'timeline.changed',
+      payload: { projectId: project.id },
+    });
+
+    await this.studio.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'timeline.clip_updated',
+      summary: `Clip modifié : "${clipDto.title}" (${clipDto.startSec.toFixed(1)}s · ${clipDto.durationSec.toFixed(1)}s)`,
+      entityType: 'project',
+      entityId: project.id,
+      entityRef: `@proj-${project.slug}`,
+    });
+
+    return { timeline, clip: clipDto };
+  }
+
+  async splitClip(
+    projectIdOrSlug: string,
+    clipId: string,
+    splitAtSec: number,
+    actor: Actor = 'user',
+  ): Promise<{ timeline: TimelineDto; leftClip: TimelineClipDto; rightClip: TimelineClipDto } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const [existing] = await this.db
+      .select()
+      .from(timelineClips)
+      .where(and(eq(timelineClips.id, clipId), eq(timelineClips.projectId, project.id)))
+      .limit(1);
+    if (!existing) return null;
+
+    const split = splitClipAtTime(
+      {
+        title: existing.title,
+        startSec: existing.startSec,
+        durationSec: existing.durationSec,
+        inSec: existing.inSec,
+        outSec: existing.outSec,
+        speed: existing.speed ?? 1,
+        fadeInSec: existing.fadeInSec ?? 0,
+        fadeOutSec: existing.fadeOutSec ?? 0,
+        transition: existing.transition as TimelineTransition,
+        transitionDurationSec: existing.transitionDurationSec,
+        keyframes: Array.isArray(existing.keyframes) ? existing.keyframes : [],
+      },
+      splitAtSec,
+    );
+
+    if (!split) {
+      throw new Error(
+        `Impossible de couper à ${splitAtSec.toFixed(2)}s : la position doit être à l'intérieur du clip [${existing.startSec.toFixed(2)}s .. ${(existing.startSec + existing.durationSec).toFixed(2)}s] avec au moins 0.15s de marge.`,
+      );
+    }
+
+    await this.db
+      .update(timelineClips)
+      .set({
+        durationSec: split.left.durationSec,
+        outSec: split.left.outSec,
+        fadeOutSec: split.left.fadeOutSec,
+        keyframes: split.left.keyframes,
+        updatedAt: new Date(),
+      })
+      .where(eq(timelineClips.id, existing.id));
+
+    const [createdRight] = await this.db
+      .insert(timelineClips)
+      .values({
+        projectId: existing.projectId,
+        trackId: existing.trackId,
+        assetId: existing.assetId,
+        title: split.right.title,
+        startSec: split.right.startSec,
+        durationSec: split.right.durationSec,
+        inSec: split.right.inSec,
+        outSec: split.right.outSec,
+        speed: existing.speed ?? 1,
+        transition: split.right.transition,
+        transitionDurationSec: split.right.transitionDurationSec,
+        volume: existing.volume,
+        fadeInSec: 0,
+        fadeOutSec: existing.fadeOutSec ?? 0,
+        muted: existing.muted,
+        transform: existing.transform,
+        colorAdjust: existing.colorAdjust,
+        effects: existing.effects,
+        keyframes: split.right.keyframes,
+        textOverlay: existing.textOverlay,
+        notes: existing.notes,
+        sortOrder: existing.sortOrder + 1,
+      })
+      .returning();
+
+    if (!createdRight) throw new Error('Failed to create split right clip');
+
+    const timeline = await this.getTimeline(project.id);
+    if (!timeline) return null;
+    const allClips = timeline.tracks.flatMap((t) => t.clips);
+    const leftClip = allClips.find((c) => c.id === existing.id);
+    const rightClip = allClips.find((c) => c.id === createdRight.id);
+    if (!leftClip || !rightClip) return null;
+
+    this.realtime.broadcast({
+      type: 'timeline.changed',
+      payload: { projectId: project.id },
+    });
+
+    await this.studio.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'timeline.clip_split',
+      summary: `Clip coupé à ${splitAtSec.toFixed(2)}s : "${existing.title}"`,
+      entityType: 'project',
+      entityId: project.id,
+      entityRef: `@proj-${project.slug}`,
+    });
+
+    return { timeline, leftClip, rightClip };
+  }
+
+  async deleteClip(
+    projectIdOrSlug: string,
+    clipId: string,
+    options: { ripple?: boolean } = {},
+    actor: Actor = 'user',
+  ): Promise<{ timeline: TimelineDto; deletedClipId: string } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const [existing] = await this.db
+      .select()
+      .from(timelineClips)
+      .where(and(eq(timelineClips.id, clipId), eq(timelineClips.projectId, project.id)))
+      .limit(1);
+    if (!existing) return null;
+
+    await this.db.delete(timelineClips).where(eq(timelineClips.id, existing.id));
+
+    if (options.ripple) {
+      const trailing = await this.db
+        .select()
+        .from(timelineClips)
+        .where(
+          and(
+            eq(timelineClips.trackId, existing.trackId),
+            gt(timelineClips.startSec, existing.startSec),
+          ),
+        );
+      for (const tClip of trailing) {
+        const nextStart = Math.max(
+          0,
+          Math.round((tClip.startSec - existing.durationSec) * 1000) / 1000,
+        );
+        await this.db
+          .update(timelineClips)
+          .set({ startSec: nextStart, updatedAt: new Date() })
+          .where(eq(timelineClips.id, tClip.id));
+      }
+    }
+
+    const timeline = await this.getTimeline(project.id);
+    if (!timeline) return null;
+
+    this.realtime.broadcast({
+      type: 'timeline.changed',
+      payload: { projectId: project.id },
+    });
+
+    await this.studio.logActivity({
+      projectId: project.id,
+      projectSlug: project.slug,
+      actor,
+      action: 'timeline.clip_deleted',
+      summary: `Clip supprimé : "${existing.title}"${options.ripple ? ' (ripple)' : ''}`,
+      entityType: 'project',
+      entityId: project.id,
+      entityRef: `@proj-${project.slug}`,
+    });
+
+    return { timeline, deletedClipId: existing.id };
+  }
+
+  async clearRenderCache(projectIdOrSlug: string): Promise<{ clearedFiles: number } | null> {
+    const project = await this.studio.getProjectByIdOrSlug(projectIdOrSlug);
+    if (!project) return null;
+
+    const cacheDir = resolveSafePath(
+      this.config.dataDir,
+      path.join('.render-cache', project.id),
+    );
+    let clearedFiles = 0;
+    try {
+      const files = await fs.readdir(cacheDir);
+      clearedFiles = files.length;
+      await fs.rm(cacheDir, { recursive: true, force: true });
+    } catch {
+      // No cache directory yet
+    }
+    return { clearedFiles };
   }
 
   async buildTimelineFromStoryboard(
@@ -299,9 +752,12 @@ export class Stage4Service {
           durationSec,
           inSec: 0,
           outSec: null,
+          speed: 1,
           transition: 'cut',
           transitionDurationSec: 0,
           volume: 1,
+          fadeInSec: 0,
+          fadeOutSec: 0,
           muted: false,
           notes: shot.cameraMovement || shot.visualDescription.slice(0, 140),
         });
@@ -342,9 +798,12 @@ export class Stage4Service {
             durationSec: Math.min(Math.max(audioDur, 1), Math.max(totalVisualSec, audioDur)),
             inSec: 0,
             outSec: null,
+            speed: 1,
             transition: 'cut',
             transitionDurationSec: 0,
             volume: 1,
+            fadeInSec: 0,
+            fadeOutSec: 0,
             muted: false,
             notes: musicTrack.bpm ? `${musicTrack.bpm} BPM` : '',
           },
@@ -524,7 +983,7 @@ export class Stage4Service {
       input.resolution ??
       (qualityMode === 'hq_master' ? project.targetResolution : '1280x720');
     const fps = input.fps ?? project.fps ?? 24;
-    const estSeconds = Math.max(8, Math.round(videoClips.length * (qualityMode === 'hq_master' ? 4 : 2)));
+    const estSeconds = Math.max(5, Math.round(videoClips.length * (qualityMode === 'hq_master' ? 3 : 1.5)));
 
     const job = await this.studio.startJob({
       projectIdOrSlug: project.id,
@@ -532,7 +991,7 @@ export class Stage4Service {
       title: `Rendu FFmpeg ${qualityMode === 'hq_master' ? 'HQ MASTER' : 'DRAFT'} (${resolution} @ ${fps}fps)`,
       stepCurrent: 0,
       stepTotal: videoClips.length + 1,
-      message: 'Préparation du rendu FFmpeg...',
+      message: 'Préparation du rendu incrémental FFmpeg...',
       etaSeconds: estSeconds,
     });
 
@@ -557,7 +1016,7 @@ export class Stage4Service {
       payload: { projectId: project.id },
     });
 
-    // Launch background FFmpeg pipeline without blocking HTTP/MCP response
+    // Launch background CapCut FFmpeg pipeline with incremental per-segment caching
     void this.runFfmpegRenderPipeline({
       renderId: createdRender.id,
       jobId: job.id,
@@ -570,6 +1029,7 @@ export class Stage4Service {
       fps,
       title: input.title,
       burnSubtitles: Boolean(input.burnSubtitles),
+      bypassCache: Boolean(input.bypassCache),
       actor,
     });
 
@@ -593,6 +1053,25 @@ export class Stage4Service {
     };
   }
 
+  private async pruneProjectRenderCache(cacheDir: string): Promise<void> {
+    try {
+      const names = await fs.readdir(cacheDir);
+      if (names.length <= MAX_CACHED_SEGMENTS_PER_PROJECT) return;
+      const stats = await Promise.all(
+        names.map(async (name) => {
+          const full = path.join(cacheDir, name);
+          const st = await fs.stat(full).catch(() => null);
+          return { full, mtimeMs: st?.mtimeMs ?? 0 };
+        }),
+      );
+      stats.sort((a, b) => a.mtimeMs - b.mtimeMs);
+      const toDelete = stats.slice(0, stats.length - MAX_CACHED_SEGMENTS_PER_PROJECT);
+      await Promise.all(toDelete.map((f) => fs.rm(f.full, { force: true }).catch(() => undefined)));
+    } catch {
+      // Ignore cache prune errors
+    }
+  }
+
   private async runFfmpegRenderPipeline(params: {
     renderId: string;
     jobId: string;
@@ -605,13 +1084,21 @@ export class Stage4Service {
     fps: number;
     title?: string;
     burnSubtitles?: boolean;
+    bypassCache?: boolean;
     actor: Actor;
   }): Promise<void> {
     const tmpDir = resolveSafePath(
       this.config.dataDir,
       path.join('.tmp', `render-${crypto.randomUUID()}`),
     );
-    await fs.mkdir(tmpDir, { recursive: true });
+    const cacheDir = resolveSafePath(
+      this.config.dataDir,
+      path.join('.render-cache', params.projectId),
+    );
+    await Promise.all([
+      fs.mkdir(tmpDir, { recursive: true }),
+      fs.mkdir(cacheDir, { recursive: true }),
+    ]);
 
     const [wStr, hStr] = params.resolution.split('x');
     const width = Math.max(320, Math.min(Number(wStr) || 1280, 3840));
@@ -621,15 +1108,27 @@ export class Stage4Service {
 
     const startedAt = Date.now();
     const totalSteps = params.videoClips.length + 1;
+    const effectCatalog: Map<string, VideoEffectDto> = this.effectsService
+      ? await this.effectsService.getEffectsCatalogMap()
+      : new Map();
+    const usedEffectSlugs: string[] = [];
+
+    let cacheHits = 0;
+    let renderedSegments = 0;
 
     try {
-      const segmentPaths: string[] = [];
+      const renderedEntries: Array<{ clip: TimelineClipDto; segPath: string }> = [];
 
+      // 1. Render or reuse cached video segments (Incremental Fast Re-Render!)
       for (let i = 0; i < params.videoClips.length; i += 1) {
         const clip = params.videoClips[i]!;
         if (!clip.assetId) continue;
         const assetInfo = await this.studio.getAssetById(clip.assetId);
         if (!assetInfo) continue;
+
+        for (const fx of clip.effects ?? []) {
+          if (fx.enabled) usedEffectSlugs.push(fx.effectSlug);
+        }
 
         const sourcePath =
           params.qualityMode === 'draft_proxy' &&
@@ -638,55 +1137,102 @@ export class Stage4Service {
             ? this.media.resolveMediaFile(assetInfo.raw.proxyPath)
             : this.media.resolveMediaFile(assetInfo.raw.filePath);
 
-        const segOut = path.join(tmpDir, `seg-${String(i).padStart(4, '0')}.mp4`);
-        const scaleFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=${params.fps},format=yuv420p`;
+        const sourceStat = await fs.stat(sourcePath).catch(() => null);
+        const sourceFingerprint = `${assetInfo.asset.id}:${sourceStat?.size ?? 0}:${Math.round(sourceStat?.mtimeMs ?? 0)}`;
+        const isImage = assetInfo.asset.type === 'image';
 
-        if (assetInfo.asset.type === 'image') {
-          await this.media.executeFfmpeg([
-            '-y',
-            '-loop',
-            '1',
-            '-i',
-            sourcePath,
-            '-t',
-            String(Math.max(0.2, clip.durationSec)),
-            '-vf',
-            scaleFilter,
-            '-c:v',
-            'libx264',
-            '-preset',
-            preset,
-            '-crf',
-            crf,
-            '-an',
-            segOut,
-          ]);
-        } else {
-          await this.media.executeFfmpeg([
-            '-y',
-            '-ss',
-            String(Math.max(0, clip.inSec)),
-            '-i',
-            sourcePath,
-            '-t',
-            String(Math.max(0.2, clip.durationSec)),
-            '-vf',
-            scaleFilter,
-            '-c:v',
-            'libx264',
-            '-preset',
-            preset,
-            '-crf',
-            crf,
-            '-an',
-            segOut,
-          ]);
+        const compiledVf = compileClipVideoFilterChain(clip, {
+          width,
+          height,
+          fps: params.fps,
+          isImage,
+          effectCatalog,
+        });
+
+        const cacheSig = buildClipSegmentCacheSignature({
+          sourceFingerprint,
+          clip,
+          width,
+          height,
+          fps: params.fps,
+          qualityMode: params.qualityMode,
+          compiledVideoFilter: compiledVf,
+        });
+        const segHash = crypto.createHash('sha256').update(cacheSig).digest('hex').slice(0, 24);
+        const cachedSegPath = path.join(cacheDir, `${segHash}.mp4`);
+
+        let segPath = cachedSegPath;
+        let hit = false;
+        if (!params.bypassCache) {
+          const cachedStat = await fs.stat(cachedSegPath).catch(() => null);
+          if (cachedStat && cachedStat.size > 0) {
+            hit = true;
+            cacheHits += 1;
+            // Touch mtime for LRU retention
+            const now = new Date();
+            await fs.utimes(cachedSegPath, now, now).catch(() => undefined);
+          }
         }
 
-        segmentPaths.push(segOut);
+        if (!hit) {
+          const segTmpOut = path.join(tmpDir, `seg-${String(i).padStart(4, '0')}.mp4`);
+          const speed = Math.max(0.25, Math.min(4, clip.speed ?? 1));
+          const readDur = isImage
+            ? Math.max(0.2, clip.durationSec)
+            : Math.max(0.2, clip.durationSec * speed);
+
+          if (isImage) {
+            await this.media.executeFfmpeg([
+              '-y',
+              '-loop',
+              '1',
+              '-i',
+              sourcePath,
+              '-t',
+              String(readDur),
+              '-vf',
+              compiledVf,
+              '-c:v',
+              'libx264',
+              '-preset',
+              preset,
+              '-crf',
+              crf,
+              '-an',
+              segTmpOut,
+            ]);
+          } else {
+            await this.media.executeFfmpeg([
+              '-y',
+              '-ss',
+              String(Math.max(0, clip.inSec)),
+              '-i',
+              sourcePath,
+              '-t',
+              String(readDur),
+              '-vf',
+              compiledVf,
+              '-c:v',
+              'libx264',
+              '-preset',
+              preset,
+              '-crf',
+              crf,
+              '-an',
+              segTmpOut,
+            ]);
+          }
+
+          // Persist segment to project render cache for future fast re-renders
+          await fs.copyFile(segTmpOut, cachedSegPath).catch(() => undefined);
+          segPath = segTmpOut;
+          renderedSegments += 1;
+        }
+
+        renderedEntries.push({ clip, segPath });
 
         const doneSteps = i + 1;
-        const pct = Math.min(95, Math.round((doneSteps / totalSteps) * 100));
+        const pct = Math.min(92, Math.round((doneSteps / totalSteps) * 100));
         const elapsedSec = (Date.now() - startedAt) / 1000;
         const remainingEta = Math.max(
           1,
@@ -703,32 +1249,68 @@ export class Stage4Service {
             progress: pct,
             stepCurrent: doneSteps,
             stepTotal: totalSteps,
-            message: `Encodage plan ${doneSteps}/${params.videoClips.length} (${clip.title})`,
+            message: `${hit ? '⚡ Cache' : 'Encodage'} plan ${doneSteps}/${params.videoClips.length} (${clip.title}) · ${cacheHits} cache / ${renderedSegments} encodé(s)`,
             etaSeconds: remainingEta,
           }),
         ]);
       }
 
-      if (segmentPaths.length === 0) {
+      if (renderedEntries.length === 0) {
         throw new Error('Aucun segment vidéo valide à assembler.');
       }
 
-      const concatListPath = path.join(tmpDir, 'concat.txt');
-      const concatContent = segmentPaths
-        .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
-        .join('\n');
-      await fs.writeFile(concatListPath, concatContent, 'utf8');
+      void this.pruneProjectRenderCache(cacheDir);
 
-      const audioClip = params.timeline.tracks
-        .filter((t) => t.type === 'audio' && !t.muted)
+      // 2. Collect global Text Track clips, Overlay Track clips, and Multi-Track Audio clips
+      const textTrackClips = params.timeline.tracks
+        .filter((t) => t.type === 'text' && !t.muted)
         .flatMap((t) => t.clips)
-        .find((c) => !c.muted && c.assetId);
+        .filter((c) => !c.muted && c.textOverlay?.text?.trim());
 
-      const audioAsset = audioClip?.assetId
-        ? await this.studio.getAssetById(audioClip.assetId)
-        : null;
+      const overlayTrackClips = params.timeline.tracks
+        .filter((t) => t.type === 'overlay' && !t.muted)
+        .flatMap((t) => t.clips)
+        .filter((c) => !c.muted && c.assetId);
 
-      const finalOutPath = path.join(tmpDir, 'render-final.mp4');
+      const audioClipEntries: Array<{
+        clip: TimelineClipDto;
+        trackVolume: number;
+        filePath: string;
+      }> = [];
+      for (const track of params.timeline.tracks) {
+        if (track.type !== 'audio' || track.muted) continue;
+        for (const aClip of track.clips) {
+          if (aClip.muted || !aClip.assetId) continue;
+          const aInfo = await this.studio.getAssetById(aClip.assetId);
+          if (!aInfo) continue;
+          for (const fx of aClip.effects ?? []) {
+            if (fx.enabled) usedEffectSlugs.push(fx.effectSlug);
+          }
+          audioClipEntries.push({
+            clip: aClip,
+            trackVolume: track.volume,
+            filePath: this.media.resolveMediaFile(aInfo.raw.filePath),
+          });
+        }
+      }
+
+      const overlayAssetEntries: Array<{
+        clip: TimelineClipDto;
+        filePath: string;
+        isImage: boolean;
+      }> = [];
+      for (const ovClip of overlayTrackClips) {
+        if (!ovClip.assetId) continue;
+        const ovInfo = await this.studio.getAssetById(ovClip.assetId);
+        if (!ovInfo) continue;
+        overlayAssetEntries.push({
+          clip: ovClip,
+          filePath: this.media.resolveMediaFile(ovInfo.raw.filePath),
+          isImage: ovInfo.asset.type === 'image',
+        });
+      }
+
+      // Optional subtitle burn-in filter
       let subtitleBurnFilter: string | null = null;
       if (params.burnSubtitles) {
         const subs = await this.getSubtitles(params.projectId);
@@ -742,63 +1324,186 @@ export class Stage4Service {
         }
       }
 
+      // 3. Assemble base video (fast concat if all cuts, or real FFmpeg xfade chain!)
+      const xfadePlan = computeXfadeChainPlan(renderedEntries.map((e) => e.clip));
+      const needsReencodePass =
+        xfadePlan.hasTransitions ||
+        textTrackClips.length > 0 ||
+        overlayAssetEntries.length > 0 ||
+        Boolean(subtitleBurnFilter);
+
+      const finalOutPath = path.join(tmpDir, 'render-final.mp4');
+
       await this.studio.updateJob(params.jobId, {
         status: 'running',
-        progress: 96,
+        progress: 95,
         stepCurrent: params.videoClips.length,
         stepTotal: totalSteps,
-        message: subtitleBurnFilter
-          ? 'Assemblage final MP4 + incrustation sous-titres (burn-in)...'
-          : 'Assemblage final MP4 + mixage audio...',
-        etaSeconds: subtitleBurnFilter ? 8 : 3,
+        message: `Assemblage final MP4 (${cacheHits} en cache · ${xfadePlan.hasTransitions ? 'transitions xfade' : 'concat rapide'}${audioClipEntries.length > 1 ? ` · ${audioClipEntries.length} pistes audio` : ''})...`,
+        etaSeconds: needsReencodePass ? 8 : 3,
       });
 
-      const videoEncodeArgs = subtitleBurnFilter
-        ? ['-vf', subtitleBurnFilter, '-c:v', 'libx264', '-preset', preset, '-crf', crf, '-pix_fmt', 'yuv420p']
-        : ['-c:v', 'copy'];
+      const ffmpegArgs: string[] = ['-y'];
+      const filterComplexParts: string[] = [];
+      let currentVideoLabel = '';
+      let nextInputIdx = 0;
 
-      if (audioAsset) {
-        const audioAbs = this.media.resolveMediaFile(audioAsset.raw.filePath);
-        await this.media.executeFfmpeg([
-          '-y',
-          '-f',
-          'concat',
-          '-safe',
-          '0',
-          '-i',
-          concatListPath,
-          '-i',
-          audioAbs,
-          ...videoEncodeArgs,
-          '-c:a',
-          'aac',
-          '-b:a',
-          params.qualityMode === 'hq_master' ? '256k' : '128k',
-          '-shortest',
-          '-movflags',
-          '+faststart',
-          finalOutPath,
-        ]);
+      if (xfadePlan.hasTransitions && renderedEntries.length > 1) {
+        for (const entry of renderedEntries) {
+          ffmpegArgs.push('-i', entry.segPath);
+        }
+        nextInputIdx = renderedEntries.length;
+
+        let prevLabel = '[0:v]';
+        for (let s = 0; s < xfadePlan.steps.length; s += 1) {
+          const step = xfadePlan.steps[s]!;
+          const outLabel = `[vx${s}]`;
+          filterComplexParts.push(
+            `${prevLabel}[${step.toIndex}:v]xfade=transition=${step.transition}:duration=${step.durationSec}:offset=${step.offsetSec}${outLabel}`,
+          );
+          prevLabel = outLabel;
+        }
+        currentVideoLabel = prevLabel;
       } else {
-        await this.media.executeFfmpeg([
-          '-y',
-          '-f',
-          'concat',
-          '-safe',
-          '0',
-          '-i',
-          concatListPath,
-          ...videoEncodeArgs,
-          '-movflags',
-          '+faststart',
-          finalOutPath,
-        ]);
+        const concatListPath = path.join(tmpDir, 'concat.txt');
+        const concatContent = renderedEntries
+          .map((e) => `file '${e.segPath.replace(/'/g, "'\\''")}'`)
+          .join('\n');
+        await fs.writeFile(concatListPath, concatContent, 'utf8');
+        ffmpegArgs.push('-f', 'concat', '-safe', '0', '-i', concatListPath);
+        nextInputIdx = 1;
+        currentVideoLabel = '[0:v]';
+      }
+
+      // Composite Overlay / PiP track clips over main video
+      for (let oi = 0; oi < overlayAssetEntries.length; oi += 1) {
+        const ov = overlayAssetEntries[oi]!;
+        const ovInputIdx = nextInputIdx++;
+        if (ov.isImage) {
+          ffmpegArgs.push('-loop', '1', '-t', String(Math.max(0.2, ov.clip.durationSec)), '-i', ov.filePath);
+        } else {
+          ffmpegArgs.push(
+            '-ss',
+            String(Math.max(0, ov.clip.inSec)),
+            '-t',
+            String(Math.max(0.2, ov.clip.durationSec)),
+            '-i',
+            ov.filePath,
+          );
+        }
+
+        const tr = this.normalizeTransform(ov.clip.transform);
+        const ovW = Math.max(32, Math.round(width * Math.min(1, Math.max(0.1, tr.scale * 0.45))));
+        const posX = `Math.round((W-w)/2 + (${tr.x})*(W/2))`.replace('Math.round', '');
+        const xExpr = `(W-w)/2+(${tr.x})*(W/2)`;
+        const yExpr = `(H-h)/2+(${tr.y})*(H/2)`;
+        void posX;
+        const startT = Math.max(0, ov.clip.startSec);
+        const endT = startT + Math.max(0.1, ov.clip.durationSec);
+        const prepLabel = `[ovp${oi}]`;
+        const outLabel = `[vov${oi}]`;
+
+        filterComplexParts.push(
+          `[${ovInputIdx}:v]scale=${ovW}:-2,format=rgba,colorchannelmixer=aa=${tr.opacity.toFixed(3)},setpts=PTS-STARTPTS+${startT.toFixed(3)}/TB${prepLabel}`,
+        );
+        filterComplexParts.push(
+          `${currentVideoLabel}${prepLabel}overlay=x=${xExpr}:y=${yExpr}:enable='between(t,${startT.toFixed(3)},${endT.toFixed(3)})':eof_action=pass${outLabel}`,
+        );
+        currentVideoLabel = outLabel;
+      }
+
+      // Apply Text track clips (`drawtext` with timed `enable='between(t,start,end)'`)
+      if (textTrackClips.length > 0) {
+        const drawtextChain = textTrackClips
+          .map((tc) => {
+            const base = buildDrawtextFilter(tc.textOverlay!, width, height);
+            const startT = Math.max(0, tc.startSec);
+            const endT = startT + Math.max(0.1, tc.durationSec);
+            return `${base}:enable='between(t,${startT.toFixed(3)},${endT.toFixed(3)})'`;
+          })
+          .join(',');
+        const outLabel = '[vtxt]';
+        filterComplexParts.push(`${currentVideoLabel}${drawtextChain}${outLabel}`);
+        currentVideoLabel = outLabel;
+      }
+
+      // Apply Subtitle burn-in if requested
+      if (subtitleBurnFilter) {
+        const outLabel = '[vsub]';
+        filterComplexParts.push(`${currentVideoLabel}${subtitleBurnFilter}${outLabel}`);
+        currentVideoLabel = outLabel;
+      }
+
+      // Mix ALL Audio track clips with adelay + volume + afade + audio_fx + amix
+      let finalAudioLabel: string | null = null;
+      if (audioClipEntries.length > 0) {
+        const audioOutLabels: string[] = [];
+        for (let ai = 0; ai < audioClipEntries.length; ai += 1) {
+          const entry = audioClipEntries[ai]!;
+          const aInputIdx = nextInputIdx++;
+          ffmpegArgs.push('-i', entry.filePath);
+          const aChain = compileClipAudioFilterChain(entry.clip, entry.trackVolume, effectCatalog);
+          const aLabel = `[aud${ai}]`;
+          filterComplexParts.push(`[${aInputIdx}:a]${aChain}${aLabel}`);
+          audioOutLabels.push(aLabel);
+        }
+
+        if (audioOutLabels.length === 1) {
+          finalAudioLabel = audioOutLabels[0]!;
+        } else {
+          filterComplexParts.push(
+            `${audioOutLabels.join('')}amix=inputs=${audioOutLabels.length}:duration=longest:dropout_transition=0:normalize=0[amixed]`,
+          );
+          finalAudioLabel = '[amixed]';
+        }
+      }
+
+      // Map outputs cleanly
+      if (filterComplexParts.length > 0) {
+        ffmpegArgs.push('-filter_complex', filterComplexParts.join(';'));
+        if (needsReencodePass) {
+          ffmpegArgs.push(
+            '-map',
+            currentVideoLabel,
+            '-c:v',
+            'libx264',
+            '-preset',
+            preset,
+            '-crf',
+            crf,
+            '-pix_fmt',
+            'yuv420p',
+          );
+        } else {
+          ffmpegArgs.push('-map', '0:v', '-c:v', 'copy');
+        }
+        if (finalAudioLabel) {
+          ffmpegArgs.push(
+            '-map',
+            finalAudioLabel,
+            '-c:a',
+            'aac',
+            '-b:a',
+            params.qualityMode === 'hq_master' ? '256k' : '128k',
+            '-shortest',
+          );
+        }
+      } else {
+        ffmpegArgs.push('-c:v', 'copy');
+      }
+
+      ffmpegArgs.push('-movflags', '+faststart', finalOutPath);
+      await this.media.executeFfmpeg(ffmpegArgs);
+
+      if (usedEffectSlugs.length > 0) {
+        void this.effectsService?.incrementUsage(usedEffectSlugs);
       }
 
       const renderedBuffer = await fs.readFile(finalOutPath);
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const renderFilename = `${params.projectSlug}-${params.qualityMode}-${stamp}.mp4`;
 
+      const cacheNote = `⚡ ${cacheHits}/${renderedEntries.length} segment(s) du cache`;
       const registeredAsset = await this.studio.ingestAssetFromBuffer({
         projectIdOrSlug: params.projectId,
         buffer: renderedBuffer,
@@ -810,8 +1515,14 @@ export class Stage4Service {
           params.title?.trim() ||
           `Rendu ${params.qualityMode === 'hq_master' ? 'HQ MASTER' : 'DRAFT'} (${params.resolution})${subtitleBurnFilter ? ' · ST' : ''}`,
         qualityTier: params.qualityMode === 'hq_master' ? 'final_master' : 'draft_lowres',
-        tags: ['render', 'timeline', params.qualityMode, ...(subtitleBurnFilter ? ['subtitled'] : [])],
-        notes: `Rendu serveur FFmpeg (${params.resolution} @ ${params.fps}fps, ${segmentPaths.length} clips${subtitleBurnFilter ? ', sous-titres incrustés' : ''})`,
+        tags: [
+          'render',
+          'timeline',
+          params.qualityMode,
+          ...(subtitleBurnFilter ? ['subtitled'] : []),
+          ...(usedEffectSlugs.length > 0 ? ['fx'] : []),
+        ],
+        notes: `Rendu serveur FFmpeg (${params.resolution} @ ${params.fps}fps, ${renderedEntries.length} clips, ${cacheNote}${subtitleBurnFilter ? ', sous-titres incrustés' : ''})`,
         createdBy: params.actor,
       });
 
@@ -821,7 +1532,7 @@ export class Stage4Service {
           status: 'completed',
           progress: 100,
           outputAssetId: registeredAsset.id,
-          durationSec: registeredAsset.durationSec ?? params.timeline.totalDurationSec,
+          durationSec: registeredAsset.durationSec ?? xfadePlan.totalDurationSec,
           completedAt: new Date(),
           updatedAt: new Date(),
         })
@@ -832,7 +1543,7 @@ export class Stage4Service {
         progress: 100,
         stepCurrent: totalSteps,
         stepTotal: totalSteps,
-        message: `Rendu terminé : ${registeredAsset.handle}`,
+        message: `Rendu terminé : ${registeredAsset.handle} (${cacheNote})`,
         etaSeconds: 0,
         resultAssetId: registeredAsset.id,
       });
@@ -844,6 +1555,8 @@ export class Stage4Service {
         qualityMode: params.qualityMode,
         resolution: params.resolution,
         fps: params.fps,
+        cacheHits,
+        renderedSegments,
       });
 
       this.realtime.broadcast({
