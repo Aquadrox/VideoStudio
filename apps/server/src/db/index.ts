@@ -574,6 +574,32 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
       style jsonb NOT NULL DEFAULT '{"fontSize":24,"position":"bottom","color":"#FFFFFF","outlineColor":"#000000","backgroundOpacity":0.55}'::jsonb,
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+
+    -- Shared Studio Knowledge & AI Cross-Project Memory (v0.10.0)
+    CREATE TABLE IF NOT EXISTS studio_knowledge (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      slug text NOT NULL UNIQUE,
+      title text NOT NULL,
+      kind text NOT NULL DEFAULT 'lesson',
+      project_types jsonb NOT NULL DEFAULT '["all"]'::jsonb,
+      priority text NOT NULL DEFAULT 'normal',
+      content text NOT NULL,
+      positive_fragment text NOT NULL DEFAULT '',
+      negative_fragment text NOT NULL DEFAULT '',
+      recommended_model text NOT NULL DEFAULT '',
+      linked_skill_slug text,
+      tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+      learned_by text NOT NULL DEFAULT 'user',
+      verified boolean NOT NULL DEFAULT false,
+      pinned boolean NOT NULL DEFAULT false,
+      source_project_slug text,
+      usage_count integer NOT NULL DEFAULT 0,
+      last_recalled_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS studio_knowledge_kind_idx ON studio_knowledge (kind);
+    CREATE INDEX IF NOT EXISTS studio_knowledge_updated_idx ON studio_knowledge (updated_at DESC);
   `);
 
   // Seed one default reusable Rulebook if none exist yet
@@ -596,5 +622,24 @@ export async function ensureDatabaseSchema(pool: pg.Pool): Promise<void> {
         [rbId],
       );
     }
+  }
+
+  // Seed initial Studio Knowledge Playbook starter entries only if table is empty
+  const existingKnowledge = await pool.query('SELECT count(*)::int AS count FROM studio_knowledge');
+  const kCount = (existingKnowledge.rows[0] as { count?: number } | undefined)?.count ?? 0;
+  if (kCount === 0) {
+    await pool.query(
+      `INSERT INTO studio_knowledge (slug, title, kind, project_types, priority, content, positive_fragment, negative_fragment, recommended_model, tags, learned_by, verified, pinned)
+       VALUES
+         ('workflow-draft-avant-hq', 'Valider les plans en Draft avant tout upscale 4K', 'rule', '["all"]'::jsonb, 'critical',
+          'Toujours produire une première passe basse résolution (Draft / Animatique) et obtenir la validation visuelle (QC) avant de lancer les rendus HQ ou upscales coûteux en GPU.',
+          '', 'blurry, low quality artifacts, watermark', '', '["workflow","qc","gpu"]'::jsonb, 'system', true, true),
+         ('short-vertical-hook-2s', 'Format YouTube Short (9:16) — Hook visuel dans les 2 premières secondes', 'lesson', '["youtube_short","commercial"]'::jsonb, 'high',
+          'Cadrer le sujet principal dans la zone centrale (safe frame 80%) pour éviter les overlays UI YouTube/TikTok en bas et à droite. Ouvrir sur un mouvement dynamique ou un gros plan expressif dès les 2 premières secondes.',
+          'vertical 9:16 framing, centered subject, strong visual hook, crisp rim lighting', 'cropped head, off-center subject, text overlay', '', '["shorts","framing","retention"]'::jsonb, 'system', true, false),
+         ('animation-coherence-bible', 'Animation — Verrouiller la Bible & la ligne des 180° dès la Pré-prod', 'rule', '["animation","music_video"]'::jsonb, 'high',
+          'Avant de générer les keyframes, définir chaque personnage récurrent dans la Bible de continuité (LoRA + prompt visuel constant) et bloquer les scènes de dialogue dans Croquis & Plans avec la ligne des 180°.',
+          'consistent character design, cinematic lighting continuity', 'inconsistent face, changing outfit, extra limbs', '', '["animation","bible","continuity"]'::jsonb, 'system', true, false)`,
+    );
   }
 }

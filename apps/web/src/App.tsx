@@ -11,6 +11,7 @@ import {
 import {
   Activity,
   BookOpen,
+  Brain,
   CheckSquare,
   ChevronRight,
   Clapperboard,
@@ -82,11 +83,13 @@ import { CreateProjectModal, McpSetupModal } from './components/Modals';
 import { OpsPanel } from './components/OpsPanel';
 import { PreprodPanel } from './components/PreprodPanel';
 import { ProjectGitPanel } from './components/ProjectGitPanel';
+import { KnowledgePanel } from './components/KnowledgePanel';
 import { RulesPanel } from './components/RulesPanel';
 import { SketchStudioPanel, type SketchLaunchRequest } from './components/SketchStudioPanel';
 import { SkillsPanel } from './components/SkillsPanel';
 import { TextDocumentEditorModal } from './components/TextDocumentEditor';
 import { TimelinePanel } from './components/TimelinePanel';
+import { UploadQueueTray } from './components/UploadQueueTray';
 import { YouTubePanel } from './components/YouTubePanel';
 import { useRealtimeEvents } from './hooks/useRealtime';
 import {
@@ -121,6 +124,7 @@ import {
   RIGHT_PANEL_DEFAULT_WIDTH,
   type PanelLayoutState,
 } from './utils/panel-layout';
+import { createUploadQueueItem, type UploadQueueItem } from './utils/upload-queue';
 
 type WorkspaceMode =
   | 'media'
@@ -132,6 +136,7 @@ type WorkspaceMode =
   | 'rules'
   | 'library'
   | 'skills'
+  | 'knowledge'
   | 'youtube'
   | 'git'
   | 'ops';
@@ -185,6 +190,10 @@ export function App() {
   const [rulesRefresh, setRulesRefresh] = useState(0);
   const [libraryRefresh, setLibraryRefresh] = useState(0);
   const [skillsRefresh, setSkillsRefresh] = useState(0);
+  const [knowledgeRefresh, setKnowledgeRefresh] = useState(0);
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
+  const uploadAbortMapRef = useRef<Map<string, AbortController>>(new Map());
+  const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
   const [stage3Refresh, setStage3Refresh] = useState(0);
   const [timelineRefresh, setTimelineRefresh] = useState(0);
   const [sketchRefresh, setSketchRefresh] = useState(0);
@@ -513,6 +522,9 @@ export function App() {
             setLibraryRefresh((n) => n + 1);
           }
           break;
+        case 'knowledge.changed':
+          setKnowledgeRefresh((n) => n + 1);
+          break;
         case 'stage3.changed':
           setStage3Refresh((n) => n + 1);
           break;
@@ -678,6 +690,22 @@ export function App() {
     }
   };
 
+  const handleCancelUploadItem = useCallback((itemId: string) => {
+    cancelledUploadIdsRef.current.add(itemId);
+    const controller = uploadAbortMapRef.current.get(itemId);
+    if (controller) {
+      controller.abort();
+      uploadAbortMapRef.current.delete(itemId);
+    }
+    setUploadQueue((prev) =>
+      prev.map((it) =>
+        it.id === itemId && (it.status === 'queued' || it.status === 'uploading')
+          ? { ...it, status: 'cancelled', speedBytesPerSec: null, etaSeconds: null }
+          : it,
+      ),
+    );
+  }, []);
+
   const handleUploadFiles = async (
     files: FileList | File[],
     targetFolderPath: string = currentFolderPath,
@@ -686,21 +714,129 @@ export function App() {
     const list = Array.from(files);
     if (list.length === 0) return;
 
+    const projectId = activeProjectId;
+    const batch = list.map((file) => ({
+      file,
+      item: createUploadQueueItem(file, targetFolderPath),
+    }));
+
+    // Immediately show every dropped/selected file in the Upload Progress Tray
+    setUploadQueue((prev) => [...batch.map((b) => b.item), ...prev].slice(0, 60));
     setUploading(true);
+
+    let successCount = 0;
+    let errorCount = 0;
+
     try {
-      for (const file of list) {
-        const uploaded = await api.uploadAssetFile(activeProjectId, file, {
-          folderPath: targetFolderPath || undefined,
-        });
-        setSelectedAssetId(uploaded.id);
-        setRightTab('inspector');
+      for (const { file, item } of batch) {
+        if (cancelledUploadIdsRef.current.has(item.id)) {
+          cancelledUploadIdsRef.current.delete(item.id);
+          continue;
+        }
+
+        const startedAt = Date.now();
+        const controller = new AbortController();
+        uploadAbortMapRef.current.set(item.id, controller);
+
+        setUploadQueue((prev) =>
+          prev.map((it) =>
+            it.id === item.id ? { ...it, status: 'uploading', startedAt, percent: 1 } : it,
+          ),
+        );
+
+        try {
+          const uploaded = await api.uploadAssetFile(projectId, file, {
+            folderPath: targetFolderPath || undefined,
+            signal: controller.signal,
+            onProgress: ({ loaded, total, percent, phase }) => {
+              const elapsedSec = Math.max(0.15, (Date.now() - startedAt) / 1000);
+              const speedBytesPerSec = loaded > 0 ? loaded / elapsedSec : null;
+              const remainingBytes = Math.max(0, total - loaded);
+              const etaSeconds =
+                phase === 'uploading' && speedBytesPerSec && speedBytesPerSec > 0
+                  ? remainingBytes / speedBytesPerSec
+                  : null;
+
+              setUploadQueue((prev) =>
+                prev.map((it) =>
+                  it.id === item.id
+                    ? {
+                        ...it,
+                        status: phase === 'processing' ? 'processing' : 'uploading',
+                        loadedBytes: loaded,
+                        totalBytes: total,
+                        percent,
+                        speedBytesPerSec: phase === 'processing' ? null : speedBytesPerSec,
+                        etaSeconds,
+                      }
+                    : it,
+                ),
+              );
+            },
+          });
+
+          successCount += 1;
+          setUploadQueue((prev) =>
+            prev.map((it) =>
+              it.id === item.id
+                ? {
+                    ...it,
+                    status: 'done',
+                    loadedBytes: it.totalBytes || file.size,
+                    percent: 100,
+                    speedBytesPerSec: null,
+                    etaSeconds: 0,
+                    assetId: uploaded.id,
+                    assetHandle: uploaded.handle,
+                  }
+                : it,
+            ),
+          );
+          setSelectedAssetId(uploaded.id);
+          setRightTab('inspector');
+        } catch (err) {
+          const isAbort =
+            (err instanceof DOMException && err.name === 'AbortError') ||
+            cancelledUploadIdsRef.current.has(item.id);
+          if (isAbort) {
+            cancelledUploadIdsRef.current.delete(item.id);
+            setUploadQueue((prev) =>
+              prev.map((it) =>
+                it.id === item.id
+                  ? { ...it, status: 'cancelled', speedBytesPerSec: null, etaSeconds: null }
+                  : it,
+              ),
+            );
+          } else {
+            errorCount += 1;
+            const msg = err instanceof Error ? err.message : "Erreur d'import";
+            setUploadQueue((prev) =>
+              prev.map((it) =>
+                it.id === item.id
+                  ? {
+                      ...it,
+                      status: 'error',
+                      speedBytesPerSec: null,
+                      etaSeconds: null,
+                      errorMessage: msg,
+                    }
+                  : it,
+              ),
+            );
+          }
+        } finally {
+          uploadAbortMapRef.current.delete(item.id);
+        }
       }
-      await refreshFolders(activeProjectId);
-      showToast(
-        `${list.length} fichier(s) importé(s)${targetFolderPath ? ` dans /${targetFolderPath}` : ''}`,
-      );
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Erreur d'import");
+
+      if (successCount > 0) {
+        await refreshFolders(projectId);
+        showToast(
+          `${successCount} fichier(s) importé(s)${targetFolderPath ? ` dans /${targetFolderPath}` : ''}${errorCount > 0 ? ` (${errorCount} erreur)` : ''}`,
+        );
+      } else if (errorCount > 0) {
+        showToast(`${errorCount} erreur(s) lors de l'import`);
+      }
     } finally {
       setUploading(false);
     }
@@ -1190,6 +1326,7 @@ export function App() {
       { mode: 'rules', label: 'Module Règles', subtitle: 'Rulebooks globaux & surcharges projet' },
       { mode: 'library', label: 'Module Prompts & Workflows', subtitle: 'Templates prompts & ComfyUI JSON' },
       { mode: 'skills', label: 'Module Skills', subtitle: 'Guides méthodologiques synchronisés' },
+      { mode: 'knowledge', label: 'Mémoire IA & Playbooks', subtitle: 'Règles, prompts, skills & leçons apprises par type de projet' },
       { mode: 'youtube', label: 'Module YouTube', subtitle: 'Miniatures A/B, chapitres & upload brouillon' },
       { mode: 'git', label: 'Module Git Projet', subtitle: 'Dépôt local & synchronisation GitHub' },
       { mode: 'ops', label: 'Module Exploitation', subtitle: 'Monitoring, disque, backups, watch folders & webhooks' },
@@ -1248,7 +1385,7 @@ export function App() {
                 </div>
                 <div>
                   <div className="brand-title">VideoStudio</div>
-                  <div className="brand-sub">v0.9.0 · MCP · LAN</div>
+                  <div className="brand-sub">v0.10.0 · MCP · LAN</div>
                 </div>
               </div>
 
@@ -1580,6 +1717,13 @@ export function App() {
             onClick={() => setWorkspaceMode('skills')}
           >
             <BookOpen size={14} /> Skills
+          </button>
+          <button
+            type="button"
+            className={`mode-tab ${workspaceMode === 'knowledge' ? 'active' : ''}`}
+            onClick={() => setWorkspaceMode('knowledge')}
+          >
+            <Brain size={14} /> Mémoire IA
           </button>
           <button
             type="button"
@@ -2414,6 +2558,15 @@ export function App() {
           />
         )}
 
+        {workspaceMode === 'knowledge' && (
+          <KnowledgePanel
+            activeProject={activeProject}
+            refreshSignal={knowledgeRefresh}
+            onCopyText={handleCopyText}
+            onNotify={showToast}
+          />
+        )}
+
         {workspaceMode === 'youtube' && (
           <YouTubePanel
             project={activeProject}
@@ -2637,6 +2790,22 @@ export function App() {
       {showShortcutsHelp && (
         <ShortcutsHelpModal onClose={() => setShowShortcutsHelp(false)} />
       )}
+
+      <UploadQueueTray
+        items={uploadQueue}
+        onCancelItem={handleCancelUploadItem}
+        onSelectAsset={(assetId) => {
+          setWorkspaceMode('media');
+          setSelectedAssetId(assetId);
+          setRightTab('inspector');
+        }}
+        onClearFinished={() =>
+          setUploadQueue((prev) =>
+            prev.filter((it) => it.status === 'queued' || it.status === 'uploading' || it.status === 'processing'),
+          )
+        }
+        onClose={() => setUploadQueue([])}
+      />
 
       {toast && (
         <div className="toast" role="status">

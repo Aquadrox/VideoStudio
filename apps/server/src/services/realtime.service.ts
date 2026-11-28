@@ -85,6 +85,7 @@ export class RealtimeHub {
       case 'project.updated':
       case 'project.deleted':
       case 'library.changed':
+      case 'knowledge.changed':
         return null;
     }
   }

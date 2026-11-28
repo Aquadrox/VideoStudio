@@ -15,3 +15,5 @@ export * from './text-document-utils.js';
 export * from './subtitle-utils.js';
 export * from './timeline-v2-utils.js';
 export * from './dossier-utils.js';
+export * from './knowledge-schemas.js';
+export * from './knowledge-utils.js';

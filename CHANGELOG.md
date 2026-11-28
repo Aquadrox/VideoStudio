@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-28
+
+### Added
+- **Mémoire IA & Base de Connaissances Commune par Type de Projet (`KnowledgePanel`, `KnowledgeService`, `knowledge.routes.ts`, `knowledge-schemas.ts`, `knowledge-utils.ts`, table additive `studio_knowledge`)** :
+  - Nouvel onglet dédié **« Mémoire IA »** commun à tous les projets pour pérenniser les **Règles**, **Prompts validés**, **Skills / Procédures**, **Presets techniques ComfyUI** et **Leçons / Retours d'expérience**, ciblés par **type de projet** (`Global`, `YouTube Long`, `YouTube Short`, `Clip Musical`, `Animation`, `Publicité`, `Expérimental`).
+  - **Apprentissage continu via MCP** : 5 nouveaux outils MCP (**`recall_project_playbook`**, **`learn_studio_knowledge`**, **`list_studio_knowledge`**, **`update_studio_knowledge`**, **`delete_studio_knowledge`**) et 2 ressources MCP (`studio://knowledge`, `studio://playbooks/{projectType}`).
+  - **Rappel automatique au lancement d'un projet** : `create_project` rappelle automatiquement le **Playbook Studio** correspondant au type du projet créé (et `recall_project_playbook` agrège la Mémoire commune + Rulebooks + Prompt Templates + Workflows ComfyUI + Skills `SKILL.md` dans un brief compilé, tout en incrémentant les compteurs de rappel).
+  - **Validation humaine & promotion 1-clic** : badges `Appris par IA` / `Vérifié` / `Épinglé`, compteur `Rappelé N×`, vue **Playbook par Type de Projet** avec copie 1-clic, bouton **« Appliquer au projet actif »** pour injecter directement une règle apprise dans le projet courant, et guide/snippet prêt à copier dans `CLAUDE.md`.
+- **Barre d'avancement des imports & file d'upload en temps réel (`UploadQueueTray`, `upload-queue.ts`, `api.uploadAssetFile`)** :
+  - Suivi octet par octet via `XMLHttpRequest` lors du **glisser-déposer** ou de l'import multi-fichiers (vidéos, images, audio, docs) : barre de progression globale pondérée + liste détaillée par fichier.
+  - Distinction claire entre **`En attente`**, **`Envoi en cours (X% · Mo envoyés / total · vitesse Mo/s · ETA)`**, **`Traitement serveur (vignette, proxy FFmpeg & métadonnées…)`**, **`Terminé ✓`** (cliquable pour inspecter directement l'asset) et **`Erreur`**, avec bouton **Annuler** par fichier.
+
 ## [0.9.0] - 2026-11-28
 
 ### Added

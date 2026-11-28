@@ -386,5 +386,9 @@ export const RealtimeEventSchema = z.discriminatedUnion('type', [
     type: z.literal('sketches.changed'),
     payload: z.object({ projectId: z.string().uuid(), sketchId: z.string().uuid().optional() }),
   }),
+  z.object({
+    type: z.literal('knowledge.changed'),
+    payload: z.object({ entryId: z.string().uuid().optional() }),
+  }),
 ]);
 export type RealtimeEvent = z.infer<typeof RealtimeEventSchema>;

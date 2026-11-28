@@ -10,6 +10,9 @@ import {
   BibleEntityTypeSchema,
   ComfyWorkflowCategorySchema,
   JobStatusSchema,
+  KnowledgeKindSchema,
+  KnowledgePrioritySchema,
+  KnowledgeProjectTypeSchema,
   NleExportFormatSchema,
   ProductionDossierLayoutSchema,
   ProjectStatusSchema,
@@ -36,6 +39,7 @@ import {
   YouTubeChapterSchema,
 } from '@videostudio/shared';
 import type { DossierService } from '../services/dossier.service.js';
+import type { KnowledgeService } from '../services/knowledge.service.js';
 import type { MediaService } from '../services/media.service.js';
 import type { OpsService } from '../services/ops.service.js';
 import type { SketchService } from '../services/sketch.service.js';
@@ -64,10 +68,11 @@ export function createVideoStudioMcpServer(
   stage5?: Stage5McpDeps,
   sketches?: SketchService,
   dossier?: DossierService,
+  knowledge?: KnowledgeService,
 ): McpServer {
   const server = new McpServer({
     name: 'videostudio',
-    version: '0.9.0',
+    version: '0.10.0',
   });
 
   // --- MCP Resources ---
@@ -210,7 +215,7 @@ export function createVideoStudioMcpServer(
 
   server.tool(
     'create_project',
-    'Create a new video production project in VideoStudio.',
+    'Create a new video production project in VideoStudio. Automatically recalls the shared Studio Playbook (rules, prompts, skills & learned lessons) matching the project type.',
     {
       name: z.string().min(1).max(120).describe('Human-readable project name'),
       slug: z
@@ -239,8 +244,32 @@ export function createVideoStudioMcpServer(
         },
         'claude',
       );
+      const recalledPlaybook = knowledge
+        ? await knowledge.recallPlaybook({
+            projectIdOrSlug: created.id,
+            incrementUsage: true,
+          })
+        : null;
       return {
-        content: [{ type: 'text', text: JSON.stringify(created, null, 2) }],
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              recalledPlaybook
+                ? {
+                    project: created,
+                    recalledStudioPlaybook: {
+                      projectType: recalledPlaybook.projectType,
+                      totalEntries: recalledPlaybook.totalEntries,
+                      compiledBrief: recalledPlaybook.compiledBrief,
+                    },
+                  }
+                : created,
+              null,
+              2,
+            ),
+          },
+        ],
       };
     },
   );
@@ -2821,6 +2850,170 @@ export function createVideoStudioMcpServer(
             },
           ],
         };
+      },
+    );
+  }
+
+  // --- Shared Studio Knowledge & AI Cross-Project Memory (v0.10.0) ---
+
+  if (knowledge) {
+    server.resource('studio-knowledge-all', 'studio://knowledge', async (uri) => {
+      const entries = await knowledge.listEntries();
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'application/json',
+            text: JSON.stringify(entries, null, 2),
+          },
+        ],
+      };
+    });
+
+    server.resource(
+      'studio-playbook-by-type',
+      new ResourceTemplate('studio://playbooks/{projectType}', { list: undefined }),
+      async (uri, variables) => {
+        const rawType = String(variables.projectType ?? 'all');
+        const parsed = KnowledgeProjectTypeSchema.safeParse(rawType);
+        const playbook = await knowledge.recallPlaybook({
+          projectType: parsed.success ? parsed.data : 'all',
+          incrementUsage: false,
+        });
+        return {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: 'text/markdown',
+              text: playbook?.compiledBrief ?? '# Playbook introuvable',
+            },
+          ],
+        };
+      },
+    );
+
+    server.tool(
+      'recall_project_playbook',
+      'Recall all persisted cross-project Studio Knowledge (rules, validated prompts, skills, technical presets, and learned lessons) plus matching Rulebooks, Prompt Templates, ComfyUI Workflows & Skills for a project or projectType. Call this at the start of every project so learnings accumulate across projects.',
+      {
+        project: z
+          .string()
+          .optional()
+          .describe('Optional project slug or UUID (automatically detects projectType and project-scoped skills/prompts)'),
+        projectType: KnowledgeProjectTypeSchema.optional().describe(
+          'Project type filter (all, youtube_long, youtube_short, music_video, animation, commercial, experimental)',
+        ),
+      },
+      async ({ project, projectType }) => {
+        const playbook = await knowledge.recallPlaybook({
+          projectIdOrSlug: project,
+          projectType,
+          incrementUsage: true,
+        });
+        if (!playbook) {
+          return { isError: true, content: [{ type: 'text', text: `Project not found: ${project}` }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ playbook }, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'learn_studio_knowledge',
+      'Persist or refine a reusable rule, validated prompt recipe, skill/procedure, technical preset, or lesson learned in the shared Studio Knowledge base (scoped by projectTypes so future projects automatically recall it). Idempotent by slug.',
+      {
+        title: z.string().min(1).max(180).describe('Short descriptive title of what was learned'),
+        slug: z
+          .string()
+          .regex(/^[a-z0-9-_]+$/)
+          .max(96)
+          .optional()
+          .describe('Optional stable slug to update an existing knowledge entry idempotently'),
+        kind: KnowledgeKindSchema.default('lesson').describe('rule | prompt | skill | lesson | preset'),
+        projectTypes: z
+          .array(KnowledgeProjectTypeSchema)
+          .min(1)
+          .default(['all'])
+          .describe('Applicable project types, e.g. ["all"] or ["animation", "music_video"]'),
+        priority: KnowledgePrioritySchema.default('normal').describe('critical | high | normal | low'),
+        content: z.string().min(1).max(12000).describe('Detailed rule, prompt recipe, workflow preset, or lesson learned'),
+        positiveFragment: z.string().max(4000).optional(),
+        negativeFragment: z.string().max(4000).optional(),
+        recommendedModel: z.string().max(180).optional(),
+        linkedSkillSlug: z.string().max(96).nullable().optional(),
+        tags: z.array(z.string()).optional(),
+        sourceProject: z.string().max(96).optional().describe('Slug of the project where this insight was learned'),
+        pinned: z.boolean().optional(),
+      },
+      async ({ sourceProject, ...rest }) => {
+        const res = await knowledge.upsertEntry(
+          {
+            ...rest,
+            positiveFragment: rest.positiveFragment ?? '',
+            negativeFragment: rest.negativeFragment ?? '',
+            recommendedModel: rest.recommendedModel ?? '',
+            tags: rest.tags ?? [],
+            sourceProjectSlug: sourceProject ?? null,
+          },
+          'claude',
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'list_studio_knowledge',
+      'Search and filter entries stored in the shared Studio Knowledge & AI Memory base.',
+      {
+        projectType: KnowledgeProjectTypeSchema.optional(),
+        kind: KnowledgeKindSchema.optional(),
+        search: z.string().optional(),
+        verifiedOnly: z.boolean().optional(),
+        tag: z.string().optional(),
+      },
+      async (filter) => {
+        const entries = await knowledge.listEntries(filter);
+        return { content: [{ type: 'text', text: JSON.stringify({ entries }, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'update_studio_knowledge',
+      'Update an existing Studio Knowledge entry by UUID or slug (refine content, tags, priority, projectTypes, or pin status).',
+      {
+        idOrSlug: z.string().min(1),
+        title: z.string().min(1).max(180).optional(),
+        kind: KnowledgeKindSchema.optional(),
+        projectTypes: z.array(KnowledgeProjectTypeSchema).min(1).optional(),
+        priority: KnowledgePrioritySchema.optional(),
+        content: z.string().min(1).max(12000).optional(),
+        positiveFragment: z.string().max(4000).optional(),
+        negativeFragment: z.string().max(4000).optional(),
+        recommendedModel: z.string().max(180).optional(),
+        linkedSkillSlug: z.string().max(96).nullable().optional(),
+        tags: z.array(z.string()).optional(),
+        pinned: z.boolean().optional(),
+      },
+      async ({ idOrSlug, ...patch }) => {
+        const entry = await knowledge.updateEntry(idOrSlug, patch);
+        if (!entry) {
+          return { isError: true, content: [{ type: 'text', text: `Knowledge entry not found: ${idOrSlug}` }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ entry }, null, 2) }] };
+      },
+    );
+
+    server.tool(
+      'delete_studio_knowledge',
+      'Remove an obsolete entry from the shared Studio Knowledge base by UUID or slug.',
+      {
+        idOrSlug: z.string().min(1),
+      },
+      async ({ idOrSlug }) => {
+        const deleted = await knowledge.deleteEntry(idOrSlug);
+        if (!deleted) {
+          return { isError: true, content: [{ type: 'text', text: `Knowledge entry not found: ${idOrSlug}` }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, idOrSlug }) }] };
       },
     );
   }

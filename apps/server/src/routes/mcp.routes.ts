@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { AppConfig } from '../config.js';
 import { createVideoStudioMcpServer, type Stage5McpDeps } from '../mcp/mcp-server.js';
 import type { DossierService } from '../services/dossier.service.js';
+import type { KnowledgeService } from '../services/knowledge.service.js';
 import type { MediaService } from '../services/media.service.js';
 import type { SketchService } from '../services/sketch.service.js';
 import type { Stage2Service } from '../services/stage2.service.js';
@@ -27,6 +28,7 @@ export function registerMcpRoutes(
     stage5?: Stage5McpDeps;
     sketches?: SketchService;
     dossier?: DossierService;
+    knowledge?: KnowledgeService;
   },
 ): void {
   const handleMcpRequest = async (
@@ -52,6 +54,7 @@ export function registerMcpRoutes(
       deps.stage5,
       deps.sketches,
       deps.dossier,
+      deps.knowledge,
     );
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
